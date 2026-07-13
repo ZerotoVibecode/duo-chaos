@@ -10,7 +10,7 @@ import { buildRealTurnPlan } from '../../src/main/orchestrator/real-turn-plan'
 
 class RunOrchestrator extends BaseRunOrchestrator {
   constructor(options: ConstructorParameters<typeof BaseRunOrchestrator>[0]) {
-    super({ ...options, planVersion: 'balanced-hybrid-v1' })
+    super({ ...options, planVersion: 'balanced-hybrid-v1', testOnlyMinimumTurns: 2 })
   }
 }
 

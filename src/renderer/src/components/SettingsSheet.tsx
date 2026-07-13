@@ -1,5 +1,5 @@
 import { Save, SquareTerminal, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentEffort, AppSettings, CodexEffort, ToolHealth } from '@shared/types'
 import { useStudioStore } from '@renderer/store/studio-store'
 import {
@@ -13,6 +13,20 @@ import {
   runtimeModels
 } from '@renderer/lib/runtime-options'
 import { ModelSelect } from './ModelSelect'
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])'
+].join(',')
+
+function focusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    .filter((element) => !element.closest('[hidden], [aria-hidden="true"]'))
+}
 
 export function SettingsSheet(): React.JSX.Element | null {
   const { settings, health, settingsOpen, busy, setSettingsOpen, saveSettings, openAgentCli } = useStudioStore()
@@ -49,6 +63,49 @@ function formatDuration(seconds: number): string {
 
 function SettingsSheetContent({ settings, health, busy, onClose, onSave, onOpenAgentCli }: SettingsSheetContentProps): React.JSX.Element {
   const [draft, setDraft] = useState<AppSettings>(settings)
+  const dialogRef = useRef<HTMLElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    const returnFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const initialFocus = closeButtonRef.current ?? dialogRef.current
+    initialFocus?.focus()
+
+    return () => {
+      if (returnFocus?.isConnected) returnFocus.focus()
+    }
+  }, [])
+
+  const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      onClose()
+      return
+    }
+    if (event.key !== 'Tab' || !dialogRef.current) return
+
+    const focusable = focusableElements(dialogRef.current)
+    if (focusable.length === 0) {
+      event.preventDefault()
+      dialogRef.current.focus()
+      return
+    }
+
+    const first = focusable.at(0)
+    const last = focusable.at(-1)
+    if (!first || !last) return
+    const active = document.activeElement
+    if (event.shiftKey && (active === first || !dialogRef.current.contains(active))) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && (active === last || !dialogRef.current.contains(active))) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
 
   const codex = health.find((item) => item.id === 'codex')
   const claude = health.find((item) => item.id === 'claude')
@@ -87,8 +144,8 @@ function SettingsSheetContent({ settings, health, busy, onClose, onSave, onOpenA
   }))
   return (
     <div className="sheet-scrim" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <aside className="settings-sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <div className="sheet-heading"><div><span className="eyebrow">Local configuration</span><h2 id="settings-title">Studio settings</h2></div><button className="icon-button" type="button" aria-label="Close settings" onClick={onClose}><X size={18} /></button></div>
+      <aside ref={dialogRef} className="settings-sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} onKeyDown={handleDialogKeyDown}>
+        <div className="sheet-heading"><div><span className="eyebrow">Local configuration</span><h2 id="settings-title">Studio settings</h2></div><button ref={closeButtonRef} className="icon-button" type="button" aria-label="Close settings" onClick={onClose}><X size={18} /></button></div>
         <div className="settings-content">
           <section><h3>Agent runtime</h3><p className="settings-help">Pin a model for repeatable runs, or leave it blank to inherit the local CLI configuration.</p><div className="runtime-settings-grid">
             <article className="runtime-config-card runtime-codex"><div><strong>Codex</strong><button type="button" className="text-button" onClick={() => void onOpenAgentCli('codex')}><SquareTerminal size={13} /> Open Codex CLI</button></div><ModelSelect label="Codex model" value={draft.codexModel} suggestions={codexModels} fieldClassName="settings-field" onChange={updateCodexModel} /><label className="settings-field"><span>Codex effort</span><select value={effectiveCodexEffort} onChange={(event) => update('codexEffort', event.target.value as CodexEffort)}>{codexEfforts.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><small className="runtime-capability-note" title={codex?.catalog?.note}>{catalogSourceLabel(codex?.catalog)}</small></article>

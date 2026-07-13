@@ -816,7 +816,7 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
 
 @media (min-width: 1800px) and (min-height: 960px) {
   .prompt-cockpit { justify-content: center; padding-inline: 56px; }
-  .launch-command-deck { grid-template-columns: minmax(360px, .78fr) minmax(650px, 1.22fr); align-items: end; gap: 32px; }
+  .launch-command-deck { align-items: end; gap: 32px; }
   .hero-copy h1 { max-width: 1050px; font-size: 76px; }
   .hero-copy p { max-width: 850px; font-size: 16px; }
   .prompt-field textarea { min-height: 138px; font-size: 17px; }
@@ -844,6 +844,10 @@ button:disabled { cursor: not-allowed; opacity: 0.58; }
   .opinion-card > p { font-size: 14px; }
   .task-card strong { font-size: 13px; }
   .terminal-pane pre { font-size: 12px; }
+}
+
+@media (min-width: 2000px) and (min-height: 960px) {
+  .launch-command-deck { grid-template-columns: minmax(420px, .42fr) minmax(0, 1.58fr); }
 }
 
 @media (max-width: 840px) {

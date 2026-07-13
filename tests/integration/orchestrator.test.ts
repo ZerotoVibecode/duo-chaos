@@ -2,10 +2,19 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { RunOrchestrator, type ProcessRunnerPort } from '../../src/main/orchestrator/run-orchestrator'
+import {
+  RunOrchestrator as BaseRunOrchestrator,
+  type ProcessRunnerPort
+} from '../../src/main/orchestrator/run-orchestrator'
 import type { ProcessRunOptions, ProcessRunResult } from '../../src/main/process/process-runner'
 import { defaultSettings } from '../../src/main/settings/settings-store'
 import type { RunSnapshot } from '../../src/shared/types'
+
+class RunOrchestrator extends BaseRunOrchestrator {
+  constructor(options: ConstructorParameters<typeof BaseRunOrchestrator>[0]) {
+    super({ ...options, testOnlyMinimumTurns: 2 })
+  }
+}
 
 describe('simulation orchestration', () => {
   it('runs through reveal-ready without exposing the sealed packet, then unlocks it', async () => {

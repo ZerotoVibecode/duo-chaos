@@ -331,6 +331,29 @@ describe('Duo Chaos launch cockpit', () => {
     expect(screen.queryByText(/^Live run$/i, { selector: '.status-chip' })).not.toBeInTheDocument()
   })
 
+  it('contains keyboard focus in Studio settings and restores the settings trigger on close', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    const settingsTrigger = await screen.findByRole('button', { name: /open settings/i })
+    settingsTrigger.focus()
+    await user.click(settingsTrigger)
+
+    const settingsDialog = screen.getByRole('dialog', { name: /studio settings/i })
+    const closeButton = within(settingsDialog).getByRole('button', { name: /close settings/i })
+    const saveButton = within(settingsDialog).getByRole('button', { name: /save settings/i })
+    expect(closeButton).toHaveFocus()
+
+    await user.tab({ shift: true })
+    expect(saveButton).toHaveFocus()
+    await user.tab()
+    expect(closeButton).toHaveFocus()
+
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: /studio settings/i })).not.toBeInTheDocument()
+    expect(settingsTrigger).toHaveFocus()
+  })
+
   it('lets the user pin both models and open an interactive local CLI', async () => {
     const user = userEvent.setup()
     const api = createApi()

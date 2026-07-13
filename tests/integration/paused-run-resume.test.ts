@@ -2,9 +2,18 @@ import { appendFile, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { RunOrchestrator, type ProcessRunnerPort } from '../../src/main/orchestrator/run-orchestrator'
+import {
+  RunOrchestrator as BaseRunOrchestrator,
+  type ProcessRunnerPort
+} from '../../src/main/orchestrator/run-orchestrator'
 import type { ProcessRunOptions, ProcessRunResult } from '../../src/main/process/process-runner'
 import { defaultSettings } from '../../src/main/settings/settings-store'
+
+class RunOrchestrator extends BaseRunOrchestrator {
+  constructor(options: ConstructorParameters<typeof BaseRunOrchestrator>[0]) {
+    super({ ...options, testOnlyMinimumTurns: 2 })
+  }
+}
 
 function result(exitCode = 0): ProcessRunResult {
   const now = new Date().toISOString()

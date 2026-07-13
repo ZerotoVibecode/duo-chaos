@@ -20,7 +20,7 @@ const settingsSchema = z.object({
   defaultVisibilityMode: z.enum(['blind', 'spoiler-shield', 'full-chaos']),
   defaultMissionProfile: z.enum(['surprise', 'serious']),
   saveRawLogs: z.boolean(),
-  maxTurns: z.number().int().min(2).max(50),
+  maxTurns: z.number().int().min(7).max(50),
   maxRepairLoops: z.number().int().min(0).max(10),
   turnTimeoutSeconds: z.number().int().min(30).max(28_800),
   runTimeoutSeconds: z.number().int().min(60).max(86_400)
@@ -61,7 +61,16 @@ export class SettingsStore {
     const defaults = defaultSettings(this.defaultWorkspaceRoot)
     try {
       const raw = JSON.parse(await readFile(this.path, 'utf8')) as unknown
-      return settingsSchema.parse({ ...defaults, ...(typeof raw === 'object' && raw ? raw : {}) })
+      const saved = typeof raw === 'object' && raw ? raw as Record<string, unknown> : {}
+      const legacyTurnBudget = typeof saved.maxTurns === 'number' &&
+        Number.isInteger(saved.maxTurns) && saved.maxTurns >= 2 && saved.maxTurns < 7
+      const validated = settingsSchema.parse({
+        ...defaults,
+        ...saved,
+        ...(legacyTurnBudget ? { maxTurns: 7 } : {})
+      })
+      if (legacyTurnBudget) await this.writeValidated(validated).catch(() => undefined)
+      return validated
     } catch (error) {
       if (error instanceof SyntaxError) {
         await rename(this.path, `${this.path}.corrupt-${Date.now()}`).catch(() => undefined)
@@ -72,10 +81,14 @@ export class SettingsStore {
 
   async save(settings: AppSettings): Promise<AppSettings> {
     const validated = settingsSchema.parse(settings)
+    await this.writeValidated(validated)
+    return validated
+  }
+
+  private async writeValidated(settings: AppSettings): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true })
     const temporaryPath = `${this.path}.${process.pid}.tmp`
-    await writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, 'utf8')
+    await writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
     await rename(temporaryPath, this.path)
-    return validated
   }
 }

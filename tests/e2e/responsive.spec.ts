@@ -67,6 +67,27 @@ async function expectOpinionBodyNotClipped(body: Locator): Promise<void> {
   expect.soft(metrics.cardBottom).toBeLessThanOrEqual(metrics.viewportHeight + 1)
 }
 
+async function expectBattleBriefingNotClipped(page: Page): Promise<void> {
+  const metrics = await page.locator('.battle-briefing').evaluate((element) => {
+    const ceiling = element.querySelector<HTMLElement>('.briefing-contract em')
+    const briefingRect = element.getBoundingClientRect()
+    const ceilingRect = ceiling?.getBoundingClientRect()
+
+    return {
+      clientWidth: element.clientWidth,
+      clientHeight: element.clientHeight,
+      scrollWidth: element.scrollWidth,
+      scrollHeight: element.scrollHeight,
+      ceilingInside: !ceilingRect || ceilingRect.right <= briefingRect.right + 1
+    }
+  })
+
+  expect(metrics.scrollWidth, 'battle briefing should not overflow horizontally').toBeLessThanOrEqual(metrics.clientWidth + 1)
+  expect(metrics.clientHeight, 'battle briefing should keep its readable height').toBeGreaterThanOrEqual(44)
+  expect(metrics.scrollHeight, 'battle briefing should not clip vertically').toBeLessThanOrEqual(metrics.clientHeight + 1)
+  expect(metrics.ceilingInside, 'run ceiling should stay inside the battle briefing').toBe(true)
+}
+
 test('fits the complete cockpit when windowed and fills a large display', async () => {
   test.setTimeout(75_000)
   const screenshots = join(process.cwd(), 'test-results', 'visual')
@@ -105,22 +126,7 @@ test('fits the complete cockpit when windowed and fills a large display', async 
     await expectMinimumFontSize(page, '.loadout-field > span', 10)
     await expectMinimumFontSize(page, '.loadout-field select', 11)
     await expectMinimumFontSize(page, '.loadout-effective', 10)
-    const briefingFit = await page.locator('.battle-briefing').evaluate((element) => {
-      const ceiling = element.querySelector<HTMLElement>('.briefing-contract em')
-      const briefingRect = element.getBoundingClientRect()
-      const ceilingRect = ceiling?.getBoundingClientRect()
-      return {
-        clientWidth: element.clientWidth,
-        clientHeight: element.clientHeight,
-        scrollWidth: element.scrollWidth,
-        scrollHeight: element.scrollHeight,
-        ceilingInside: !ceilingRect || ceilingRect.right <= briefingRect.right + 1
-      }
-    })
-    expect(briefingFit.scrollWidth).toBeLessThanOrEqual(briefingFit.clientWidth + 1)
-    expect(briefingFit.clientHeight).toBeGreaterThanOrEqual(44)
-    expect(briefingFit.scrollHeight).toBeLessThanOrEqual(briefingFit.clientHeight + 1)
-    expect(briefingFit.ceilingInside).toBe(true)
+    await expectBattleBriefingNotClipped(page)
     const clippedRuntimeProfiles = await page.locator('.loadout-effective strong').evaluateAll((profiles) => profiles.filter((profile) => (
       profile.scrollHeight > profile.clientHeight + 1 || profile.scrollWidth > profile.clientWidth + 1
     )).length)
@@ -183,6 +189,7 @@ test('fits the complete cockpit when windowed and fills a large display', async 
     expect(wide.shell?.width ?? 0).toBeGreaterThan(wide.viewportWidth * 0.92)
     expect(wide.grid?.height ?? 0).toBeGreaterThan((wide.viewportHeight - 46) * 0.72)
     expect(wide.loadout?.height ?? Number.POSITIVE_INFINITY).toBeLessThan((wide.grid?.height ?? 0) * 0.72)
+    await expectBattleBriefingNotClipped(page)
     await page.screenshot({ path: join(screenshots, '05-fullscreen-launch.png') })
 
     await page.setViewportSize({ width: 1000, height: 700 })

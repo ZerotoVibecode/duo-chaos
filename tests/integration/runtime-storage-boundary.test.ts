@@ -152,6 +152,7 @@ describe('agent-invisible runtime storage boundary', () => {
       runtimeRoot,
       getSettings: () => Promise.resolve(settings),
       onSnapshot: () => undefined,
+      testOnlyMinimumTurns: 2 as const,
       processRunner: runner,
       healthProvider: () => Promise.resolve([
         { id: 'codex' as const, label: 'Codex CLI', command: 'codex', available: true, version: 'codex test', checkedAt: new Date().toISOString() },

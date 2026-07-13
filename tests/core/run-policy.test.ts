@@ -31,6 +31,18 @@ describe('run safety policy', () => {
     expect(() => validateRunRequest({ ...validRequest, maxTurns: 0 })).toThrow(/turn/i)
   })
 
+  it('requires the complete seven-call collaboration core', () => {
+    expect(() => validateRunRequest({ ...validRequest, maxTurns: 6 })).toThrow(/seven|7|turn/i)
+    expect(validateRunRequest({ ...validRequest, maxTurns: 7 })).toMatchObject({ maxTurns: 7 })
+  })
+
+  it('permits explicitly shortened deterministic harness plans without weakening the default', () => {
+    expect(validateRunRequest(
+      { ...validRequest, maxTurns: 2 },
+      { minimumTurns: 2 }
+    )).toMatchObject({ maxTurns: 2 })
+  })
+
   it('accepts long recording budgets up to the published hard ceilings', () => {
     expect(validateRunRequest({
       ...validRequest,

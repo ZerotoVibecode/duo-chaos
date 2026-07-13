@@ -9,7 +9,7 @@ const runRequestSchema = z.object({
   executionMode: z.enum(['simulation', 'safe', 'chaos', 'yolo-sandbox']),
   visibilityMode: z.enum(['blind', 'spoiler-shield', 'full-chaos']),
   missionProfile: z.enum(['surprise', 'serious']).default('surprise'),
-  maxTurns: z.number().int().min(2, 'Turn budget must be at least 2.').max(50),
+  maxTurns: z.number().int().min(2).max(50),
   maxRepairLoops: z.number().int().min(0).max(10),
   turnTimeoutSeconds: z.number().int().min(30).max(28_800),
   runTimeoutSeconds: z.number().int().min(60).max(86_400).default(86_400),
@@ -27,8 +27,22 @@ function protectedRoots(): Set<string> {
   return new Set([home, join(home, 'Desktop'), join(home, 'Documents')].map(comparable))
 }
 
-export function validateRunRequest(value: unknown): StartRunRequest {
+interface RunRequestValidationOptions {
+  minimumTurns?: number
+}
+
+export function validateRunRequest(
+  value: unknown,
+  options: RunRequestValidationOptions = {}
+): StartRunRequest {
   const request = runRequestSchema.parse(value)
+  const minimumTurns = options.minimumTurns ?? 7
+  if (!Number.isInteger(minimumTurns) || minimumTurns < 2 || minimumTurns > 7) {
+    throw new Error('Turn validation minimum must be an integer between 2 and 7.')
+  }
+  if (request.maxTurns < minimumTurns) {
+    throw new Error(`Turn budget must include all ${minimumTurns} required collaboration calls.`)
+  }
   const workspaceRoot = resolve(request.workspaceRoot)
   if (!isAbsolute(workspaceRoot)) throw new Error('Workspace root must resolve to an absolute path.')
   if (request.executionMode === 'yolo-sandbox' && !request.dangerousModeConfirmed) {

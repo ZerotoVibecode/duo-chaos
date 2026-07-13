@@ -91,6 +91,7 @@ describe('structured dialogue recovery', () => {
     const orchestrator = new RunOrchestrator({
       getSettings: () => Promise.resolve(defaultSettings(root)),
       onSnapshot: () => undefined,
+      testOnlyMinimumTurns: 2,
       processRunner: runner,
       healthProvider: healthyAgents,
       protocolPollMs: 5

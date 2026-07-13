@@ -23,6 +23,7 @@ describe('orchestrator usage snapshots', () => {
     const orchestrator = new RunOrchestrator({
       getSettings: () => Promise.resolve(defaultSettings(root)),
       onSnapshot: () => undefined,
+      testOnlyMinimumTurns: 2,
       processRunner: runner,
       healthProvider: () => Promise.resolve([
         { id: 'codex', label: 'Codex CLI', command: 'codex', available: true, version: 'codex test', checkedAt: new Date().toISOString() },

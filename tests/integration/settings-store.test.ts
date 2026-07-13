@@ -55,6 +55,36 @@ describe('settings store', () => {
     })
   })
 
+  it('migrates legacy sub-seven call budgets without discarding unrelated settings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-settings-seven-call-migration-'))
+    const path = join(root, 'settings.json')
+    await writeFile(path, JSON.stringify({
+      maxTurns: 4,
+      maxRepairLoops: 1,
+      codexPath: 'C:\\Tools\\codex.exe',
+      claudeModel: 'sonnet',
+      saveRawLogs: true
+    }), 'utf8')
+    const store = new SettingsStore(path, join(root, 'workspaces'))
+
+    await expect(store.load()).resolves.toMatchObject({
+      maxTurns: 7,
+      maxRepairLoops: 1,
+      codexPath: 'C:\\Tools\\codex.exe',
+      claudeModel: 'sonnet',
+      saveRawLogs: true
+    })
+
+    const persisted = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+    expect(persisted).toMatchObject({
+      maxTurns: 7,
+      maxRepairLoops: 1,
+      codexPath: 'C:\\Tools\\codex.exe',
+      claudeModel: 'sonnet',
+      saveRawLogs: true
+    })
+  })
+
   it('persists a serious mission as the next-run default', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-settings-mission-'))
     const path = join(root, 'settings.json')

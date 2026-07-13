@@ -119,6 +119,8 @@ interface RunOrchestratorOptions {
   now?: () => number
   /** Legacy staged executor is retained only for durable-run compatibility and focused regression tests. */
   planVersion?: RealTurnPlanVersion
+  /** Test-only escape hatch for deterministic shortened plans. The desktop app must never set this. */
+  testOnlyMinimumTurns?: 2
 }
 
 export interface ProcessRunnerPort {
@@ -643,7 +645,9 @@ export class RunOrchestrator {
   }
 
   private async startAdmitted(value: unknown): Promise<StartRunResult> {
-    const request = validateRunRequest(value)
+    const request = validateRunRequest(value, {
+      minimumTurns: this.options.testOnlyMinimumTurns
+    })
     const active = [...this.sessions.values()].find((session) => session.snapshot.status === 'running')
     if (active) throw new Error('A run is already active. Stop it before starting another.')
 

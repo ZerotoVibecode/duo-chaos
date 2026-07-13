@@ -139,6 +139,7 @@ describe('quota-aware turn policy', () => {
         claudeEffort: 'max'
       }),
       onSnapshot: () => undefined,
+      testOnlyMinimumTurns: 2,
       processRunner: runner,
       healthProvider: healthyAgents,
       protocolPollMs: 5

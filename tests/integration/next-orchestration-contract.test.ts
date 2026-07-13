@@ -2,13 +2,22 @@ import { appendFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { RunOrchestrator, type ProcessRunnerPort } from '../../src/main/orchestrator/run-orchestrator'
+import {
+  RunOrchestrator as BaseRunOrchestrator,
+  type ProcessRunnerPort
+} from '../../src/main/orchestrator/run-orchestrator'
 import { ProcessRunner, type ProcessRunOptions, type ProcessRunResult } from '../../src/main/process/process-runner'
 import type { AgentCommand } from '../../src/main/process/command-builder'
 import { GitManager } from '../../src/main/git/git-manager'
 import { defaultSettings } from '../../src/main/settings/settings-store'
 import { sealSeriousMissionSpecification } from '../../src/main/workspace/serious-mission-contract'
 import type { StartRunRequest, ToolHealth } from '../../src/shared/types'
+
+class RunOrchestrator extends BaseRunOrchestrator {
+  constructor(options: ConstructorParameters<typeof BaseRunOrchestrator>[0]) {
+    super({ ...options, testOnlyMinimumTurns: 2 })
+  }
+}
 
 const availableAgents: ToolHealth[] = [
   { id: 'codex', label: 'Codex CLI', command: 'codex', available: true, version: 'codex test', checkedAt: '2026-07-10T10:00:00.000Z' },
