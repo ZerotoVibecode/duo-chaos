@@ -1,0 +1,220 @@
+.battle-replay {
+  position: relative;
+  margin: clamp(34px, 5vw, 72px) 0 0;
+  padding: clamp(18px, 2vw, 26px) 0;
+  border-top: 1px solid rgba(255, 255, 255, .11);
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  text-align: left;
+}
+
+.battle-replay::before {
+  content: '';
+  position: absolute;
+  width: 38%;
+  height: 1px;
+  top: -1px;
+  left: 0;
+  background: linear-gradient(90deg, var(--claude), rgba(168, 139, 255, .8), transparent);
+  opacity: .7;
+  pointer-events: none;
+}
+
+.battle-replay::after {
+  content: '';
+  position: absolute;
+  width: 38%;
+  height: 1px;
+  top: -1px;
+  right: 0;
+  background: linear-gradient(270deg, var(--codex), rgba(168, 139, 255, .8), transparent);
+  opacity: .7;
+  pointer-events: none;
+}
+
+.battle-replay-heading {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.battle-replay-heading h2 {
+  margin: 6px 0 0;
+  font: 620 clamp(20px, 1.55vw, 28px)/1.08 'Space Grotesk Variable';
+  letter-spacing: -.04em;
+}
+
+.battle-replay-control {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 15px;
+  border: 1px solid rgba(168, 139, 255, .32);
+  border-radius: 999px;
+  color: #e3dbff;
+  background: rgba(168, 139, 255, .08);
+  cursor: pointer;
+  font-size: var(--type-control);
+  font-weight: 690;
+  transition: transform .18s ease, border-color .18s ease, background .18s ease;
+}
+
+.battle-replay-control:hover {
+  transform: translateY(-1px);
+  border-color: rgba(168, 139, 255, .55);
+  background: rgba(168, 139, 255, .14);
+}
+
+.battle-replay-stage {
+  position: relative;
+  min-height: 190px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  overflow: hidden;
+  margin-top: 22px;
+  padding: clamp(24px, 3.2vw, 46px);
+  border-left: 2px solid rgba(168, 139, 255, .5);
+  background: linear-gradient(100deg, rgba(12, 15, 25, .92), rgba(17, 19, 32, .42) 72%, transparent);
+  animation: battle-scene-in .38s cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.battle-replay-stage.agent-claude { border-left-color: rgba(255, 183, 107, .75); }
+.battle-replay-stage.agent-codex { border-left-color: rgba(112, 226, 255, .75); }
+.battle-replay-stage.agent-director { border-left-color: rgba(168, 139, 255, .75); }
+
+.battle-replay-copy { position: relative; z-index: 1; min-width: 0; }
+.battle-replay-meta {
+  color: var(--faint);
+  font: 620 var(--type-micro)/1.35 'JetBrains Mono Variable';
+  letter-spacing: .075em;
+  text-transform: uppercase;
+}
+.battle-replay-stage.agent-claude .battle-replay-meta { color: var(--claude); }
+.battle-replay-stage.agent-codex .battle-replay-meta { color: var(--codex); }
+.battle-replay-stage.agent-director .battle-replay-meta { color: #c8baff; }
+
+.battle-replay-copy h3 {
+  max-width: 900px;
+  margin: 11px 0 8px;
+  font: 620 clamp(25px, 2.5vw, 42px)/1.03 'Space Grotesk Variable';
+  letter-spacing: -.05em;
+  overflow-wrap: anywhere;
+}
+
+.battle-replay-copy p {
+  max-width: 920px;
+  margin: 0;
+  color: #bdc6d4;
+  font-size: var(--type-body-strong);
+  line-height: 1.58;
+  overflow-wrap: anywhere;
+}
+
+.battle-replay-count {
+  align-self: end;
+  position: relative;
+  z-index: 1;
+  color: rgba(255, 255, 255, .36);
+  font: 560 var(--type-caption) 'JetBrains Mono Variable';
+  white-space: nowrap;
+}
+
+.battle-replay-signal { position: absolute; inset: 0; pointer-events: none; }
+.battle-replay-signal i {
+  position: absolute;
+  width: 44%;
+  height: 1px;
+  top: 50%;
+  opacity: .28;
+  background: linear-gradient(90deg, transparent, var(--claude));
+  transform: rotate(5deg);
+}
+.battle-replay-signal i:first-child { left: -6%; }
+.battle-replay-signal i:nth-child(2) {
+  right: -6%;
+  background: linear-gradient(90deg, var(--codex), transparent);
+  transform: rotate(-5deg);
+}
+.battle-replay-signal span {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  top: calc(50% - 4px);
+  left: calc(50% - 4px);
+  border-radius: 50%;
+  background: var(--violet);
+  box-shadow: 0 0 24px 7px rgba(168, 139, 255, .3);
+}
+
+.battle-replay-rail {
+  display: flex;
+  gap: 7px;
+  margin-top: 12px;
+  padding-bottom: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(168, 139, 255, .35) transparent;
+}
+
+.battle-replay-rail button {
+  min-width: 145px;
+  min-height: 42px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--faint);
+  background: rgba(255, 255, 255, .025);
+  cursor: pointer;
+  font-size: var(--type-micro);
+  text-align: left;
+  transition: border-color .18s ease, color .18s ease, background .18s ease;
+}
+
+.battle-replay-rail button:hover,
+.battle-replay-rail button.active {
+  border-color: rgba(168, 139, 255, .25);
+  color: #e4ddf5;
+  background: rgba(168, 139, 255, .075);
+}
+
+.battle-replay-rail button i {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: .7;
+}
+
+.battle-replay-rail button span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.28;
+}
+
+@keyframes battle-scene-in {
+  from { opacity: 0; transform: translateY(7px) scale(.994); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 720px) {
+  .battle-replay-stage { min-height: 170px; grid-template-columns: 1fr; }
+  .battle-replay-count { justify-self: end; }
+  .battle-replay-heading { align-items: flex-end; }
+  .battle-replay-control span { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .battle-replay-stage { animation: none; }
+  .battle-replay-control { transition: none; }
+}

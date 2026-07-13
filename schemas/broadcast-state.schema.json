@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/broadcast-state.schema.json",
+  "title": "BroadcastState",
+  "description": "Spoiler-safe broadcast presentation derived from recorded run events and scheduled turns.",
+  "type": "object",
+  "required": ["activeBeat", "beats", "queue", "missions", "evidence"],
+  "properties": {
+    "activeBeat": { "$ref": "#/$defs/beat" },
+    "beats": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/beat" },
+      "minItems": 1
+    },
+    "queue": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/beat" },
+      "minItems": 1
+    },
+    "missions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mission" }
+    },
+    "evidence": { "$ref": "#/$defs/evidence" },
+    "responseDue": { "$ref": "#/$defs/responseDue" },
+    "responseDueAgent": { "enum": ["claude", "codex"] },
+    "nextAgent": { "enum": ["claude", "codex"] },
+    "verdict": { "$ref": "#/$defs/verdict" },
+    "generatedAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sourceEventIds": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "quote": {
+      "type": "object",
+      "required": ["agent", "text", "sourceEventId"],
+      "properties": {
+        "agent": { "enum": ["claude", "codex"] },
+        "text": { "type": "string", "minLength": 1 },
+        "sourceEventId": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "beat": {
+      "type": "object",
+      "required": ["id", "kind", "provenance", "speaker", "headline", "detail", "sourceEventIds"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["opening", "agent-quote", "replay", "challenge", "counter", "live-move", "evidence", "response-clock", "failure", "verification", "task", "response-due", "repair", "concession", "decision", "resolution", "heartbeat", "status"] },
+        "provenance": { "enum": ["agent-quote", "director", "evidence"] },
+        "speaker": { "enum": ["claude", "codex", "director"] },
+        "headline": { "type": "string", "minLength": 1 },
+        "detail": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1 },
+        "sourceEventIds": { "$ref": "#/$defs/sourceEventIds" },
+        "quote": { "$ref": "#/$defs/quote" },
+        "severity": { "enum": ["low", "medium", "high", "critical"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "mission": {
+      "type": "object",
+      "required": ["turnId", "agent", "label", "status", "claimed"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "turnId": { "type": "string", "minLength": 1 },
+        "agent": { "enum": ["claude", "codex"] },
+        "label": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["drafting", "queued", "active", "done", "blocked"] },
+        "claimed": { "type": "boolean" },
+        "taskId": { "type": "string", "minLength": 1 },
+        "sourceEventIds": { "$ref": "#/$defs/sourceEventIds" }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["inspections", "edits", "verifications", "failures"],
+      "properties": {
+        "inspections": { "type": "integer", "minimum": 0 },
+        "edits": { "type": "integer", "minimum": 0 },
+        "verifications": { "type": "integer", "minimum": 0 },
+        "failures": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "responseDue": {
+      "type": "object",
+      "required": ["agent", "since", "waitingSeconds"],
+      "properties": {
+        "agent": { "enum": ["claude", "codex"] },
+        "since": { "type": "string", "format": "date-time" },
+        "waitingSeconds": { "type": "integer", "minimum": 0 },
+        "nextTurnId": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "verdict": {
+      "type": "object",
+      "required": ["outcome", "text", "sourceEventIds"],
+      "properties": {
+        "outcome": { "enum": ["claude", "codex", "split", "unresolved"] },
+        "text": { "type": "string", "minLength": 1 },
+        "sourceEventIds": { "$ref": "#/$defs/sourceEventIds" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/reveal-packet.schema.json",
+  "title": "RevealPacket",
+  "type": "object",
+  "required": ["appName", "idea", "summary", "features", "runCommand", "appPath", "status", "whatWorked", "knownIssues", "agentDramaSummary", "gitCheckpoints", "agentQuotes"],
+  "properties": {
+    "appName": { "type": "string", "minLength": 1 },
+    "idea": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 },
+    "features": { "type": "array", "items": { "type": "string" } },
+    "runCommand": { "type": "string", "minLength": 1 },
+    "appPath": { "type": "string", "minLength": 1 },
+    "devUrl": { "type": "string" },
+    "status": { "enum": ["ready", "partial", "failed"] },
+    "whatWorked": { "type": "array", "items": { "type": "string" } },
+    "knownIssues": { "type": "array", "items": { "type": "string" } },
+    "agentDramaSummary": { "type": "array", "items": { "type": "string" } },
+    "gitCheckpoints": { "type": "array", "items": { "type": "string" } },
+    "agentQuotes": {
+      "type": "object",
+      "required": ["claude", "codex"],
+      "properties": { "claude": { "type": "string" }, "codex": { "type": "string" } },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

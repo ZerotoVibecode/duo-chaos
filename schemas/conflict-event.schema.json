@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/conflict-event.schema.json",
+  "title": "ConflictEvent",
+  "type": "object",
+  "required": ["id", "type", "runId", "round", "timestamp", "agent", "publicText", "publicTopic", "claudePosition", "codexPosition", "impact", "status", "spoilerRisk", "severity"],
+  "properties": {
+    "id": { "type": "string" },
+    "type": { "const": "conflict" },
+    "runId": { "type": "string" },
+    "round": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "agent": { "const": "director" },
+    "publicText": { "type": "string" },
+    "privateText": { "type": "string" },
+    "publicTopic": { "type": "string" },
+    "privateTopic": { "type": "string" },
+    "claudePosition": { "type": "string" },
+    "codexPosition": { "type": "string" },
+    "winner": { "enum": ["claude", "codex", "split", "director"] },
+    "resolution": { "type": "string" },
+    "impact": { "enum": ["low", "medium", "high"] },
+    "status": { "enum": ["open", "resolved"] },
+    "spoilerRisk": { "type": "number", "minimum": 0, "maximum": 1 },
+    "severity": { "enum": ["low", "medium", "high", "critical"] }
+  },
+  "additionalProperties": true
+}

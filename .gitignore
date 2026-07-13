@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-electron/
+build/
+out/
+release/
+coverage/
+test-results/
+playwright-report/
+*.tsbuildinfo
+
+# Runtime/generated Duo Chaos data
+workspaces/
+runs/
+.duo/
+.duo/runs/
+.duo/logs/
+.duo/tmp/
+.duo/cache/
+.duo/**/*.raw.jsonl
+.duo/**/*transcript*.jsonl
+.duo/**/hidden_idea.md
+.duo/**/hidden_spec.md
+.duo/**/product_name.md
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment/secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.codex/
+
+# Electron/package manager cache
+.cache/
+.parcel-cache/
+.electron/

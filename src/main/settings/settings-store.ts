@@ -1,0 +1,81 @@
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
+import { z } from 'zod'
+import type { AppSettings } from '@shared/types'
+
+const settingsSchema = z.object({
+  codexPath: z.string().min(1),
+  claudePath: z.string().min(1),
+  gitPath: z.string().min(1),
+  nodePath: z.string().min(1),
+  npmPath: z.string().min(1),
+  codexExtraArgs: z.array(z.string()),
+  claudeExtraArgs: z.array(z.string()),
+  codexModel: z.string(),
+  codexEffort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+  claudeModel: z.string(),
+  claudeEffort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']),
+  defaultWorkspaceRoot: z.string().min(1),
+  defaultExecutionMode: z.enum(['simulation', 'safe', 'chaos', 'yolo-sandbox']),
+  defaultVisibilityMode: z.enum(['blind', 'spoiler-shield', 'full-chaos']),
+  defaultMissionProfile: z.enum(['surprise', 'serious']),
+  saveRawLogs: z.boolean(),
+  maxTurns: z.number().int().min(2).max(50),
+  maxRepairLoops: z.number().int().min(0).max(10),
+  turnTimeoutSeconds: z.number().int().min(30).max(28_800),
+  runTimeoutSeconds: z.number().int().min(60).max(86_400)
+})
+
+export function defaultSettings(defaultWorkspaceRoot: string): AppSettings {
+  return {
+    codexPath: 'codex',
+    claudePath: 'claude',
+    gitPath: 'git',
+    nodePath: 'node',
+    npmPath: 'npm',
+    codexExtraArgs: [],
+    claudeExtraArgs: [],
+    codexModel: '',
+    codexEffort: 'default',
+    claudeModel: '',
+    claudeEffort: 'default',
+    defaultWorkspaceRoot,
+    defaultExecutionMode: 'simulation',
+    defaultVisibilityMode: 'spoiler-shield',
+    defaultMissionProfile: 'surprise',
+    saveRawLogs: false,
+    maxTurns: 11,
+    maxRepairLoops: 2,
+    turnTimeoutSeconds: 7_200,
+    runTimeoutSeconds: 86_400
+  }
+}
+
+export class SettingsStore {
+  constructor(
+    private readonly path: string,
+    private readonly defaultWorkspaceRoot: string
+  ) {}
+
+  async load(): Promise<AppSettings> {
+    const defaults = defaultSettings(this.defaultWorkspaceRoot)
+    try {
+      const raw = JSON.parse(await readFile(this.path, 'utf8')) as unknown
+      return settingsSchema.parse({ ...defaults, ...(typeof raw === 'object' && raw ? raw : {}) })
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        await rename(this.path, `${this.path}.corrupt-${Date.now()}`).catch(() => undefined)
+      }
+      return defaults
+    }
+  }
+
+  async save(settings: AppSettings): Promise<AppSettings> {
+    const validated = settingsSchema.parse(settings)
+    await mkdir(dirname(this.path), { recursive: true })
+    const temporaryPath = `${this.path}.${process.pid}.tmp`
+    await writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, 'utf8')
+    await rename(temporaryPath, this.path)
+    return validated
+  }
+}

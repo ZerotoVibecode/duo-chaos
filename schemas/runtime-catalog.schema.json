@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/runtime-catalog.schema.json",
+  "title": "AgentRuntimeCatalog",
+  "type": "object",
+  "required": ["agent", "models", "source", "discoveredAt"],
+  "properties": {
+    "agent": { "enum": ["claude", "codex"] },
+    "source": { "enum": ["cli-live", "cli-bundled", "cli-help", "fallback"] },
+    "discoveredAt": { "type": "string", "format": "date-time" },
+    "note": { "type": "string" },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "efforts"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "efforts": { "type": "array", "items": { "enum": ["low", "medium", "high", "xhigh", "max", "ultra"] } },
+          "defaultEffort": { "enum": ["low", "medium", "high", "xhigh", "max", "ultra"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

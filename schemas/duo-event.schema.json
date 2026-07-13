@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/duo-event.schema.json",
+  "title": "DuoEvent",
+  "type": "object",
+  "required": ["id", "type", "runId", "round", "timestamp", "agent", "publicText", "spoilerRisk", "severity"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "type": { "enum": ["run.started", "health.check", "phase.changed", "agent.started", "agent.activity", "agent.dispatch", "cli.log", "opinion", "conflict", "decision", "task.created", "task.claimed", "task.updated", "file.changed", "git.checkpoint", "build.started", "build.failed", "build.passed", "repair.started", "repair.completed", "reveal.ready", "run.completed", "run.failed", "run.paused", "run.resumed", "run.cancelled"] },
+    "runId": { "type": "string", "minLength": 1 },
+    "round": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "agent": { "enum": ["claude", "codex", "director", "system"] },
+    "publicText": { "type": "string", "minLength": 1 },
+    "privateText": { "type": "string" },
+    "dispatchKind": { "enum": ["opening", "position", "challenge", "counter", "reaction", "evidence", "prediction", "concession", "decision", "repair", "verdict", "closing", "update"] },
+    "claimKey": { "type": "string", "minLength": 1 },
+    "replyTo": { "type": "string", "minLength": 1 },
+    "spoilerRisk": { "type": "number", "minimum": 0, "maximum": 1 },
+    "severity": { "enum": ["low", "medium", "high", "critical"] },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": true
+}

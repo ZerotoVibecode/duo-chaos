@@ -1,0 +1,172 @@
+import { describe, expect, it } from 'vitest'
+import { composeTurnStagePrompt } from '../../src/main/orchestrator/turn-prompts'
+import type { RealTurn } from '../../src/main/orchestrator/real-turn-plan'
+
+const turn: RealTurn = {
+  id: 'turn-05-claude-code',
+  agent: 'claude',
+  kind: 'code',
+  phase: 'round.code',
+  goal: 'Implement one distinct source-changing slice.'
+}
+
+const base = {
+  runId: 'duo-run-stage-prompts',
+  round: 5,
+  turn,
+  humanBrief: 'Build a sealed local app.',
+  latestStatement: 'codex-r4-verdict: "I want a smaller testable core."',
+  board: 'task-1: Build the public [FEATURE] [claimed; claude]',
+  finalTurn: false
+}
+
+describe('turn stage prompts', () => {
+  it('keeps serious product requirements binding while allowing solution debate', () => {
+    const prompt = composeTurnStagePrompt({
+      ...base,
+      stage: 'dialogue',
+      missionProfile: 'serious',
+      turn: {
+        id: 'turn-01-claude-pitch',
+        agent: 'claude',
+        kind: 'pitch',
+        phase: 'round.pitch',
+        goal: 'Open with a concrete direction.'
+      }
+    } as never)
+
+    expect(prompt).toMatch(/serious mission|binding product brief/i)
+    expect(prompt).toMatch(/do not replace|must not replace/i)
+    expect(prompt).toMatch(/architecture|ux|implementation/i)
+    expect(prompt).toMatch(/acceptance checks|acceptance criteria/i)
+  })
+
+  it('keeps surprise missions free to invent the product', () => {
+    const prompt = composeTurnStagePrompt({ ...base, stage: 'dialogue', missionProfile: 'surprise' } as never)
+    expect(prompt).toMatch(/mission profile[^\n]*surprise build/i)
+    expect(prompt).toMatch(/invent|choose the product/i)
+    expect(prompt).not.toMatch(/human brief is a binding product brief/i)
+  })
+
+  it('requires real public speech before a long source-writing lease begins', () => {
+    const prompt = composeTurnStagePrompt({ ...base, stage: 'opening' })
+    expect(prompt).toMatch(/^Stage:\s*opening/im)
+    expect(prompt).toMatch(/before (?:any )?source work/i)
+    expect(prompt).toMatch(/public\/dispatches\.jsonl/i)
+    expect(prompt).toMatch(/public\/opinions\.jsonl/i)
+    expect(prompt).toMatch(/reply.*latest statement/i)
+  })
+
+  it('keeps the selected-effort work lease focused on implementation and evidence', () => {
+    const prompt = composeTurnStagePrompt({ ...base, stage: 'work' })
+    expect(prompt).toMatch(/^Stage:\s*work/im)
+    expect(prompt).toMatch(/implement|source-changing/i)
+    expect(prompt).toMatch(/do not redo|do not reopen/i)
+    expect(prompt).toMatch(/update.*board/i)
+  })
+
+  it('elevates a vague surprise brief inside one compact source contribution', () => {
+    const prompt = composeTurnStagePrompt({
+      ...base,
+      humanBrief: 'Build me a good looking website.',
+      stage: 'work',
+      missionProfile: 'surprise',
+      leanContribution: true
+    })
+
+    expect(prompt).toMatch(/distinctive, polished product/i)
+    expect(prompt).toMatch(/signature interaction/i)
+    expect(prompt).toMatch(/deliberate visual direction/i)
+    expect(prompt).toMatch(/accessible controls/i)
+    expect(prompt).toMatch(/batch.*reads|batch.*searches/i)
+    expect(prompt).toMatch(/\.duo\/sealed\/idea\.md/i)
+    expect(prompt).toMatch(/\.duo\/sealed\/spec\.md/i)
+    expect(prompt).toMatch(/\.duo\/board\.json/i)
+    expect(prompt).toMatch(/cohesive contribution/i)
+    expect(prompt).toMatch(/do not run git commands/i)
+    expect(prompt).not.toMatch(/reveal_packet\.json/i)
+  })
+
+  it('elevates serious implementation without replacing the binding product', () => {
+    const prompt = composeTurnStagePrompt({
+      ...base,
+      stage: 'work',
+      missionProfile: 'serious',
+      leanContribution: true
+    })
+
+    expect(prompt).toMatch(/human brief and sealed acceptance checks are binding/i)
+    expect(prompt).toMatch(/improve the solution without substituting a different product/i)
+    expect(prompt).toMatch(/distinctive.*polished/i)
+    expect(prompt).toMatch(/signature interaction/i)
+    expect(prompt).toMatch(/deliberate visual direction/i)
+    expect(prompt).toMatch(/accessible controls/i)
+  })
+
+  it('frames a structured capsule as one real turn instead of a synthetic three-message exchange', () => {
+    const prompt = composeTurnStagePrompt({
+      ...base,
+      stage: 'dialogue',
+      turn: {
+        id: 'turn-02-codex-pitch',
+        agent: 'codex',
+        kind: 'pitch',
+        phase: 'round.pitch',
+        goal: 'Answer Claude directly and offer a concrete alternative.'
+      },
+      latestStatementId: 'dialogue-accepted-claude-opening'
+    })
+
+    expect(prompt).toMatch(/one real (?:agent )?statement|one substantive statement/i)
+    expect(prompt).toMatch(/do not (?:simulate|invent).*(?:conversation|teammate|reply)/i)
+    expect(prompt).toMatch(/opening.*first position/i)
+    expect(prompt).toMatch(/counter.*reply/i)
+    expect(prompt).toMatch(/verdict.*consensus/i)
+  })
+
+  it('makes verdict and recovery short contract-only handoffs', () => {
+    const verdict = composeTurnStagePrompt({ ...base, stage: 'verdict' })
+    const recovery = composeTurnStagePrompt({
+      ...base,
+      stage: 'recovery',
+      recoveryReasons: ['missing-dispatch', 'missing-opinion']
+    })
+    expect(verdict).toMatch(/^Stage:\s*verdict/im)
+    expect(verdict).toMatch(/do not edit source|no source edits/i)
+    expect(verdict).toMatch(/verdict|handoff/i)
+    expect(recovery).toMatch(/^Stage:\s*recovery/im)
+    expect(recovery).toMatch(/contract-only recovery/i)
+    expect(recovery).toContain('missing-dispatch')
+    expect(recovery).toMatch(/do not (?:inspect|edit).*app|no app inspection/i)
+    expect(recovery).toMatch(/recovery capsule contract/i)
+    expect(recovery).toMatch(/orchestrator.*persist/iu)
+    expect(recovery).toMatch(/do not include.*(?:paths|commands|file operations)/iu)
+  })
+
+  it('gives the final verdict an explicit canonical reveal packet contract', () => {
+    const prompt = composeTurnStagePrompt({ ...base, stage: 'verdict', finalTurn: true })
+    for (const key of ['appName', 'idea', 'summary', 'features', 'runCommand', 'appPath', 'whatWorked', 'knownIssues', 'agentDramaSummary', 'gitCheckpoints', 'agentQuotes']) {
+      expect(prompt).toContain(`"${key}"`)
+    }
+    expect(prompt).toContain('.duo/sealed/reveal_packet.json')
+  })
+
+  it('uses distinct recovery dispatch IDs for different failed stages in one round', () => {
+    const openingRecovery = composeTurnStagePrompt({
+      ...base,
+      stage: 'recovery',
+      recoveryOriginStage: 'opening',
+      recoveryReasons: ['missing-dispatch']
+    })
+    const verdictRecovery = composeTurnStagePrompt({
+      ...base,
+      stage: 'recovery',
+      recoveryOriginStage: 'verdict',
+      recoveryReasons: ['missing-dispatch']
+    })
+
+    expect(openingRecovery).toMatch(/origin stage:\s*opening/iu)
+    expect(verdictRecovery).toMatch(/origin stage:\s*verdict/iu)
+    expect(openingRecovery).not.toBe(verdictRecovery)
+  })
+})

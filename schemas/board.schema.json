@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/board.schema.json",
+  "title": "SwarmBoard",
+  "type": "object",
+  "required": ["tasks"],
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "publicTitle", "status", "risk", "files"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "publicTitle": { "type": "string", "minLength": 1 },
+          "privateTitle": { "type": "string" },
+          "publicDescription": { "type": "string" },
+          "privateDescription": { "type": "string" },
+          "status": { "enum": ["open", "claimed", "in-progress", "review", "done", "blocked"] },
+          "claimedBy": { "enum": ["claude", "codex", "director", "both", "none"] },
+          "risk": { "enum": ["low", "medium", "high"] },
+          "files": { "type": "array", "items": { "type": "string" } },
+          "privateFiles": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

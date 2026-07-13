@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/settings.schema.json",
+  "title": "DuoChaosSettings",
+  "type": "object",
+  "required": ["codexPath", "claudePath", "gitPath", "nodePath", "npmPath", "codexExtraArgs", "claudeExtraArgs", "codexModel", "codexEffort", "claudeModel", "claudeEffort", "defaultWorkspaceRoot", "defaultExecutionMode", "defaultVisibilityMode", "defaultMissionProfile", "saveRawLogs", "maxTurns", "maxRepairLoops", "turnTimeoutSeconds", "runTimeoutSeconds"],
+  "properties": {
+    "codexPath": { "type": "string", "default": "codex" },
+    "claudePath": { "type": "string", "default": "claude" },
+    "gitPath": { "type": "string", "default": "git" },
+    "nodePath": { "type": "string", "default": "node" },
+    "npmPath": { "type": "string", "default": "npm" },
+    "codexExtraArgs": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "claudeExtraArgs": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "codexModel": { "type": "string", "default": "", "description": "Blank inherits the Codex CLI configuration." },
+    "codexEffort": { "enum": ["default", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "default" },
+    "claudeModel": { "type": "string", "default": "", "description": "Blank inherits the Claude Code configuration." },
+    "claudeEffort": { "enum": ["default", "low", "medium", "high", "xhigh", "max"], "default": "default" },
+    "defaultWorkspaceRoot": { "type": "string" },
+    "defaultExecutionMode": { "enum": ["simulation", "safe", "chaos", "yolo-sandbox"], "default": "simulation" },
+    "defaultVisibilityMode": { "enum": ["blind", "spoiler-shield", "full-chaos"], "default": "spoiler-shield" },
+    "defaultMissionProfile": { "enum": ["surprise", "serious"], "default": "surprise" },
+    "saveRawLogs": { "type": "boolean", "default": false },
+    "maxTurns": { "type": "integer", "minimum": 2, "maximum": 50, "default": 11 },
+    "maxRepairLoops": { "type": "integer", "minimum": 0, "maximum": 10, "default": 2 },
+    "turnTimeoutSeconds": { "type": "integer", "minimum": 30, "maximum": 28800, "default": 7200, "description": "Maximum long-work lease in seconds." },
+    "runTimeoutSeconds": { "type": "integer", "minimum": 60, "maximum": 86400, "default": 86400, "description": "Overall run ceiling in seconds." }
+  },
+  "additionalProperties": false
+}
