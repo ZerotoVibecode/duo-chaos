@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/artifact-preview.schema.json",
+  "title": "ArtifactPreviewResult",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["status", "imageDataUrl", "width", "height", "capturedAt"],
+      "properties": {
+        "status": { "const": "ready" },
+        "imageDataUrl": { "type": "string", "pattern": "^data:image/png;base64," },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "capturedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["status", "reason", "message"],
+      "properties": {
+        "status": { "const": "unavailable" },
+        "reason": { "const": "no-built-artifact" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["status", "reason", "message"],
+      "properties": {
+        "status": { "const": "failed" },
+        "reason": { "enum": ["unsafe-artifact", "capture-failed"] },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/run-state.schema.json",
+  "title": "RunSnapshot",
+  "type": "object",
+  "required": ["runId", "prompt", "executionMode", "visibilityMode", "phase", "status", "round", "startedAt", "workspacePath", "appPath", "tasks", "events"],
+  "properties": {
+    "runId": { "type": "string" },
+    "prompt": { "type": "string" },
+    "executionMode": { "enum": ["simulation", "safe", "chaos", "yolo-sandbox"] },
+    "visibilityMode": { "enum": ["blind", "spoiler-shield", "full-chaos"] },
+    "missionProfile": { "enum": ["surprise", "serious"], "default": "surprise" },
+    "phase": { "enum": ["idle", "preflight", "workspace.create", "workspace.seed", "round.pitch", "round.critique", "round.conflict", "round.consensus", "round.tasking", "round.claim", "round.code", "round.cross-review", "round.repair", "round.verify", "reveal.prepare", "reveal.ready", "paused", "complete", "failed", "cancelled"] },
+    "status": { "enum": ["idle", "running", "paused", "reveal-ready", "complete", "failed", "cancelled"] },
+    "round": { "type": "integer", "minimum": 0 },
+    "totalTurns": { "type": "integer", "minimum": 1 },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "activeTimeMs": { "type": "integer", "minimum": 0 },
+    "workspacePath": { "type": "string" },
+    "appPath": { "type": "string" },
+    "activeAgent": { "enum": ["claude", "codex", "director", "system"] },
+    "turnStage": { "$ref": "#/$defs/turnStage" },
+    "pause": { "$ref": "#/$defs/pause" },
+    "agentRuntimes": {
+      "type": "object",
+      "properties": {
+        "claude": { "$ref": "#/$defs/agentRuntime" },
+        "codex": { "$ref": "#/$defs/agentRuntime" }
+      },
+      "additionalProperties": false
+    },
+    "agentUsage": {
+      "type": "object",
+      "properties": {
+        "claude": { "$ref": "#/$defs/agentUsage" },
+        "codex": { "$ref": "#/$defs/agentUsage" }
+      },
+      "required": ["claude", "codex"],
+      "additionalProperties": false
+    },
+    "releaseStatus": { "enum": ["ready", "partial", "failed"] },
+    "tasks": { "type": "array" },
+    "events": { "type": "array" }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "agentRuntime": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "model": { "type": "string" },
+        "effort": { "enum": ["low", "medium", "high", "xhigh", "max", "ultra"] },
+        "source": { "enum": ["studio", "cli-config", "cli-default"] }
+      },
+      "additionalProperties": false
+    },
+    "turnStage": {
+      "type": "object",
+      "required": ["turnId", "agent", "kind", "stage", "status", "startedAt", "deadlineAt", "attempt"],
+      "properties": {
+        "turnId": { "type": "string" },
+        "agent": { "enum": ["claude", "codex"] },
+        "kind": { "type": "string" },
+        "stage": { "enum": ["dialogue", "opening", "work", "verdict", "recovery"] },
+        "status": { "enum": ["running", "completed", "timeboxed", "paused"] },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "deadlineAt": { "type": "string", "format": "date-time" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "effort": { "type": "string" },
+        "nextAgent": { "enum": ["claude", "codex"] },
+        "durableWorkEvidence": { "type": "boolean" },
+        "evidenceFingerprint": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "pause": {
+      "type": "object",
+      "required": ["reason", "message", "pausedAt", "resumable", "round"],
+      "properties": {
+        "reason": { "enum": ["provider-quota", "provider-auth", "provider-unavailable", "model-unavailable", "cli-incompatible", "provider-protocol", "session-lost", "stage-timeout", "host-interrupted", "workspace-drift", "verification-failed", "unknown"] },
+        "provider": { "enum": ["claude", "codex"] },
+        "message": { "type": "string", "minLength": 1 },
+        "pausedAt": { "type": "string", "format": "date-time" },
+        "resetAt": { "type": "string", "format": "date-time" },
+        "resumable": { "type": "boolean" },
+        "round": { "type": "integer", "minimum": 0 },
+        "stage": { "enum": ["dialogue", "opening", "work", "verdict", "recovery"] },
+        "checkpoint": { "type": "string" },
+        "action": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "agentUsage": {
+      "type": "object",
+      "required": ["processedInputTokens", "cachedInputTokens", "outputTokens", "reasoningTokens", "calls", "largestRawLineBytes"],
+      "properties": {
+        "processedInputTokens": { "type": "integer", "minimum": 0 },
+        "cachedInputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "reasoningTokens": { "type": "integer", "minimum": 0 },
+        "calls": { "type": "integer", "minimum": 0 },
+        "largestRawLineBytes": { "type": "integer", "minimum": 0 },
+        "reportedCostUsd": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

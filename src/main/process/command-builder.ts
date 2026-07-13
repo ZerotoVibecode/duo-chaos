@@ -1,0 +1,191 @@
+import type { AgentEffort, CodexEffort, ExecutionMode } from '@shared/types'
+
+export interface StructuredDialoguePolicy {
+  kind: 'structured-dialogue' | 'structured-recovery'
+  outputSchema: Record<string, unknown>
+  outputSchemaPath: string
+  toolPolicy: 'none'
+}
+
+interface BuildAgentCommandBase {
+  executionMode: Exclude<ExecutionMode, 'simulation'>
+  binary: string
+  workspacePath: string
+  prompt: string
+  dangerousModeConfirmed: boolean
+  model?: string
+  extraArgs: string[]
+  dialoguePolicy?: StructuredDialoguePolicy
+  sourcePolicy?: {
+    toolPolicy: 'workspace-essential'
+  }
+  session?:
+    | { mode: 'start'; id?: string }
+    | { mode: 'resume'; id: string }
+}
+
+export type BuildAgentCommandInput = BuildAgentCommandBase & (
+  | { agent: 'codex'; effort?: CodexEffort }
+  | { agent: 'claude'; effort?: AgentEffort }
+)
+
+export interface AgentCommand {
+  bin: string
+  args: string[]
+  cwd: string
+  stdin?: string
+}
+
+export class CommandBuildError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CommandBuildError'
+  }
+}
+
+const EXACT_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function assertSession(input: BuildAgentCommandInput): void {
+  const session = input.session
+  if (!session) return
+  if (session.mode === 'resume' && !EXACT_SESSION_ID.test(session.id)) {
+    throw new CommandBuildError('A resume session identifier must be an exact UUID.')
+  }
+  if (session.mode === 'start' && session.id !== undefined && !EXACT_SESSION_ID.test(session.id)) {
+    throw new CommandBuildError('A start session identifier must be an exact UUID when provided.')
+  }
+}
+
+function assertInput(input: BuildAgentCommandInput): void {
+  if (!input.binary.trim()) throw new CommandBuildError('A CLI binary is required.')
+  if (!input.workspacePath.trim()) throw new CommandBuildError('A workspace path is required.')
+  if (!input.prompt.trim()) throw new CommandBuildError('A turn prompt is required.')
+  if (input.agent === 'claude' && (input.effort as string | undefined) === 'ultra') {
+    throw new CommandBuildError('Claude automated runs support effort through Max; Ultra is Codex-only.')
+  }
+  if (input.executionMode === 'yolo-sandbox' && !input.dangerousModeConfirmed) {
+    throw new CommandBuildError('YOLO Sandbox requires explicit disposable-environment confirmation.')
+  }
+  if (input.dialoguePolicy) {
+    if (input.session) throw new CommandBuildError('Structured dialogue must use one ephemeral, tool-free response without a resumable session.')
+    if (!input.dialoguePolicy.outputSchemaPath.trim()) throw new CommandBuildError('Structured Codex dialogue requires an output schema path.')
+    if (Object.keys(input.dialoguePolicy.outputSchema).length === 0) throw new CommandBuildError('Structured dialogue requires a non-empty output schema.')
+  }
+  if (input.dialoguePolicy && input.sourcePolicy) {
+    throw new CommandBuildError('A command cannot be both tool-free dialogue and a source contribution.')
+  }
+  if (input.sourcePolicy && input.session) {
+    throw new CommandBuildError('Lean source contributions use a fresh compact session and cannot resume provider history.')
+  }
+  assertSession(input)
+}
+
+function structuredOutputPrompt(prompt: string, kind: StructuredDialoguePolicy['kind']): string {
+  const label = kind === 'structured-recovery' ? 'recovery capsule' : 'dialogue capsule'
+  return `Return exactly one ${label} that satisfies the supplied JSON schema.
+Do not inspect, edit, or run workspace tools. Do not read files, execute commands, browse, or start a tool loop.
+Answer only from the human brief and teammate context included below. Return JSON only, with no prose wrapper or markdown fence.
+
+${prompt}`
+}
+
+export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
+  assertInput(input)
+  const model = input.model?.trim()
+  const effort = input.effort && input.effort !== 'default' ? input.effort : undefined
+  const dialoguePolicy = input.dialoguePolicy
+  const sourcePolicy = input.sourcePolicy
+  const prompt = dialoguePolicy ? structuredOutputPrompt(input.prompt, dialoguePolicy.kind) : input.prompt
+  // Supervised runs are a closed command contract. Legacy extra-argument fields
+  // remain loadable for settings compatibility, but never enter a child command:
+  // they could override the visible model, effort, sandbox, tools, or consent.
+  const extraArgs: string[] = []
+
+  if (input.agent === 'codex') {
+    const safetyArgs =
+      dialoguePolicy
+        ? ['--ask-for-approval', 'never', '--sandbox', 'read-only']
+        : input.executionMode === 'yolo-sandbox'
+        ? ['--dangerously-bypass-approvals-and-sandbox']
+        : ['--ask-for-approval', 'never', '--sandbox', 'workspace-write']
+    const leanContextArgs = [
+      '--disable', 'plugins',
+      '--disable', 'apps',
+      '--disable', 'multi_agent',
+      '--disable', 'hooks',
+      ...(dialoguePolicy ? ['--disable', 'shell_tool'] : []),
+      '-c', 'skills.include_instructions=false',
+      '-c', 'mcp_servers={}'
+    ]
+    const executionArgs = [
+      // Generated workspaces intentionally keep Git metadata outside the
+      // agent-writable tree. Tell Codex that the supervisor has already
+      // established the trust boundary instead of requiring a local .git.
+      '--skip-git-repo-check',
+      ...(input.session?.mode === 'resume'
+        ? ['resume', '--json', ...extraArgs, input.session.id, input.prompt]
+        : [
+          ...(dialoguePolicy ? ['--ignore-user-config', '--ignore-rules'] : []),
+          '--json',
+          ...(input.session?.mode === 'start' ? [] : ['--ephemeral']),
+          ...(dialoguePolicy ? ['--output-schema', dialoguePolicy.outputSchemaPath] : []),
+          ...extraArgs,
+          prompt
+        ])
+    ]
+    return {
+      bin: input.binary,
+      args: [
+        ...safetyArgs,
+        ...leanContextArgs,
+        ...(model ? ['--model', model] : []),
+        ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []),
+        '--cd',
+        input.workspacePath,
+        'exec',
+        ...executionArgs
+      ],
+      cwd: input.workspacePath
+    }
+  }
+
+  const permissionMode =
+    input.executionMode === 'yolo-sandbox'
+      ? ['--dangerously-skip-permissions']
+      : ['--permission-mode', input.executionMode === 'safe' ? 'acceptEdits' : 'auto']
+  const sessionArgs = input.session?.mode === 'resume'
+    ? ['--resume', input.session.id]
+    : input.session?.mode === 'start'
+      ? input.session.id ? ['--session-id', input.session.id] : []
+      : ['--no-session-persistence']
+  return {
+    bin: input.binary,
+    args: [
+      '--print',
+      '--input-format',
+      'text',
+      '--output-format',
+      dialoguePolicy ? 'json' : 'stream-json',
+      '--verbose',
+      // `--bare` also disables OAuth and keychain reads. Safe mode gives us
+      // the lean, customization-free context without breaking subscription
+      // authentication for local Claude Code users.
+      '--safe-mode',
+      '--disable-slash-commands',
+      '--exclude-dynamic-system-prompt-sections',
+      '--prompt-suggestions',
+      'false',
+      ...permissionMode,
+      ...sessionArgs,
+      ...(dialoguePolicy ? ['--tools', '', '--json-schema', JSON.stringify(dialoguePolicy.outputSchema)] : []),
+      ...(sourcePolicy?.toolPolicy === 'workspace-essential'
+        ? ['--tools', 'Read,Glob,Grep,Edit,Write,Bash']
+        : []),
+      ...(model ? ['--model', model] : []),
+      ...(effort ? ['--effort', effort] : []),
+      ...extraArgs
+    ],
+    cwd: input.workspacePath,
+    stdin: prompt
+  }
+}

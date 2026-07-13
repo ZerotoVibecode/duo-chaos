@@ -1,0 +1,29 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="82" y1="56" x2="448" y2="472" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171C2B"/>
+      <stop offset="1" stop-color="#07090F"/>
+    </linearGradient>
+    <linearGradient id="claude" x1="116" y1="164" x2="284" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD39A"/>
+      <stop offset="1" stop-color="#FF9B52"/>
+    </linearGradient>
+    <linearGradient id="codex" x1="228" y1="158" x2="406" y2="356" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B9F5FF"/>
+      <stop offset="1" stop-color="#42C9F0"/>
+    </linearGradient>
+    <filter id="glow" x="68" y="86" width="376" height="346" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="118" fill="url(#bg)"/>
+  <rect x="25" y="25" width="462" height="462" rx="117" stroke="white" stroke-opacity=".12" stroke-width="2"/>
+  <g opacity=".28" filter="url(#glow)">
+    <path d="M111 256L206 151L305 256L206 361L111 256Z" fill="#FFAC66"/>
+    <path d="M207 256L306 151L405 256L306 361L207 256Z" fill="#6DDEFA"/>
+  </g>
+  <path d="M104 256L205 146L308 256L205 366L104 256Z" fill="url(#claude)" fill-opacity=".18" stroke="url(#claude)" stroke-width="15" stroke-linejoin="round"/>
+  <path d="M204 256L307 146L408 256L307 366L204 256Z" fill="url(#codex)" fill-opacity=".18" stroke="url(#codex)" stroke-width="15" stroke-linejoin="round"/>
+  <circle cx="256" cy="256" r="15" fill="#B9A4FF"/>
+  <circle cx="256" cy="256" r="31" stroke="#B9A4FF" stroke-opacity=".3" stroke-width="3"/>
+</svg>

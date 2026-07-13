@@ -1,0 +1,199 @@
+import type { MissionProfile, TurnStageName } from '@shared/types'
+import type { RealTurn } from './real-turn-plan'
+
+export interface ComposeTurnStagePromptInput {
+  runId: string
+  round: number
+  turn: RealTurn
+  stage: TurnStageName
+  humanBrief: string
+  latestStatement: string
+  latestStatementId?: string
+  board: string
+  finalTurn: boolean
+  missionProfile?: MissionProfile
+  recoveryReasons?: string[]
+  recoveryOriginStage?: TurnStageName
+  quotaHandoffFrom?: 'claude' | 'codex'
+  leanContribution?: boolean
+}
+
+function missionContract(input: ComposeTurnStagePromptInput): string {
+  if (input.missionProfile === 'serious') {
+    return `MISSION PROFILE — SERIOUS BUILD
+The HUMAN BRIEF is a binding product brief. Preserve its requested product, outcomes, constraints, and stated requirements.
+- Do not replace the requested product with a different idea, even if another idea seems more entertaining.
+- Debate architecture, UX, implementation strategy, scope, and tradeoffs; the product itself is not up for replacement.
+- At consensus, put concrete acceptance checks for every stated requirement inside the sealed specification.
+- During source work and review, use those acceptance checks to decide what is complete.`
+  }
+  return `MISSION PROFILE — SURPRISE BUILD
+The HUMAN BRIEF is creative direction. Secretly invent and choose the product, then keep the winning scope compact, buildable, and surprising.`
+}
+
+function dispatchContract(input: ComposeTurnStagePromptInput, kind: 'opening' | 'verdict' | 'closing'): string {
+  const other = input.turn.agent === 'claude' ? 'codex' : 'claude'
+  const suffix = input.stage === 'recovery'
+    ? `-recovery-${input.recoveryOriginStage ?? 'stage'}`
+    : `-${input.stage}`
+  const replyTo = input.latestStatementId ? `"${input.latestStatementId}"` : 'null'
+  return `Append a spoiler-safe public dispatch to .duo/public/dispatches.jsonl and its detailed private counterpart to .duo/private/dispatches.jsonl.
+Use this shape: {"id":"${input.turn.agent}-r${String(input.round)}-${kind}${suffix}","type":"agent.dispatch","agent":"${input.turn.agent}","targetAgent":"${other}","round":${String(input.round)},"dispatchKind":"${kind}","claimKey":"shared-topic","replyTo":${replyTo},"publicText":"I think ... because ...","spoilerRisk":0.0}
+Append one spoiler-safe opinion to .duo/public/opinions.jsonl and its detailed private counterpart to .duo/private/opinions.jsonl. Use type opinion, this agent, this round, a valid tone, and a stable unique id.`
+}
+
+function revealPacketContract(): string {
+  return `FINAL REVEAL CONTRACT
+Write .duo/sealed/reveal_packet.json with this exact shape and factual values from the finished workspace:
+{"appName":"Product name","idea":"What it is","summary":"What survived","features":["Shipped feature"],"runCommand":"Exact runnable command or direct HTML instruction","appPath":"Workspace-relative runnable path","status":"ready","whatWorked":["Verified result"],"knownIssues":[],"agentDramaSummary":["Factual disagreement and resolution"],"gitCheckpoints":["Checkpoint hash"],"agentQuotes":{"claude":"Real final Claude statement","codex":"Real final Codex statement"}}
+Use status ready only when the runnable artifact and checks support it; otherwise use partial or failed and name the caveats. Do not use the run-folder name as appName.`
+}
+
+function common(input: ComposeTurnStagePromptInput): string {
+  const other = input.turn.agent === 'claude' ? 'Codex' : 'Claude Code'
+  return `# Duo Chaos — broadcast turn
+Run: ${input.runId}
+Round: ${String(input.round)}
+Turn: ${input.turn.kind}
+Stage: ${input.stage}
+Agent: ${input.turn.agent}
+
+HUMAN BRIEF
+${input.humanBrief}
+
+${missionContract(input)}
+
+GOAL
+${input.turn.goal}
+
+LATEST ${other.toUpperCase()} STATEMENT
+${input.latestStatement}
+Reply to the latest statement directly when it exists. Do not merely summarize it.
+
+BOARD
+${input.board}
+${input.quotaHandoffFrom
+    ? `\nQUOTA HANDOFF\n${input.quotaHandoffFrom === 'claude' ? 'Claude' : 'Codex'} is provider-limited. Claim any released task needed to finish the shared build; preserve completed work and do not wait for that agent.`
+    : ''}
+
+BOUNDARIES
+- Stay inside this workspace. Never inspect runtime telemetry directories or parent/sibling directories.
+- Do not ask the human for product decisions.
+- Both agents design and code. Preserve the teammate's accepted work.
+- Keep hidden nouns private. Public text uses [APP_NAME], [FEATURE], [DOMAIN], or [REDACTED].
+- Use direct teammate language: "I think X because Y" or "I agree, but change Z." Never invent emotion, confidence, a winner, or a concession.
+- During workspace-enabled stages, keep .duo/board.json accurate. Public text never contains hidden names, private paths, secrets, or private implementation details.`
+}
+
+function dialogueCapsuleContract(input: ComposeTurnStagePromptInput): string {
+  const serious = input.missionProfile === 'serious'
+  const pitchContract = input.turn.kind === 'pitch'
+    ? serious
+      ? 'Include `pitches` with exactly two compact private solution approaches for the requested product. Compare architecture, UX, or implementation strategy; neither candidate may replace the product. Each needs title, idea, appeal, and risk.'
+      : 'Include `pitches` with exactly two compact private product candidates. Each needs title, idea, appeal, and risk.'
+    : 'Set `pitches` to an empty array unless presenting a genuinely new candidate.'
+  const consensusContract = input.turn.phase === 'round.consensus'
+    ? `Include \`consensus\` with appName, idea, summary, an implementation-ready spec, and redaction terms.${serious ? ' The spec must be at least 120 characters, reuse the brief’s important product terms, and end with an "Acceptance checks" section containing at least two specific bullet checks that cover the stated requirements.' : ''} Include exactly two similarly weighted source-changing tasks: one claimed by claude and one by codex; every task includes \`files\` (use [] only when undecided).`
+    : 'Set `consensus` to null. Keep `tasks` empty until the direction is sealed.'
+  return `DIALOGUE CAPSULE CONTRACT
+Return exactly one schema-valid JSON object. The orchestrator will persist it; you have no workspace tools in this stage.
+- This capsule represents one real agent statement, not a synthetic conversation. Do not simulate or invent the teammate's reply.
+- The orchestrator persists exactly one speech field: opening for a first position, counter for a reply, or verdict for consensus.
+- opening: a concise first-person first position.
+- counter: a concise direct reply with the strongest concrete tradeoff, correction, or synthesis.
+- verdict: a concise consensus decision the next agent can act on.
+- Keep the two non-selected speech fields short and contract-safe; they are fallbacks, not additional turns.
+- opinion: one honest product/build judgment with a valid tone.
+- Public text is 12–28 words, spoiler-safe, and uses [APP_NAME], [FEATURE], [DOMAIN], or [REDACTED].
+- Private text names the real idea and implementation detail directly.
+- The redactions array lists every private pitch title, chosen app name, and distinctive mechanic/product term that public text must not reveal.
+- Do not manufacture agreement. Respond to the teammate context above in plain language.
+${pitchContract}
+${consensusContract}`
+}
+
+function stagedRecoveryCapsuleContract(input: ComposeTurnStagePromptInput): string {
+  const needsOpinion = input.recoveryReasons?.includes('missing-opinion') ?? false
+  return `RECOVERY CAPSULE CONTRACT
+Origin stage: ${input.recoveryOriginStage ?? 'staged handoff'}.
+Return exactly one schema-valid JSON object. The orchestrator—not this agent—will persist the repaired collaboration record.
+- dispatch.publicText: one concise, direct, spoiler-safe teammate handoff using [APP_NAME], [FEATURE], [DOMAIN], or [REDACTED].
+- dispatch.privateText: the same authentic handoff with the real implementation detail.
+- opinion: ${needsOpinion ? 'one honest build judgment with publicText, privateText, and a valid tone.' : 'null; this recovery does not require a duplicate opinion.'}
+- redactions: every distinctive private product or mechanic term used by the capsule.
+- Do not include IDs, paths, tasks, consensus, commands, or file operations. The supervisor derives all protocol metadata.
+- Do not simulate the teammate or repeat implementation. Repair only the missing coordination statement.`
+}
+
+export function composeTurnStagePrompt(input: ComposeTurnStagePromptInput): string {
+  const header = common(input)
+  if (input.stage === 'opening') {
+    return `${header}
+
+OPENING CONTRACT
+Before any source work, tests, or broad inspection, file one direct opening or counter-position that makes the upcoming work legible on camera.
+${dispatchContract(input, 'opening')}
+Stop immediately after those coordination records are valid. Do not edit app source in this stage.`
+  }
+
+  if (input.stage === 'work') {
+    if (input.leanContribution) {
+      return `${header}
+
+COHESIVE CONTRIBUTION
+This is one fresh, self-contained source contribution. Do not expect a later paid opening or verdict call.
+- State your direct answer to the teammate's latest position, then act on it.
+- Read .duo/sealed/idea.md, .duo/sealed/spec.md, and .duo/board.json before choosing the implementation boundary. The complete sealed decision outranks a shortened handoff.
+- Batch independent reads and searches. Inspect only files needed for this mission; do not tour the repository.
+- Git metadata is supervisor-private and intentionally absent here. Do not run Git commands; inspect and verify the workspace files directly.
+- Preserve accepted teammate work. For an integration turn, review that work before adding your distinct slice.
+- Claim or update your matching task in .duo/board.json, implement the goal, and run the smallest useful verification set.
+- Finish by appending one concise, reply-linked handoff that says what you accepted, challenged, changed, verified, and what remains.
+${dispatchContract(input, input.latestStatementId ? 'verdict' : 'opening')}
+${input.missionProfile === 'serious' ? 'The human brief and sealed acceptance checks are binding. Improve the solution without substituting a different product. Apply the same premium quality floor: a distinctive, polished result, one signature interaction where appropriate, deliberate visual direction, accessible controls, and a runnable finish.' : 'Elevate a vague brief into a distinctive, polished product: one signature interaction, deliberate visual direction, accessible controls, and a runnable finish.'}
+The supervisor builds the reveal packet from verified evidence. Do not spend time authoring presentation metadata or replaying work in a separate verdict.`
+    }
+    return `${header}
+
+WORK LEASE
+Implement the distinct source-changing goal and produce real workspace evidence. Do not redo or reopen the settled product decision unless the current build proves it impossible.
+Read .duo/sealed/idea.md, .duo/sealed/spec.md, and .duo/board.json before choosing the implementation boundary.
+Claim or update the matching task in .duo/board.json, keep the teammate's slice intact, run the most useful available checks, and leave the workspace in a recoverable state.
+${input.missionProfile === 'serious' ? 'Treat the sealed acceptance checks as binding: preserve the requested product and verify the requirements touched by this slice.' : ''}
+After a meaningful milestone, you may append one concise update/evidence dispatch. Do not fabricate heartbeat messages or repeat the opening contract.
+${input.finalTurn ? revealPacketContract() : ''}`
+  }
+
+  if (input.stage === 'verdict') {
+    return `${header}
+
+VERDICT / HANDOFF
+No source edits and no new test run in this stage. State what changed, what remains uncertain, and the exact next move for the other agent.
+${dispatchContract(input, 'verdict')}
+${input.finalTurn ? revealPacketContract() : ''}
+Stop immediately after the verdict and opinion records are valid.`
+  }
+
+  if (input.stage === 'recovery') {
+    if (input.recoveryOriginStage === 'dialogue') {
+      return `${header}
+
+CONTRACT-ONLY RECOVERY — STRUCTURED DIALOGUE
+The previous response was missing or invalid: ${(input.recoveryReasons ?? []).join(', ') || 'structured dialogue capsule'}.
+Do not inspect or edit the workspace. Correct only the response contract and return one complete capsule.
+${dialogueCapsuleContract(input)}`
+    }
+    return `${header}
+
+CONTRACT-ONLY RECOVERY
+The completed stage was missing: ${(input.recoveryReasons ?? []).join(', ') || 'required coordination records'}.
+Do not inspect or edit the app, do not run tests, and do not repeat implementation. Use only the human brief and teammate context already supplied above.
+${stagedRecoveryCapsuleContract(input)}`
+  }
+
+  return `${header}
+
+DIALOGUE CONTRACT
+This is a substantive but time-bounded product discussion. Challenge the latest statement with concrete product and build reasoning, then move the shared direction toward a decision.
+${dialogueCapsuleContract(input)}`
+}

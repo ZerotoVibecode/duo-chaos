@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://duochaos.studio/schemas/public-event.schema.json",
+  "title": "Renderer-safe Duo Event",
+  "type": "object",
+  "required": ["id", "type", "runId", "round", "timestamp", "agent", "publicText", "spoilerRisk", "severity"],
+  "properties": {
+    "id": { "type": "string" },
+    "type": { "type": "string" },
+    "runId": { "type": "string" },
+    "round": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "agent": { "enum": ["claude", "codex", "director", "system"] },
+    "publicText": { "type": "string" },
+    "spoilerRisk": { "type": "number", "minimum": 0, "maximum": 1 },
+    "severity": { "enum": ["low", "medium", "high", "critical"] },
+    "rawAvailable": { "type": "boolean" }
+  },
+  "not": { "anyOf": [{ "required": ["privateText"] }, { "required": ["revealPacket"] }, { "required": ["metadata"] }] },
+  "additionalProperties": true
+}
