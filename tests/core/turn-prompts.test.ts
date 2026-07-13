@@ -103,6 +103,27 @@ describe('turn stage prompts', () => {
     expect(prompt).toMatch(/accessible controls/i)
   })
 
+  it('keeps Smart toolbelts selective and Broad toolbelts proactive without capability inventory', () => {
+    const smart = composeTurnStagePrompt({
+      ...base,
+      stage: 'work',
+      leanContribution: true,
+      customizationProfile: 'smart'
+    })
+    const broad = composeTurnStagePrompt({
+      ...base,
+      stage: 'work',
+      leanContribution: true,
+      customizationProfile: 'full-local'
+    })
+
+    expect(smart).toMatch(/on demand.*reduce uncertainty|only when.*reduce uncertainty/is)
+    expect(smart).not.toMatch(/proactively consider/i)
+    expect(broad).toMatch(/proactively consider.*already-available.*(?:skill|plugin|mcp)/is)
+    expect(broad).toMatch(/never inventory|do not inventory/i)
+    expect(broad).toMatch(/never invoke subagents|do not.*subagents/i)
+  })
+
   it('frames a structured capsule as one real turn instead of a synthetic three-message exchange', () => {
     const prompt = composeTurnStagePrompt({
       ...base,

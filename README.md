@@ -18,7 +18,7 @@ The app drives the CLIs already installed and authenticated on your machine. It 
 - A full-text criticism feed exposes product and engineering disagreements without attacking personalities or clipping long statements.
 - Real Mode watches the shared protocol continuously, so spoiler-safe opinions, CLI activity, tasks, and build pressure appear during long agent turns rather than after they finish.
 - Claude and Codex alternate every accepted Real Mode call. Dialogue contract failures get one narrow, schema-constrained recovery with every workspace tool disabled, so expensive implementation is not repeated. A provider quota rejection pauses the whole balanced duel with durable work preserved—no doomed fresh retry and no silent solo takeover.
-- Product debate uses one schema-constrained, tool-free capsule per call. Source work uses a fresh compact provider context with only essential workspace tools, keeping selected Max/Ultra effort concentrated on implementation and evidenced repairs. Review is capped at High. The default long-work lease is two hours and the independent overall run ceiling is 24 hours.
+- Product debate uses one schema-constrained, tool-free capsule per call. Source and review work use fresh compact contexts and a user-approved toolbelt. The default Smart profile supplies Duo's compact quality skill plus configured plugins, apps, and MCPs without advertising every user skill; Broad restores that full catalog only when its higher context cost is justified. Balanced quality routing runs long Claude implementation at High while retaining the selected premium effort as a quality ceiling for bounded review. The default wall-clock work lease is two hours, Claude source capsules also have an inference-message lease, and the independent overall run ceiling is 24 hours.
 - Spoiler Shield keeps the generated idea hidden while preserving the drama.
 - Recent Builds shows the latest eight local runs, restores cancelled/interrupted prompts without exposing sealed ideas, resumes durable paused battles from their saved logical turn, returns restart-interrupted reveal-ready runs to the Reveal button, retains privacy-safe proof summaries, and can reopen completed workspaces.
 - Provider-reported token usage and contribution evidence remain visible per agent; Duo does not invent prices that a CLI did not report.
@@ -29,7 +29,7 @@ The app drives the CLIs already installed and authenticated on your machine. It 
 - Explicit model and effort controls include Sol Ultra, Fable Max, and a custom model-ID path for newer CLI-supported models.
 - Stop requires a permanent-cancellation confirmation, then terminates active child processes, preserves the workspace, and returns you to an editable prompt. A stopped battle cannot be resumed.
 - The dashboard adapts from a compact 1000×700 window to large full-screen displays.
-- A responsive readability scale keeps interface text at 10px or larger while preserving compact and full-screen layouts.
+- A responsive readability scale keeps interface text at 11px or larger while preserving compact and full-screen layouts.
 - Every run gets a fresh local workspace and Git checkpoints. Supervisor timelines, prompts, transcripts, and raw streams live in Electron's private application-data directory, outside the workspace the agents can inspect. Private, sealed, task-board, claim, and lock coordination stays local but is forcibly excluded from every generated-workspace checkpoint, even if an agent tries to stage it.
 
 ## Quick start
@@ -92,15 +92,32 @@ Simulation is a workflow rehearsal, not a product generator. A Serious + Simulat
 
 Model names are passed through to the installed CLI. Effort choices are constrained per selected model, so `ultra` appears only when that local Codex model advertises it and stale incompatible choices reset to **CLI default**. Internal hidden Codex entries and unknown effort values are filtered out. Claude Code's automated effort flag currently supports values through `max`; interactive Ultracode is not sent as an unsupported `--effort` value.
 
-The live agent cards show provider-reported processed input, cached input, output, call counts, and reported cost when a CLI supplies it. These numbers are telemetry, not estimates. The selected Max/Ultra effort is preserved where it affects the artifact—implementation, visual polish, and evidenced repair—while routine debate and verification use bounded stage-specific effort. This cuts tool-loop waste without silently downgrading the build itself.
+The live agent cards show provider-reported processed input, cached input, output, call counts, and reported cost when a CLI supplies it. These numbers are telemetry, not estimates. The selected premium model remains active, while Balanced routing uses stage-specific effort: Codex source work keeps its selected effort, long Claude implementation is capped at High, and bounded Claude review may use the selected premium ceiling. Routine debate and verification stay lower. This cuts tool-loop waste without silently changing the selected model.
+
+### Toolbelts and quality routing
+
+Real Mode offers three source-stage toolbelt profiles:
+
+| Toolbelt | Behavior |
+| --- | --- |
+| Core | Uses only the supervised workspace tools required for the source task. User skills, plugins, apps, MCP servers, hooks, and hidden subagents remain disabled. |
+| Smart (default) | Uses Duo's compact app-owned `duo-quality` skill plus connected MCP, app, and plugin-provided tools when useful. User and plugin skill/command catalogs are suppressed to avoid advertising a large inventory on every call. Generated-workspace project/local settings, hooks, and hidden subagents remain disabled. |
+| Broad | Loads the full user and plugin skill catalogs as well as connected tools. This is the high-context, high-quota option for missions that genuinely need the wider toolbelt; generated-workspace project/local settings, hooks, and hidden subagents still remain disabled. |
+
+Smart and Broad require an explicit **Trust my local CLI capabilities** confirmation before a Real Mode run can start. Duo does not inventory capability names or credentials for the dashboard. The local CLI decides which configured capability to invoke, and those tools can access whatever the user previously authorized in that CLI. Duo requests that user/plugin hooks stay disabled; organization-managed CLI policy remains authoritative and may enforce managed hooks. Structured debate and contract recovery always remain tool-free and isolated, regardless of the selected toolbelt.
+
+Safe Mode is Core-only because an unattended Claude `-p` process cannot ask the human to approve an MCP tool call. Choose Chaos (the normal autonomous workspace mode) for Smart or Broad capabilities. The sanitized child environment intentionally does not forward arbitrary credential environment variables; capabilities must authenticate through the CLI's own supported user configuration/keychain path. This keeps host secrets out of generated workspaces.
+
+**Balanced** quality routing is the recommended default: long Claude implementation is capped at High, routine debate and verification are lower, and the selected premium effort remains visible as the quality ceiling for bounded review. **Always use selected effort** removes that routing cap and can consume substantially more quota during long tool loops.
 
 ### Token and quota behavior
 
 - Claude debate receives an empty tool set. Codex debate disables the shell feature and uses a stage-specific output schema: pitch turns structurally require two pitches and forbid tasks/consensus, while consensus turns require the sealed decision shape. Any remaining observed command/file activity still rejects the capsule.
 - The capsule retains two private pitches, direct opening/counter/verdict speech, an opinion, and—at consensus—the chosen name, sealed spec, redactions, and balanced task split.
 - If a provider omits a private candidate title from its redaction list, the supervisor adds a canonical title locally before public projection, reserves redaction capacity for mandatory names, and compares punctuation-normalized whole phrases. This strengthens Spoiler Shield without another model call or changing the agent's statement.
-- Source work starts from a fresh compact context, batches reads and searches, and uses only essential workspace tools. It does not replay the full debate or a growing provider transcript.
-- Claude automated source calls use fresh no-session-persistence mode with a small Read/Glob/Grep/Edit/Write/Bash tool set. Safe mode keeps local OAuth/keychain authentication available while prompt suggestions, project/global skills, plugins, hooks, MCP servers, and auto-memory stay disabled.
+- Source work starts from a fresh compact context and a supervisor-built focus baton containing the owned task, current board, bounded app inventory, and latest verification result. It does not replay the full debate or a growing provider transcript.
+- Core toolbelt calls keep all user capabilities disabled and limit Claude to Read/Glob/Grep/Edit/Write/Bash. Smart source calls use the app-owned `duo-quality` skill plus configured plugins, apps, and MCP tools while suppressing the global user-skill catalog. Broad restores that full catalog and therefore carries a substantially larger context and quota risk. Generated-workspace project/local settings, hooks, hidden subagents, and prompt suggestions remain disabled in every profile.
+- Claude source work has an internal inference-message lease in addition to its wall-clock lease. At the configured boundary Duo waits for every in-flight Bash, Skill, MCP, or edit tool result, preserves durable work, and hands off. If no durable edit has landed, one fresh compact capsule continues the same owned task; a second empty boundary pauses safely instead of ending the run.
 - Provider quota warnings appear as live pressure events. A hard rejection pauses the entire duel before the opponent moves. The workspace, balanced turn cursor, usage, and evidence remain resumable; Duo neither retries blindly nor permits a one-agent takeover.
 - Restored lean battles continue at the saved call boundary from Git plus a compact evidence baton. Legacy staged battles retain their exact work/verdict/recovery cursor. Previously recorded protocol is re-projected through the current Spoiler Shield.
 - Recoverable authentication, model, compatibility, provider, session, host, and protocol boundaries pause with a specific action. Object/array/mixed provider output is replayed from the bounded local spool before any contract-recovery call.
@@ -108,7 +125,7 @@ The live agent cards show provider-reported processed input, cached input, outpu
 
 ## Pause, resume, stop
 
-A recoverable provider or host boundary creates **Battle suspended**, not **Failed**. Active elapsed time freezes, the supervisor persists a versioned manifest and append-only journal outside the workspace, and **Resume battle** continues the same logical turn before the opponent moves. Active runs found after an app restart are reconstructed as paused rather than auto-running provider calls in the background. If the generated app no longer matches its recorded checkpoint, Resume hard-stops instead of silently discarding possible human edits.
+A recoverable provider or host boundary creates **Battle suspended**, not **Failed**. Active elapsed time freezes, the supervisor persists a versioned manifest and append-only journal outside the workspace, and **Resume battle** continues the same logical turn before the opponent moves. The pinned models, selected effort ceilings, toolbelt profiles, quality routing, Claude inference lease, current stage receipt, and durable evidence survive the pause and app restart. Active runs found after an app restart are reconstructed as paused rather than auto-running provider calls in the background. If source differs from the last checkpoint after a hard interruption, Duo surfaces **Workspace changed outside the battle** and preserves the current tree. An explicit Resume adopts it into a new Git boundary, invalidates old verification, and reconciles the same logical turn instead of hiding or discarding the work.
 
 Pause and Stop are intentionally different. Stop is a human cancellation:
 
@@ -128,6 +145,8 @@ See [docs/PUBLIC_BETA_OPERATIONS.md](docs/PUBLIC_BETA_OPERATIONS.md) for the exa
 - Private event text and reveal packets stay in the main process until reveal.
 - Child processes use `shell: false`, sanitized environments, timeouts, and process-tree cancellation.
 - Workspace-write modes are scoped to a fresh run directory.
+- Smart/Broad toolbelts can invoke user-authorized local CLI capabilities whose access extends beyond that directory. Smart keeps the global user-skill catalog suppressed; Broad loads it and can consume substantially more context and quota. Enable either only after reviewing the CLI's own user configuration; Duo never imports generated-workspace settings or hooks into a supervised run.
+- Raw provider payload, private metadata, capability configuration, and credentials never cross the preload bridge, including in Full Chaos and after reveal. The renderer receives only projected public records and explicit reveal-safe data.
 - YOLO mode is not host isolation. Use a disposable VM, container, or devcontainer.
 - Generated code and dependency scripts remain untrusted until reviewed.
 
@@ -143,6 +162,7 @@ npm run test:coverage
 npm run build
 npm run test:e2e
 npm run benchmark:receipts
+npm run benchmark:quality
 npm run pack
 ```
 
@@ -151,6 +171,8 @@ npm run pack
 CI also runs `npm run pack` on Windows to verify that Electron Builder can assemble an unpacked application. This packaging check does not claim that the installer or packaged binary has been launched; perform that smoke test on the intended release machine before publishing an installer.
 
 `npm run benchmark:receipts` is offline by default. With no arguments it compares deterministic synthetic receipts and makes zero provider calls. Pass saved, privacy-safe receipt JSON files to compare Duo readiness, contribution balance, verification, provider-reported usage/calls, and active elapsed time. See [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
+
+`npm run benchmark:quality` is a deterministic architecture-contract benchmark with zero provider calls. It checks that a bounded-context candidate retains every fixture quality gate before reporting context and usage reductions; it explicitly rejects Claude, direct-API, and Sol-Ultra command selections. Synthetic results validate the benchmark plumbing, not future model quality or token savings.
 
 ## Architecture
 

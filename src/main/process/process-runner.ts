@@ -20,6 +20,7 @@ export interface ProcessRunResult {
   signal: NodeJS.Signals | null
   timedOut: boolean
   cancelled: boolean
+  cancelReason?: 'user' | 'lease'
   outputLimitExceeded?: {
     stream: 'stdout' | 'stderr'
     boundary: 'pending-line' | 'raw-log'
@@ -36,6 +37,7 @@ export interface ProcessRunResult {
 interface ActiveProcess {
   child: ChildProcess
   cancelRequested: boolean
+  cancelReason?: 'user' | 'lease'
 }
 
 const ALLOWED_ENVIRONMENT_NAMES = new Set([
@@ -53,12 +55,23 @@ export const MAX_PENDING_LINE_BYTES = 8 * 1024 * 1024
 export const MAX_RAW_LOG_BYTES = 64 * 1024 * 1024
 
 export function buildChildEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(
+  const inherited = Object.fromEntries(
     Object.entries(source).filter(([name, value]) => {
       const normalized = name.toUpperCase()
       return value !== undefined && (ALLOWED_ENVIRONMENT_NAMES.has(normalized) || normalized.startsWith('LC_'))
     })
   )
+  return {
+    ...inherited,
+    // Keep supervised Claude turns compact and deterministic even when user
+    // capabilities are enabled. These controls do not disable user-scoped
+    // skills, plugins, apps, or MCP servers selected by the CLI.
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+    CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+    CLAUDE_CODE_DISABLE_CRON: '1',
+    CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1'
+  }
 }
 
 function streamLines(
@@ -287,6 +300,7 @@ export class ProcessRunner {
             signal,
             timedOut,
             cancelled: active.cancelRequested,
+            ...(active.cancelReason ? { cancelReason: active.cancelReason } : {}),
             ...(outputLimitExceeded ? { outputLimitExceeded } : {}),
             ...(rawLogWriteFailed ? { rawLogWriteFailed } : {}),
             startedAt,
@@ -297,10 +311,11 @@ export class ProcessRunner {
     })
   }
 
-  async cancel(id: string): Promise<boolean> {
+  async cancel(id: string, reason: 'user' | 'lease' = 'user'): Promise<boolean> {
     const active = this.active.get(id)
     if (!active) return false
     active.cancelRequested = true
+    active.cancelReason = reason
     await terminateProcessTree(active.child)
     return true
   }

@@ -1,7 +1,7 @@
 import { Bot, BrainCircuit, Code2, Gauge, Sparkles } from 'lucide-react'
-import type { AgentId, RunSnapshot } from '@shared/types'
+import type { AgentId, CustomizationProfile, RunSnapshot } from '@shared/types'
 import { deriveAgentContribution } from '@renderer/lib/contributions'
-import { formatRuntimeProfile } from '@renderer/lib/runtime-label'
+import { formatModelLabel, formatRuntimeProfile } from '@renderer/lib/runtime-label'
 
 interface AgentCardProps {
   agent: Extract<AgentId, 'claude' | 'codex'>
@@ -26,6 +26,18 @@ function activityLabel(activity: RunSnapshot['events'][number] | undefined): str
   return 'Working'
 }
 
+function effortLabel(effort: string | undefined): string | undefined {
+  if (!effort || effort === 'default') return undefined
+  if (effort === 'xhigh') return 'Extra High'
+  return effort.charAt(0).toUpperCase() + effort.slice(1)
+}
+
+function toolbeltLabel(profile: CustomizationProfile | undefined): string {
+  if (profile === 'full-local') return 'Broad · all user skills'
+  if (profile === 'smart') return 'Smart · Duo + connected tools'
+  return 'Core · no user capabilities'
+}
+
 export function AgentCard({ agent, run }: AgentCardProps): React.JSX.Element {
   const agentVoices = run.events.filter((event) => (event.type === 'opinion' || event.type === 'agent.dispatch') && event.agent === agent)
   const latest = agentVoices.at(-1)
@@ -47,16 +59,29 @@ export function AgentCard({ agent, run }: AgentCardProps): React.JSX.Element {
         : 'Standing by'
   const contribution = deriveAgentContribution(run, agent)
   const usage = run.agentUsage?.[agent]
+  const runtime = run.agentRuntimes?.[agent]
+  const activeRuntime = turnStage?.agent === agent
+  const currentEffort = activeRuntime ? effortLabel(turnStage.effort) : undefined
+  const qualityCeiling = activeRuntime
+    ? effortLabel(turnStage.qualityCeiling ?? runtime?.qualityCeiling)
+    : undefined
+  const runtimeText = currentEffort
+    ? `${formatModelLabel(runtime?.model ?? '')} · ${currentEffort} now${qualityCeiling ? ` · ${qualityCeiling} ceiling` : ''}`
+    : formatRuntimeProfile(runtime)
+  const customizationProfile = activeRuntime
+    ? turnStage.customizationProfile ?? runtime?.customizationProfile
+    : runtime?.customizationProfile
 
   return (
-    <article className={`glass-panel agent-card agent-${agent} ${isActive ? 'active' : ''}`}>
+    <article className={`glass-panel agent-card agent-${agent} ${isActive ? 'active' : ''}`} aria-label={`${name} agent`}>
       <div className="agent-head">
         <div className="agent-identity">
           <span className="agent-glyph">{agent === 'claude' ? <Sparkles size={20} /> : <Bot size={20} />}</span>
           <div><span className="eyebrow">Equal agent</span><h2>{name}</h2></div>
         </div>
         <div className="agent-status-stack">
-          <span className="agent-runtime">{formatRuntimeProfile(run.agentRuntimes?.[agent])}</span>
+          <span className="agent-runtime" title={runtimeText}>{runtimeText}</span>
+          <span className="agent-toolbelt">{toolbeltLabel(customizationProfile)}</span>
           <span className={`agent-state ${isActive ? 'working' : timeboxed ? 'timeboxed' : 'on-deck'}`}><i />{stateLabel}</span>
         </div>
       </div>

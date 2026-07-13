@@ -51,7 +51,9 @@
       "properties": {
         "model": { "type": "string" },
         "effort": { "enum": ["low", "medium", "high", "xhigh", "max", "ultra"] },
-        "source": { "enum": ["studio", "cli-config", "cli-default"] }
+        "source": { "enum": ["studio", "cli-config", "cli-default"] },
+        "customizationProfile": { "enum": ["core", "smart", "full-local"] },
+        "qualityCeiling": { "type": "string" }
       },
       "additionalProperties": false
     },
@@ -68,7 +70,13 @@
         "deadlineAt": { "type": "string", "format": "date-time" },
         "attempt": { "type": "integer", "minimum": 1 },
         "effort": { "type": "string" },
+        "qualityCeiling": { "type": "string" },
+        "customizationProfile": { "enum": ["core", "smart", "full-local"] },
+        "inferenceSteps": { "type": "integer", "minimum": 0 },
+        "inferenceLimit": { "type": "integer", "minimum": 1 },
+        "continuationCount": { "type": "integer", "minimum": 0, "maximum": 10 },
         "nextAgent": { "enum": ["claude", "codex"] },
+        "durableSourceChanged": { "type": "boolean" },
         "durableWorkEvidence": { "type": "boolean" },
         "evidenceFingerprint": { "type": "string", "minLength": 1 }
       },

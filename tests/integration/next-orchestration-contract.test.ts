@@ -259,6 +259,41 @@ describe('next Real Mode orchestration contracts', () => {
     }
   })
 
+  it('threads the explicit Smart capability contract into every fresh source prompt and command', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-smart-source-contract-'))
+    const runner = new EvidenceCompleteRunner()
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      protocolPollMs: 5,
+      healthProvider: () => Promise.resolve(availableAgents)
+    })
+
+    const started = await orchestrator.start({
+      ...request(root, 8),
+      codexCustomizationProfile: 'smart',
+      claudeCustomizationProfile: 'smart',
+      trustedLocalCapabilitiesConfirmed: true
+    })
+    await orchestrator.waitForSettled(started.runId)
+    const sourceCalls = runner.commands.filter((command) => /^Stage:\s*work$/mi.test(promptOf(command)))
+
+    expect(sourceCalls.length).toBeGreaterThanOrEqual(3)
+    for (const command of sourceCalls) {
+      expect(promptOf(command)).toMatch(/app-owned duo-quality skill/i)
+      expect(promptOf(command)).toMatch(/global user-skill catalog is intentionally suppressed/i)
+      expect(promptOf(command)).not.toMatch(/user capability toolbelt is disabled/i)
+      if (command.bin === 'claude') {
+        expect(command.args).toEqual(expect.arrayContaining(['--setting-sources', 'user']))
+        expect(command.args).toContain('--disable-slash-commands')
+      } else {
+        expect(command.args).toContain('skills.include_instructions=false')
+        expect(command.args).not.toContain('mcp_servers={}')
+      }
+    }
+  })
+
   it('retries one transient source checkpoint failure without repeating provider work', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-checkpoint-recovery-'))
     const runner = new EvidenceCompleteRunner()

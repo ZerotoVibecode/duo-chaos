@@ -7,6 +7,7 @@ import type {
   AgentEffort,
   BroadcastSnapshot,
   CodexEffort,
+  CustomizationProfile,
   DuoEvent,
   DuoTask,
   RevealPacket,
@@ -41,7 +42,11 @@ import {
 import { buildRedactionTerms, type RedactionTerm } from '@main/security/redaction'
 import { validateRunRequest } from '@main/security/run-policy'
 import { projectEventForRenderer, projectTaskForRenderer } from '@main/security/visibility'
-import { createRunWorkspace, type RunWorkspace } from '@main/workspace/workspace-manager'
+import {
+  createRunWorkspace,
+  restoreSupervisorWorkspacePolicy,
+  type RunWorkspace
+} from '@main/workspace/workspace-manager'
 import {
   safeAppendProtocolText,
   safeListProtocolFiles,
@@ -81,9 +86,18 @@ import {
   reusableDurableWorkEvidence,
   type TurnAcceptance
 } from './turn-acceptance'
-import { resolveStageBudgetSeconds, type TurnBudgetPolicy } from './turn-budget'
+import {
+  extendStageDeadlineForPause,
+  remainingStageLeaseSeconds,
+  resolveStageBudgetSeconds,
+  type TurnBudgetPolicy
+} from './turn-budget'
 import { composeTurnStagePrompt } from './turn-prompts'
 import { RunUsageTracker } from './usage-telemetry'
+import { resolveStageEffort } from './stage-effort-policy'
+import { ClaudeWorkLeaseGuard } from './work-lease-guard'
+import { buildContextBaton } from './context-baton'
+import { repinUnavailableProvider } from './resume-loadout'
 import { StageEventLedger } from './stage-event-ledger'
 import { SupervisorVerifier, type SupervisorVerifierPort } from './supervisor-verifier'
 import {
@@ -125,6 +139,7 @@ interface RunOrchestratorOptions {
 
 export interface ProcessRunnerPort {
   run: (options: ProcessRunOptions) => Promise<ProcessRunResult>
+  cancel?: (id: string, reason?: 'user' | 'lease') => Promise<boolean>
   cancelAll: () => Promise<void>
 }
 
@@ -177,6 +192,7 @@ interface RunSession {
     round: number
     text: string
   }
+  workLeaseContinuations: Map<string, number>
 }
 
 interface ExecutedTurnStage {
@@ -186,6 +202,7 @@ interface ExecutedTurnStage {
   quotaRejected?: boolean
   quotaResetAt?: string
   failure?: ProviderFailureClassification
+  leaseTimeboxed?: boolean
 }
 
 class RunPauseError extends Error {
@@ -285,21 +302,79 @@ function createDirectorEvent(
   }
 }
 
-const EFFORT_RANK: Record<Exclude<CodexEffort, 'default'>, number> = {
-  low: 0,
-  medium: 1,
-  high: 2,
-  xhigh: 3,
-  max: 4,
-  ultra: 5
+function customizationFor(
+  request: StartRunRequest,
+  agent: 'claude' | 'codex'
+): CustomizationProfile {
+  return agent === 'claude'
+    ? request.claudeCustomizationProfile ?? 'core'
+    : request.codexCustomizationProfile ?? 'core'
 }
 
-function capStageEffort(
-  selected: AgentEffort | CodexEffort,
-  cap: Extract<AgentEffort, 'low' | 'medium' | 'high'>
-): AgentEffort | CodexEffort {
-  if (selected === 'default') return cap
-  return EFFORT_RANK[selected] <= EFFORT_RANK[cap] ? selected : cap
+function pinRequestToSettings(request: StartRunRequest, settings: AppSettings): StartRunRequest {
+  const pinned: StartRunRequest = {
+    ...request,
+    // Legacy and non-UI callers that omit the new capability contract stay on
+    // the least-privileged core toolset. The Studio renderer sends the user's
+    // explicit saved selection and confirmation on every new run.
+    codexCustomizationProfile: request.codexCustomizationProfile ?? 'core',
+    claudeCustomizationProfile: request.claudeCustomizationProfile ?? 'core',
+    trustedLocalCapabilitiesConfirmed: request.trustedLocalCapabilitiesConfirmed ?? false,
+    qualityRoutingProfile: request.qualityRoutingProfile ?? settings.qualityRoutingProfile,
+    claudeWorkInferenceLimit: request.claudeWorkInferenceLimit ?? settings.claudeWorkInferenceLimit,
+    codexModel: request.codexModel ?? settings.codexModel,
+    codexEffort: request.codexEffort ?? settings.codexEffort,
+    claudeModel: request.claudeModel ?? settings.claudeModel,
+    claudeEffort: request.claudeEffort ?? settings.claudeEffort
+  }
+  const usesLocalToolbelt = customizationFor(pinned, 'claude') !== 'core' ||
+    customizationFor(pinned, 'codex') !== 'core'
+  if (pinned.executionMode !== 'simulation' && usesLocalToolbelt && pinned.trustedLocalCapabilitiesConfirmed !== true) {
+    throw new Error('Confirm that this workspace may use your local CLI skills, plugins, and MCP tools before starting.')
+  }
+  return pinned
+}
+
+function settingsForPinnedRun(settings: AppSettings, request: StartRunRequest): AppSettings {
+  return {
+    ...settings,
+    codexModel: request.codexModel ?? settings.codexModel,
+    codexEffort: request.codexEffort ?? settings.codexEffort,
+    claudeModel: request.claudeModel ?? settings.claudeModel,
+    claudeEffort: request.claudeEffort ?? settings.claudeEffort,
+    codexCustomizationProfile: request.codexCustomizationProfile ?? settings.codexCustomizationProfile,
+    claudeCustomizationProfile: request.claudeCustomizationProfile ?? settings.claudeCustomizationProfile,
+    qualityRoutingProfile: request.qualityRoutingProfile ?? settings.qualityRoutingProfile,
+    claudeWorkInferenceLimit: request.claudeWorkInferenceLimit ?? settings.claudeWorkInferenceLimit,
+    trustedLocalCapabilitiesConfirmed: request.trustedLocalCapabilitiesConfirmed ?? settings.trustedLocalCapabilitiesConfirmed
+  }
+}
+
+function decorateRuntimeProfiles(
+  profiles: NonNullable<RunSnapshot['agentRuntimes']>,
+  request: StartRunRequest
+): NonNullable<RunSnapshot['agentRuntimes']> {
+  const decorate = (
+    agent: 'claude' | 'codex',
+    profile: NonNullable<RunSnapshot['agentRuntimes']>['claude']
+  ): NonNullable<RunSnapshot['agentRuntimes']>['claude'] => {
+    if (!profile) return profile
+    const requestedModel = agent === 'claude' ? request.claudeModel?.trim() : request.codexModel?.trim()
+    const requestedEffort = agent === 'claude' ? request.claudeEffort : request.codexEffort
+    const studioPinned = Boolean(requestedModel) || Boolean(requestedEffort && requestedEffort !== 'default')
+    return {
+      ...profile,
+      ...(requestedModel ? { model: requestedModel } : {}),
+      ...(requestedEffort && requestedEffort !== 'default' ? { effort: requestedEffort } : {}),
+      ...(studioPinned ? { source: 'studio' as const } : {}),
+      customizationProfile: customizationFor(request, agent),
+      qualityCeiling: requestedEffort ?? profile.effort ?? 'default'
+    }
+  }
+  return {
+    ...(profiles.claude ? { claude: decorate('claude', profiles.claude) } : {}),
+    ...(profiles.codex ? { codex: decorate('codex', profiles.codex) } : {})
+  }
 }
 
 function privateDialogueContext(
@@ -645,14 +720,16 @@ export class RunOrchestrator {
   }
 
   private async startAdmitted(value: unknown): Promise<StartRunResult> {
-    const request = validateRunRequest(value, {
+    const validatedRequest = validateRunRequest(value, {
       minimumTurns: this.options.testOnlyMinimumTurns
     })
     const active = [...this.sessions.values()].find((session) => session.snapshot.status === 'running')
     if (active) throw new Error('A run is already active. Stop it before starting another.')
 
-    const settings = await this.options.getSettings()
-    const agentRuntimes = await resolveAgentRuntimeProfiles(settings)
+    const loadedSettings = await this.options.getSettings()
+    const request = pinRequestToSettings(validatedRequest, loadedSettings)
+    const settings = settingsForPinnedRun(loadedSettings, request)
+    const agentRuntimes = decorateRuntimeProfiles(await resolveAgentRuntimeProfiles(settings), request)
     const runId = createRunId()
     const planVersion = this.options.planVersion ?? 'lean-collaboration-v2'
     const turnPlan = planVersion === 'balanced-hybrid-v1'
@@ -730,7 +807,8 @@ export class RunOrchestrator {
       gitHead: undefined,
       appFingerprint: undefined,
       quotaConstrainedAgents: new Set(),
-      providerPressure: {}
+      providerPressure: {},
+      workLeaseContinuations: new Map()
     }
     this.sessions.set(runId, session)
     this.publishSnapshot(session)
@@ -869,14 +947,50 @@ export class RunOrchestrator {
     const now = this.nowMs()
     if (session.pausedAtMs !== undefined) {
       session.runDeadlineMs += Math.max(0, now - session.pausedAtMs)
+      if (session.snapshot.turnStage) {
+        session.snapshot.turnStage = {
+          ...session.snapshot.turnStage,
+          deadlineAt: extendStageDeadlineForPause(
+            session.snapshot.turnStage.deadlineAt,
+            session.pausedAtMs,
+            now
+          )
+        }
+      }
     }
-    session.settings = await this.options.getSettings()
+    const appliedSettings = await this.options.getSettings()
+    if (session.snapshot.pause?.reason === 'model-unavailable') {
+      session.request = repinUnavailableProvider(
+        session.request,
+        appliedSettings,
+        session.snapshot.pause.provider
+      )
+    }
+    session.settings = settingsForPinnedRun(appliedSettings, session.request)
     const git = new GitManager(session.settings.gitPath, join(session.workspace.runtimePath, 'supervisor-git'))
     const initialized = await git.initialize(session.workspace.workspacePath)
     if (!initialized.ok) throw new Error(initialized.detail ?? 'The preserved Git checkpoint could not be reopened.')
     const currentFingerprint = await git.appStateFingerprint(session.workspace.workspacePath)
+    let adoptedWorkspaceDrift = false
     if (session.appFingerprint && currentFingerprint !== session.appFingerprint) {
-      throw new Error('The generated app changed outside the preserved battle. Use the prompt again or restore the recorded workspace before resuming.')
+      if (session.snapshot.pause?.reason !== 'workspace-drift') {
+        throw new Error('The generated app changed outside the preserved battle. Reopen the recovered battle before adopting that source.')
+      }
+      const adopted = await this.createGitCheckpoint(session, git, 'chore(duo): adopt recovered workspace boundary')
+      if (!adopted.ok || !session.appFingerprint) {
+        throw new Error(adopted.detail ?? 'The recovered workspace could not be sealed by Git.')
+      }
+      adoptedWorkspaceDrift = true
+      session.appEvidenceRevision += 1
+      session.verifiedAppEvidenceRevision = -1
+      if (session.snapshot.turnStage) {
+        session.snapshot.turnStage = {
+          ...session.snapshot.turnStage,
+          durableSourceChanged: true,
+          evidenceFingerprint: session.appFingerprint
+        }
+      }
+      await this.persistRunState(session)
     }
     if (!session.appFingerprint) {
       // One-time migration for battles paused before supervisor-owned fingerprints
@@ -887,7 +1001,10 @@ export class RunOrchestrator {
       }
       session.verifiedAppEvidenceRevision = -1
     }
-    session.snapshot.agentRuntimes = await resolveAgentRuntimeProfiles(session.settings)
+    session.snapshot.agentRuntimes = decorateRuntimeProfiles(
+      await resolveAgentRuntimeProfiles(session.settings),
+      session.request
+    )
     session.controller = new AbortController()
     session.quotaConstrainedAgents.clear()
     session.providerPressure = {}
@@ -895,15 +1012,26 @@ export class RunOrchestrator {
     session.snapshot.phase = session.resumePhase ?? session.turnPlan[session.activeTurnIndex]?.phase ?? 'reveal.ready'
     session.snapshot.finishedAt = undefined
     session.snapshot.activeAgent = undefined
-    session.snapshot.turnStage = undefined
+    // Preserve the durable stage receipt until the resumed executor replaces
+    // it. This prevents the same accepted edit from being repeated after a
+    // quota or host pause.
+    if (session.snapshot.turnStage) {
+      session.snapshot.turnStage = { ...session.snapshot.turnStage, status: 'running' }
+    }
     session.snapshot.pause = undefined
     session.activeSinceMs = now
     session.pausedAtMs = undefined
     await this.emitEvent(session, createDirectorEvent(
       session,
       'run.resumed',
-      'The preserved battle resumed from its last durable turn boundary.',
-      { severity: 'high', topic: 'run-resumed', metadata: { turnIndex: session.activeTurnIndex } }
+      adoptedWorkspaceDrift
+        ? 'The recovered source was adopted as a new Git boundary. Verification is stale, so the same logical turn will reconcile it before the battle advances.'
+        : 'The preserved battle resumed from its last durable turn boundary.',
+      {
+        severity: 'high',
+        topic: adoptedWorkspaceDrift ? 'workspace-adopted' : 'run-resumed',
+        metadata: { turnIndex: session.activeTurnIndex, adoptedWorkspaceDrift }
+      }
     ))
     this.launchSessionRunner(session, git, true)
     return this.publicSnapshot(session)
@@ -941,12 +1069,11 @@ export class RunOrchestrator {
         if (!workspaceInfo.isDirectory() || workspaceInfo.isSymbolicLink()) continue
         if (comparableResolvedPath(await realpath(workspacePath)) !== comparableResolvedPath(workspacePath)) continue
         if (!['paused', 'running', 'pausing', 'resuming', 'reveal-ready'].includes(manifest.status)) continue
-        const revealReady = manifest.status === 'reveal-ready'
+        const manifestRevealReady = manifest.status === 'reveal-ready'
         // Dangerous-mode consent is deliberately ephemeral. Finished sealed work can be
         // revealed without executing an agent, but an active YOLO battle must be started
         // again so the user explicitly reconfirms its disposable environment.
-        if (manifest.request.executionMode === 'yolo-sandbox' && !revealReady) continue
-        if (revealReady && manifest.request.missionProfile === 'serious') {
+        if (manifestRevealReady && manifest.request.missionProfile === 'serious') {
           const seriousContractValid = await validateSeriousMissionContract(
             join(workspacePath, '.duo', 'sealed'),
             manifest.request.prompt,
@@ -954,11 +1081,14 @@ export class RunOrchestrator {
           )
           if (!seriousContractValid) continue
         }
+        let workspaceDrift = false
         if (manifest.git.appFingerprint) {
           const git = new GitManager(settings.gitPath, join(runtimePath, 'supervisor-git'))
           const currentFingerprint = await git.appStateFingerprint(workspacePath)
-          if (!currentFingerprint || currentFingerprint !== manifest.git.appFingerprint) continue
+          workspaceDrift = !currentFingerprint || currentFingerprint !== manifest.git.appFingerprint
         }
+        const revealReady = manifestRevealReady && !workspaceDrift
+        if (manifest.request.executionMode === 'yolo-sandbox' && !revealReady) continue
         const planVersion: RealTurnPlanVersion = manifest.planVersion === 'balanced-hybrid-v1'
           ? 'balanced-hybrid-v1'
           : 'lean-collaboration-v2'
@@ -987,38 +1117,46 @@ export class RunOrchestrator {
         } catch {
           tasks = []
         }
-        const interrupted = !revealReady && manifest.status !== 'paused'
+        const interrupted = !revealReady && manifest.status !== 'paused' && !workspaceDrift
         const restoredReason = manifest.pause?.detailCode
         const supportedReasons = new Set<RunPauseSnapshot['reason']>([
           'provider-quota', 'provider-auth', 'provider-unavailable', 'model-unavailable',
           'cli-incompatible', 'provider-protocol', 'session-lost', 'stage-timeout',
           'host-interrupted', 'workspace-drift', 'verification-failed', 'unknown'
         ])
-        const reason = interrupted
-          ? 'host-interrupted' as const
-          : supportedReasons.has(restoredReason as RunPauseSnapshot['reason'])
-            ? restoredReason as RunPauseSnapshot['reason']
-            : manifest.pause?.reason === 'other'
-              ? 'unknown' as const
-              : manifest.pause?.reason as RunPauseSnapshot['reason'] ?? 'unknown'
-        const pausedAt = interrupted ? new Date().toISOString() : manifest.pause?.pausedAt ?? manifest.updatedAt
+        const reason = workspaceDrift
+          ? 'workspace-drift' as const
+          : interrupted
+            ? 'host-interrupted' as const
+            : supportedReasons.has(restoredReason as RunPauseSnapshot['reason'])
+              ? restoredReason as RunPauseSnapshot['reason']
+              : manifest.pause?.reason === 'other'
+                ? 'unknown' as const
+                : manifest.pause?.reason as RunPauseSnapshot['reason'] ?? 'unknown'
+        const pausedAt = interrupted || workspaceDrift
+          ? new Date().toISOString()
+          : manifest.pause?.pausedAt ?? manifest.updatedAt
         const provider = manifest.pause?.agent
         const pause: RunPauseSnapshot = {
           reason,
           ...(provider ? { provider } : {}),
-          message: interrupted
-            ? 'Duo Chaos closed while this battle was active. The durable turn boundary was recovered.'
-            : reason === 'provider-quota'
-              ? `${provider === 'claude' ? 'Claude' : provider === 'codex' ? 'Codex' : 'A provider'} reached a usage boundary. The balanced battle remains preserved.`
-              : 'The battle is preserved at a recoverable provider boundary.',
+          message: workspaceDrift
+            ? 'Source changed after the last durable checkpoint, likely during a hard interruption. The current workspace was preserved for explicit adoption.'
+            : interrupted
+              ? 'Duo Chaos closed while this battle was active. The durable turn boundary was recovered.'
+              : reason === 'provider-quota'
+                ? `${provider === 'claude' ? 'Claude' : provider === 'codex' ? 'Codex' : 'A provider'} reached a usage boundary. The balanced battle remains preserved.`
+                : 'The battle is preserved at a recoverable provider boundary.',
           pausedAt,
           ...(manifest.pause?.resetAt ? { resetAt: manifest.pause.resetAt } : {}),
           resumable: true,
           round: activeRound,
           stage: manifest.cursor.stage,
-          action: reason === 'provider-quota'
-            ? 'Resume when usage is available again.'
-            : 'Resume the same preserved turn.'
+          action: workspaceDrift
+            ? 'Review the preserved workspace, then Resume to adopt it as a new checkpoint and reverify before continuing.'
+            : reason === 'provider-quota'
+              ? 'Resume when usage is available again.'
+              : 'Resume the same preserved turn.'
         }
         let resolveSettled: () => void = () => undefined
         const settled = new Promise<void>((resolvePromise) => {
@@ -1037,23 +1175,41 @@ export class RunOrchestrator {
           claude: {
             ...(manifest.loadout.claude.resolvedModel ? { model: manifest.loadout.claude.resolvedModel } : {}),
             ...(claudeEffort ? { effort: claudeEffort } : {}),
-            source: 'studio'
+            source: 'studio',
+            customizationProfile: manifest.request.claudeCustomizationProfile ?? 'core',
+            qualityCeiling: manifest.loadout.claude.requestedEffort ?? manifest.loadout.claude.resolvedEffort ?? 'default'
           },
           codex: {
             ...(manifest.loadout.codex.resolvedModel ? { model: manifest.loadout.codex.resolvedModel } : {}),
             ...(codexEffort ? { effort: codexEffort } : {}),
-            source: 'studio'
+            source: 'studio',
+            customizationProfile: manifest.request.codexCustomizationProfile ?? 'core',
+            qualityCeiling: manifest.loadout.codex.requestedEffort ?? manifest.loadout.codex.resolvedEffort ?? 'default'
           }
         }
         const request: StartRunRequest = {
           ...manifest.request,
+          codexModel: manifest.loadout.codex.requestedModel ?? manifest.loadout.codex.resolvedModel ?? '',
+          codexEffort: (manifest.loadout.codex.requestedEffort ?? manifest.loadout.codex.resolvedEffort ?? 'default') as CodexEffort,
+          claudeModel: manifest.loadout.claude.requestedModel ?? manifest.loadout.claude.resolvedModel ?? '',
+          claudeEffort: (manifest.loadout.claude.requestedEffort ?? manifest.loadout.claude.resolvedEffort ?? 'default') as AgentEffort,
           workspaceRoot: dirname(workspacePath),
           dangerousModeConfirmed: false,
           unsafeWorkspaceRootConfirmed: false
         }
+        const restoredTurnStage = !revealReady && manifest.cursor.stageReceipt
+          ? {
+              ...manifest.cursor.stageReceipt,
+              status: 'paused' as const,
+              // App downtime is not provider thinking time. Restore the exact
+              // remaining active lease instead of either expiring it offline
+              // or silently granting a brand-new full stage.
+              deadlineAt: new Date(this.nowMs() + manifest.timing.remainingLeaseMs).toISOString()
+            }
+          : undefined
         const session: RunSession = {
           request,
-          settings,
+          settings: settingsForPinnedRun(settings, request),
           workspace: {
             workspacePath,
             appPath: join(workspacePath, 'app'),
@@ -1076,6 +1232,7 @@ export class RunOrchestrator {
             appPath: join(workspacePath, 'app'),
             agentRuntimes,
             ...(!revealReady ? { pause } : {}),
+            ...(restoredTurnStage ? { turnStage: restoredTurnStage } : {}),
             tasks,
             events
           },
@@ -1120,7 +1277,10 @@ export class RunOrchestrator {
           ...(manifest.git.head ? { gitHead: manifest.git.head } : {}),
           ...(manifest.git.appFingerprint ? { appFingerprint: manifest.git.appFingerprint } : {}),
           quotaConstrainedAgents: new Set(!revealReady && provider ? [provider] : []),
-          providerPressure: {}
+          providerPressure: {},
+          workLeaseContinuations: new Map(restoredTurnStage?.continuationCount
+            ? [[`${restoredTurnStage.turnId}:work`, restoredTurnStage.continuationCount]]
+            : [])
         }
         this.sessions.set(runId, session)
         await this.loadRedactionDictionary(session)
@@ -1134,7 +1294,7 @@ export class RunOrchestrator {
           session.snapshot.releaseStatus = packet.status
           session.snapshot.finishedAt = revealText(legacy.updatedAt) ?? manifest.updatedAt
           this.publishSnapshot(session)
-        } else if (interrupted) {
+        } else if (interrupted || workspaceDrift) {
           await this.emitEvent(session, createDirectorEvent(
             session,
             'run.paused',
@@ -1491,7 +1651,6 @@ export class RunOrchestrator {
       verifiedAppEvidenceRevision: session.verifiedAppEvidenceRevision
     })
     if (signature === session.lastStateSignature) return
-    session.lastStateSignature = signature
     session.durableRevision += 1
     await session.durableStore.persist(this.durableManifest(session, agentUsage))
     await writeFile(
@@ -1523,6 +1682,7 @@ export class RunOrchestrator {
       }, null, 2)}\n`,
       'utf8'
     )
+    session.lastStateSignature = signature
   }
 
   private async createGitCheckpoint(session: RunSession, git: GitManager, message: string): Promise<GitResult> {
@@ -1601,6 +1761,7 @@ export class RunOrchestrator {
         structuredOutput: pinned?.structuredOutput ?? true,
         sessionResume: pinned?.sessionResume ?? true,
         discoveredAt: pinned?.capturedAt ?? session.snapshot.startedAt,
+        customizationProfile: customizationFor(session.request, agent),
         ...(pinned?.models.length
           ? { models: pinned.models.map((candidate) => candidate.id) }
           : model ? { models: [model] } : {}),
@@ -1646,7 +1807,12 @@ export class RunOrchestrator {
         maxTurns: session.request.maxTurns,
         maxRepairLoops: session.request.maxRepairLoops,
         turnTimeoutSeconds: session.request.turnTimeoutSeconds,
-        runTimeoutSeconds: session.request.runTimeoutSeconds
+        runTimeoutSeconds: session.request.runTimeoutSeconds,
+        codexCustomizationProfile: customizationFor(session.request, 'codex'),
+        claudeCustomizationProfile: customizationFor(session.request, 'claude'),
+        trustedLocalCapabilitiesConfirmed: session.request.trustedLocalCapabilitiesConfirmed ?? false,
+        qualityRoutingProfile: session.request.qualityRoutingProfile ?? 'balanced',
+        claudeWorkInferenceLimit: session.request.claudeWorkInferenceLimit ?? 8
       },
       loadout: { claude: loadout('claude'), codex: loadout('codex') },
       capabilities: { claude: capability('claude'), codex: capability('codex') },
@@ -1656,7 +1822,8 @@ export class RunOrchestrator {
         attempt: session.snapshot.turnStage?.attempt ?? 1,
         idempotencyKey: `${session.snapshot.runId}:${String(session.activeTurnIndex)}:${cursorStage}`,
         ...(session.resumeRecoveryOriginStage ? { recoveryOriginStage: session.resumeRecoveryOriginStage } : {}),
-        ...(session.resumeRecoveryReasons?.length ? { recoveryReasons: session.resumeRecoveryReasons } : {})
+        ...(session.resumeRecoveryReasons?.length ? { recoveryReasons: session.resumeRecoveryReasons } : {}),
+        ...(session.snapshot.turnStage ? { stageReceipt: session.snapshot.turnStage } : {})
       },
       providerSessions: { ...session.providerSessions },
       evidence: {
@@ -1809,7 +1976,7 @@ export class RunOrchestrator {
       const turn = turns[index]
       if (!turn) continue
       const pressure = session.providerPressure[turn.agent]
-      if (pressure?.status === 'allowed_warning' && (pressure.utilization ?? 0) >= 0.9) {
+      if (pressure?.status === 'allowed_warning' && (pressure.utilization ?? 0) >= 0.82) {
         session.quotaConstrainedAgents.add(turn.agent)
         throw new RunPauseError({
           reason: 'provider-quota',
@@ -1851,7 +2018,9 @@ export class RunOrchestrator {
       const stagedWork = turn.kind === 'code' || turn.kind === 'review' || turn.kind === 'verify' || turn.kind === 'repair'
       const restoredStage = resuming && index === startIndex ? session.resumeStage : undefined
       let continuationStage: TurnStageName | 'turn-complete' | undefined = restoredStage
+      let recoveredWorkResult: ExecutedTurnStage | undefined
       if (restoredStage === 'recovery') {
+        const preservedRecoveryReceipt = session.snapshot.turnStage
         const recoveryOrigin = session.resumeRecoveryOriginStage ?? (stagedWork ? 'work' : 'dialogue')
         const recovery = await this.executeTurnStage(
           session,
@@ -1864,20 +2033,43 @@ export class RunOrchestrator {
           recoveryOrigin
         )
         await this.resolveStageOutcome(session, git, turn, index + 1, 'recovery', recovery)
+        if (recoveryOrigin === 'work') {
+          recoveredWorkResult = {
+            assessment: { accepted: true, outcome: 'accepted', reasons: [] },
+            durableSourceChanged: preservedRecoveryReceipt?.durableSourceChanged ?? false
+          }
+        }
         session.resumeRecoveryOriginStage = undefined
         session.resumeRecoveryReasons = undefined
         await this.persistRunState(session)
         continuationStage = recoveryOrigin === 'opening'
           ? 'work'
           : recoveryOrigin === 'work'
-            ? 'verdict'
+            ? session.planVersion === 'lean-collaboration-v2' ? 'turn-complete' : 'verdict'
             : 'turn-complete'
       }
       let providerSessionId: string | undefined
       if (stagedWork && session.planVersion === 'lean-collaboration-v2') {
         const opponentAgent = turn.agent === 'claude' ? 'codex' : 'claude'
         const opponentAlreadyContributed = session.acceptedCodeAgents.has(opponentAgent)
-        const work = await this.executeTurnStage(session, git, turn, index + 1, 'work')
+        const preservedReceipt = resuming && continuationStage === 'work'
+          ? session.snapshot.turnStage
+          : undefined
+        const canReusePreservedWork = preservedReceipt?.turnId === turn.id &&
+          preservedReceipt.durableSourceChanged === true &&
+          preservedReceipt.evidenceFingerprint !== undefined &&
+          preservedReceipt.evidenceFingerprint === session.appFingerprint
+        const executedWork = recoveredWorkResult ?? (canReusePreservedWork
+          ? {
+              assessment: { accepted: true, outcome: 'accepted' as const, reasons: [] },
+              durableSourceChanged: true
+            }
+          : continuationStage === 'turn-complete'
+            ? undefined
+            : await this.executeTurnStage(session, git, turn, index + 1, 'work'))
+        if (!executedWork) {
+          throw new Error('A completed lean work turn is missing its preserved stage result.')
+        }
         if (this.remainingRunSeconds(session) <= 0) {
           await this.requireGitCheckpoint(
             session,
@@ -1888,7 +2080,9 @@ export class RunOrchestrator {
           runCeilingReached = true
           break turnLoop
         }
-        await this.resolveStageOutcome(session, git, turn, index + 1, 'work', work)
+        const work = canReusePreservedWork || recoveredWorkResult
+          ? executedWork
+          : await this.resolveStageOutcome(session, git, turn, index + 1, 'work', executedWork)
         const acceptedWork = !work.quotaRejected && work.assessment.outcome === 'accepted'
         if (
           (turn.kind === 'code' && (acceptedWork || work.durableSourceChanged)) ||
@@ -1984,15 +2178,15 @@ export class RunOrchestrator {
             runCeilingReached = true
             break turnLoop
           }
-          await this.resolveStageOutcome(session, git, turn, index + 1, 'work', work)
-          if (work.assessment.outcome === 'timeboxed') {
+          const resolvedWork = await this.resolveStageOutcome(session, git, turn, index + 1, 'work', work)
+          if (resolvedWork.assessment.outcome === 'timeboxed') {
             providerSessionId = undefined
             delete session.providerSessions[turn.agent]
           }
-          const acceptedWork = !work.quotaRejected && work.assessment.outcome === 'accepted'
+          const acceptedWork = !resolvedWork.quotaRejected && resolvedWork.assessment.outcome === 'accepted'
           if (
-            (turn.kind === 'code' && (acceptedWork || work.durableSourceChanged)) ||
-            (turn.kind === 'repair' && acceptedWork && work.durableSourceChanged)
+            (turn.kind === 'code' && (acceptedWork || resolvedWork.durableSourceChanged)) ||
+            (turn.kind === 'repair' && acceptedWork && resolvedWork.durableSourceChanged)
           ) {
             session.acceptedCodeAgents.add(turn.agent)
           }
@@ -2006,7 +2200,7 @@ export class RunOrchestrator {
           const checkpoint = await this.requireGitCheckpoint(
             session,
             git,
-            `chore(duo): checkpoint round ${String(index + 1)} ${turn.agent} ${turn.kind}${work.assessment.outcome === 'timeboxed' ? ' timeboxed' : ''}`,
+            `chore(duo): checkpoint round ${String(index + 1)} ${turn.agent} ${turn.kind}${resolvedWork.assessment.outcome === 'timeboxed' ? ' timeboxed' : ''}`,
             { stage: 'verdict', provider: turn.agent }
           )
           if (checkpoint.ok && checkpoint.commit) {
@@ -2131,14 +2325,17 @@ export class RunOrchestrator {
   }
 
   private stageEffort(session: RunSession, turn: RealTurn, stage: TurnStageName): AgentEffort | CodexEffort {
-    if (stage === 'opening' || stage === 'verdict' || stage === 'recovery') return 'low'
-    const selected = turn.agent === 'codex' ? session.settings.codexEffort : session.settings.claudeEffort
-    if (stage === 'dialogue') {
-      return capStageEffort(selected, turn.phase === 'round.consensus' || turn.kind === 'consensus' ? 'high' : 'medium')
-    }
-    if (turn.kind === 'review') return capStageEffort(selected, 'high')
-    if (turn.kind === 'verify') return capStageEffort(selected, 'low')
-    return selected
+    const selected = turn.agent === 'codex'
+      ? session.request.codexEffort ?? session.settings.codexEffort
+      : session.request.claudeEffort ?? session.settings.claudeEffort
+    return resolveStageEffort({
+      agent: turn.agent,
+      selected,
+      stage,
+      turnKind: turn.kind,
+      phase: turn.phase,
+      qualityRouting: session.request.qualityRoutingProfile ?? 'balanced'
+    })
   }
 
   private async executeTurnStage(
@@ -2151,7 +2348,38 @@ export class RunOrchestrator {
     recoveryReasons: string[] = [],
     recoveryOriginStage?: TurnStageName
   ): Promise<ExecutedTurnStage> {
-    const budgetSeconds = resolveStageBudgetSeconds(stage, this.stagePolicy(session), this.remainingRunSeconds(session))
+    await restoreSupervisorWorkspacePolicy(
+      session.workspace,
+      session.request.missionProfile ?? 'surprise'
+    )
+    const priorStageReceipt = session.snapshot.turnStage
+    const sameStageReceipt = priorStageReceipt?.turnId === turn.id && priorStageReceipt.stage === stage
+      ? priorStageReceipt
+      : undefined
+    const carriedWorkReceipt = stage === 'recovery' && recoveryOriginStage === 'work' && priorStageReceipt?.turnId === turn.id
+      ? priorStageReceipt
+      : sameStageReceipt
+    const inferenceLimit = session.request.claudeWorkInferenceLimit ?? 8
+    const spentContinuations = sameStageReceipt?.continuationCount ??
+      session.workLeaseContinuations.get(`${turn.id}:work`) ?? 0
+    const resumeStartsFreshCapsule = turn.agent === 'claude' && stage === 'work' &&
+      session.resumeStage === 'work' &&
+      (sameStageReceipt?.inferenceSteps ?? 0) >= inferenceLimit &&
+      spentContinuations < 1
+    const continuationCount = spentContinuations + (resumeStartsFreshCapsule ? 1 : 0)
+    if (resumeStartsFreshCapsule) {
+      session.workLeaseContinuations.set(`${turn.id}:work`, continuationCount)
+    }
+    const initialInferenceSteps = resumeStartsFreshCapsule ? 0 : sameStageReceipt?.inferenceSteps ?? 0
+    const restoredStageSeconds = sameStageReceipt && session.resumeStage === stage
+      ? remainingStageLeaseSeconds(sameStageReceipt.deadlineAt, this.nowMs())
+      : undefined
+    const budgetSeconds = resolveStageBudgetSeconds(
+      stage,
+      this.stagePolicy(session),
+      this.remainingRunSeconds(session),
+      restoredStageSeconds
+    )
     if (budgetSeconds <= 0) throw new Error('The overall run ceiling was reached before the next agent stage could start.')
 
     const opponent = [...session.snapshot.events].reverse().find((event) =>
@@ -2194,6 +2422,24 @@ export class RunOrchestrator {
         (inMemoryPrivateIsCurrent ? opponent?.id ?? durablePrivateHandoff?.id : opponent?.id ?? durablePrivateHandoff?.id)
     const quotaHandoffFrom = [...session.quotaConstrainedAgents].find((agent) => agent !== turn.agent)
     const leanContribution = session.planVersion === 'lean-collaboration-v2' && stage === 'work'
+    const latestVerificationDigest = [...session.snapshot.events].reverse().find((event) =>
+      event.type === 'build.failed' || event.type === 'build.passed'
+    )?.publicText
+    const contextBaton = stage === 'work'
+      ? await buildContextBaton({
+          workspacePath: session.workspace.workspacePath,
+          agent: turn.agent,
+          mission: turn.goal,
+          tasks: session.snapshot.tasks.map((task) => ({
+            id: task.id,
+            title: task.privateTitle ?? task.publicTitle,
+            status: task.status,
+            ...(task.claimedBy ? { claimedBy: task.claimedBy } : {}),
+            files: task.privateFiles ?? task.files
+          })),
+          ...(latestVerificationDigest ? { verificationDigest: latestVerificationDigest } : {})
+        })
+      : undefined
     const prompt = composeTurnStagePrompt({
       runId: session.snapshot.runId,
       round,
@@ -2208,6 +2454,10 @@ export class RunOrchestrator {
       ).join('\n') || 'No tasks yet.',
       finalTurn: Boolean(turn.revealCandidate || turn.kind === 'repair' || round === session.turnPlan.length),
       ...(leanContribution ? { leanContribution: true } : {}),
+      ...(contextBaton ? { contextBaton } : {}),
+      ...(stage === 'work'
+        ? { customizationProfile: customizationFor(session.request, turn.agent) }
+        : {}),
       recoveryReasons,
       ...(quotaHandoffFrom ? { quotaHandoffFrom } : {}),
       ...(recoveryOriginStage ? { recoveryOriginStage } : {})
@@ -2262,7 +2512,7 @@ export class RunOrchestrator {
       ? buildAgentCommand({
           agent: 'codex',
           binary: session.settings.codexPath,
-          model: session.settings.codexModel,
+          model: session.request.codexModel ?? session.settings.codexModel,
           effort,
           extraArgs: session.settings.codexExtraArgs,
           executionMode: session.request.executionMode as 'safe' | 'chaos' | 'yolo-sandbox',
@@ -2280,14 +2530,19 @@ export class RunOrchestrator {
               }
             : {}),
           ...(leanContribution
-            ? { sourcePolicy: { toolPolicy: 'workspace-essential' as const } }
+            ? {
+                sourcePolicy: {
+                  toolPolicy: 'workspace-essential' as const,
+                  customizationProfile: customizationFor(session.request, 'codex')
+                }
+              }
             : {}),
           ...(selectedSession ? { session: selectedSession } : {})
         })
       : buildAgentCommand({
           agent: 'claude',
           binary: session.settings.claudePath,
-          model: session.settings.claudeModel,
+          model: session.request.claudeModel ?? session.settings.claudeModel,
           effort: effort as AgentEffort,
           extraArgs: session.settings.claudeExtraArgs,
           executionMode: session.request.executionMode as 'safe' | 'chaos' | 'yolo-sandbox',
@@ -2305,7 +2560,12 @@ export class RunOrchestrator {
               }
             : {}),
           ...(leanContribution
-            ? { sourcePolicy: { toolPolicy: 'workspace-essential' as const } }
+            ? {
+                sourcePolicy: {
+                  toolPolicy: 'workspace-essential' as const,
+                  customizationProfile: customizationFor(session.request, 'claude')
+                }
+              }
             : {}),
           ...(selectedSession ? { session: selectedSession } : {})
         })
@@ -2313,10 +2573,6 @@ export class RunOrchestrator {
 
     const startedAt = new Date()
     const nextAgent = session.turnPlan[session.activeTurnIndex + 1]?.agent
-    const priorStageReceipt = session.snapshot.turnStage
-    const sameStageReceipt = priorStageReceipt?.turnId === turn.id && priorStageReceipt.stage === stage
-      ? priorStageReceipt
-      : undefined
     session.snapshot.turnStage = {
       turnId: turn.id,
       agent: turn.agent,
@@ -2325,14 +2581,29 @@ export class RunOrchestrator {
       status: 'running',
       startedAt: startedAt.toISOString(),
       deadlineAt: new Date(startedAt.getTime() + budgetSeconds * 1_000).toISOString(),
-      attempt: 1,
+      attempt: sameStageReceipt?.attempt ?? 1,
       effort,
+      qualityCeiling: turn.agent === 'claude'
+        ? session.request.claudeEffort ?? session.settings.claudeEffort
+        : session.request.codexEffort ?? session.settings.codexEffort,
+      ...(stage === 'work' ? { customizationProfile: customizationFor(session.request, turn.agent) } : {}),
+      ...(turn.agent === 'claude' && stage === 'work'
+        ? { inferenceLimit, inferenceSteps: initialInferenceSteps, continuationCount }
+        : {}),
       ...(nextAgent ? { nextAgent } : {}),
-      ...(sameStageReceipt?.durableWorkEvidence
+      ...(carriedWorkReceipt?.durableSourceChanged
+        ? {
+            durableSourceChanged: true,
+            ...(carriedWorkReceipt.evidenceFingerprint
+              ? { evidenceFingerprint: carriedWorkReceipt.evidenceFingerprint }
+              : {})
+          }
+        : {}),
+      ...(carriedWorkReceipt?.durableWorkEvidence
         ? {
             durableWorkEvidence: true,
-            ...(sameStageReceipt.evidenceFingerprint
-              ? { evidenceFingerprint: sameStageReceipt.evidenceFingerprint }
+            ...(carriedWorkReceipt.evidenceFingerprint
+              ? { evidenceFingerprint: carriedWorkReceipt.evidenceFingerprint }
               : {})
           }
         : {})
@@ -2383,6 +2654,11 @@ export class RunOrchestrator {
     const stdoutFragments: string[] = []
     let stdoutFragmentBytes = 0
     let reassembledProviderEnvelope = false
+    const claudeLeaseGuard = turn.agent === 'claude' && stage === 'work'
+      ? new ClaudeWorkLeaseGuard(inferenceLimit, { initialInferenceSteps })
+      : undefined
+    let leaseTimeboxRequested = false
+    let activeProcessId: string | undefined
     const onLine = (stream: 'stdout' | 'stderr', line: string): void => {
       const lineSequence = stageLineSequence
       stageLineSequence += 1
@@ -2393,6 +2669,19 @@ export class RunOrchestrator {
         stdoutFragmentBytes += Buffer.byteLength(fragment, 'utf8')
       }
       const decoded = decodeProviderEnvelope(line)
+      if (claudeLeaseGuard && decoded.length > 0) {
+        const lease = claudeLeaseGuard.observe(decoded)
+        if (session.snapshot.turnStage?.turnId === turn.id) {
+          session.snapshot.turnStage = {
+            ...session.snapshot.turnStage,
+            inferenceSteps: lease.inferenceSteps
+          }
+        }
+        if (lease.shouldTimebox && !leaseTimeboxRequested && activeProcessId && this.processRunner.cancel) {
+          leaseTimeboxRequested = true
+          void this.processRunner.cancel(activeProcessId, 'lease')
+        }
+      }
       if (stageProviderRecords.length < 256) {
         stageProviderRecords.push(...decoded.slice(0, 256 - stageProviderRecords.length))
       }
@@ -2440,18 +2729,21 @@ export class RunOrchestrator {
       }
       if (activity && activityBudget.accept(activity)) this.enqueueEvent(session, activity)
     }
-    const runProcess = (suffix: string, timeoutSeconds: number): Promise<ProcessRunResult> => this.processRunner.run({
-      id: `${session.snapshot.runId}-${turn.id}-${stage}${suffix}`,
-      command,
-      timeoutMs: timeoutSeconds * 1_000,
-      stdoutPath: session.settings.saveRawLogs
-        ? join(session.workspace.runtimePath, 'private', 'raw', `${turn.agent}.jsonl`)
-        : process.platform === 'win32' ? 'NUL' : '/dev/null',
-      stderrPath: session.settings.saveRawLogs
-        ? join(session.workspace.runtimePath, 'private', 'raw', `${turn.agent}.stderr.log`)
-        : process.platform === 'win32' ? 'NUL' : '/dev/null',
-      onLine
-    })
+    const runProcess = (suffix: string, timeoutSeconds: number): Promise<ProcessRunResult> => {
+      activeProcessId = `${session.snapshot.runId}-${turn.id}-${stage}${suffix}`
+      return this.processRunner.run({
+        id: activeProcessId,
+        command,
+        timeoutMs: timeoutSeconds * 1_000,
+        stdoutPath: session.settings.saveRawLogs
+          ? join(session.workspace.runtimePath, 'private', 'raw', `${turn.agent}.jsonl`)
+          : process.platform === 'win32' ? 'NUL' : '/dev/null',
+        stderrPath: session.settings.saveRawLogs
+          ? join(session.workspace.runtimePath, 'private', 'raw', `${turn.agent}.stderr.log`)
+          : process.platform === 'win32' ? 'NUL' : '/dev/null',
+        onLine
+      })
+    }
     const reassembleBufferedEnvelope = (): void => {
       if (stageProviderRecords.length !== 0 || stdoutFragments.length <= 1) return
       const replayEnvelope = stdoutFragments.join('\n')
@@ -2543,6 +2835,10 @@ export class RunOrchestrator {
       }
     } finally {
       clearInterval(protocolTimer)
+      await restoreSupervisorWorkspacePolicy(
+        session.workspace,
+        session.request.missionProfile ?? 'surprise'
+      )
     }
     const providerFailure = classifyProviderFailure({
       agent: turn.agent,
@@ -2697,7 +2993,8 @@ export class RunOrchestrator {
         ...(sessionId ? { sessionId } : {}),
         ...(quotaRejected ? { quotaRejected: true } : {}),
         ...(quotaResetAt ? { quotaResetAt } : {}),
-        ...(providerFailure ? { failure: providerFailure } : {})
+        ...(providerFailure ? { failure: providerFailure } : {}),
+        ...(leaseTimeboxRequested ? { leaseTimeboxed: true } : {})
       }
     }
 
@@ -2749,10 +3046,11 @@ export class RunOrchestrator {
       successfulWorkspaceCommand,
       protocolBuildFailed
     })
-    if (durableWorkEvidence && appStateAfter && session.snapshot.turnStage) {
+    if ((durableWorkEvidence || durableSourceChanged) && appStateAfter && session.snapshot.turnStage) {
       session.snapshot.turnStage = {
         ...session.snapshot.turnStage,
-        durableWorkEvidence: true,
+        ...(durableWorkEvidence ? { durableWorkEvidence: true } : {}),
+        ...(durableSourceChanged ? { durableSourceChanged: true } : {}),
         evidenceFingerprint: appStateAfter
       }
     }
@@ -2812,7 +3110,8 @@ export class RunOrchestrator {
       ...(sessionId ? { sessionId } : {}),
       ...(quotaRejected ? { quotaRejected: true } : {}),
       ...(quotaResetAt ? { quotaResetAt } : {}),
-      ...(providerFailure ? { failure: providerFailure } : {})
+      ...(providerFailure ? { failure: providerFailure } : {}),
+      ...(leaseTimeboxRequested ? { leaseTimeboxed: true } : {})
     }
   }
 
@@ -2823,12 +3122,43 @@ export class RunOrchestrator {
     round: number,
     stage: TurnStageName,
     executed: ExecutedTurnStage
-  ): Promise<void> {
+  ): Promise<ExecutedTurnStage> {
     if (executed.failure?.kind === 'safety-violation' || executed.failure?.kind === 'workspace-drift') {
       throw new RunTerminalError(
         `${turn.agent === 'claude' ? 'Claude' : 'Codex'} reported ${executed.failure.kind}. The supervisor stopped before allowing unsafe or mismatched workspace changes.`,
         executed.failure.kind
       )
+    }
+    if (
+      executed.leaseTimeboxed && stage === 'work' && !executed.durableSourceChanged &&
+      executed.assessment.outcome !== 'accepted' && executed.assessment.outcome !== 'timeboxed'
+    ) {
+      const continuationKey = `${turn.id}:work`
+      const continuations = session.snapshot.turnStage?.continuationCount ??
+        session.workLeaseContinuations.get(continuationKey) ?? 0
+      if (continuations < 1) {
+        session.workLeaseContinuations.set(continuationKey, continuations + 1)
+        if (session.snapshot.turnStage) {
+          session.snapshot.turnStage = {
+            ...session.snapshot.turnStage,
+            continuationCount: continuations + 1,
+            inferenceSteps: 0
+          }
+          await this.persistRunState(session)
+        }
+        await this.emitEvent(session, createDirectorEvent(
+          session,
+          'decision',
+          `${turn.agent === 'claude' ? 'Claude' : 'Codex'} reached the internal reasoning lease before a durable edit landed. A fresh compact capsule is continuing the same owned task; the battle is not restarting.`,
+          {
+            severity: 'medium',
+            topic: 'work-capsule-continuation',
+            metadata: { agent: turn.agent, turnId: turn.id, capsule: continuations + 2 }
+          }
+        ))
+        const continuation = await this.executeTurnStage(session, git, turn, round, 'work')
+        return await this.resolveStageOutcome(session, git, turn, round, 'work', continuation)
+      }
     }
     const boundaryNeedsCheckpoint = executed.durableSourceChanged && (
       executed.quotaRejected ||
@@ -2913,7 +3243,7 @@ export class RunOrchestrator {
               : 'Resume the same turn when the provider is available.'
       })
     }
-    if (executed.assessment.outcome === 'accepted' || executed.assessment.outcome === 'timeboxed') return
+    if (executed.assessment.outcome === 'accepted' || executed.assessment.outcome === 'timeboxed') return executed
     if (executed.assessment.outcome === 'recovery-required') {
       const agentName = turn.agent === 'claude' ? 'Claude' : 'Codex'
       if (stage === 'recovery') {
@@ -2941,12 +3271,15 @@ export class RunOrchestrator {
         executed.assessment.reasons,
         stage
       )
-      if (this.remainingRunSeconds(session) <= 0) return
+      if (this.remainingRunSeconds(session) <= 0) return executed
       if (recovery.assessment.outcome === 'accepted' || recovery.assessment.outcome === 'timeboxed') {
         session.resumeRecoveryOriginStage = undefined
         session.resumeRecoveryReasons = undefined
         await this.persistRunState(session)
-        return
+        return {
+          ...executed,
+          assessment: { accepted: true, outcome: 'accepted', reasons: [] }
+        }
       }
       throw new RunPauseError({
         reason: 'provider-protocol',

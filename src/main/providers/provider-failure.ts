@@ -185,7 +185,9 @@ export function classifyProviderFailure(
   if (evidence.result.outputLimitExceeded || evidence.result.rawLogWriteFailed) {
     return classification('cli-incompatible', 'process', evidence.agent)
   }
-  if (evidence.result.cancelled) return classification('user-cancelled', 'process', evidence.agent)
+  if (evidence.result.cancelled) {
+    return classification(evidence.result.cancelReason === 'lease' ? 'stage-timeout' : 'user-cancelled', 'process', evidence.agent)
+  }
   if (evidence.result.timedOut) return classification('stage-timeout', 'process', evidence.agent)
 
   const providerSignal = explicitSignal(records, text)

@@ -1,6 +1,12 @@
 export type AgentId = 'claude' | 'codex' | 'director' | 'system'
 export type AgentEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type CodexEffort = AgentEffort | 'ultra'
+/**
+ * Controls which existing local CLI customizations may participate in source work.
+ * Dialogue and contract recovery are always isolated regardless of this choice.
+ */
+export type CustomizationProfile = 'core' | 'smart' | 'full-local'
+export type QualityRoutingProfile = 'balanced' | 'force-selected'
 export type TurnStageName = 'dialogue' | 'opening' | 'work' | 'verdict' | 'recovery'
 export type TurnStageStatus = 'running' | 'completed' | 'timeboxed' | 'paused'
 export type TurnKind = 'pitch' | 'critique' | 'consensus' | 'tasking' | 'code' | 'review' | 'verify' | 'repair'
@@ -15,7 +21,15 @@ export interface TurnStageSnapshot {
   deadlineAt: string
   attempt: number
   effort?: string
+  qualityCeiling?: string
+  customizationProfile?: CustomizationProfile
+  inferenceSteps?: number
+  inferenceLimit?: number
+  /** Number of fresh compact capsules already spent for this logical stage. */
+  continuationCount?: number
   nextAgent?: Extract<AgentId, 'claude' | 'codex'>
+  /** Durable source for this exact stage is checkpointed at evidenceFingerprint. */
+  durableSourceChanged?: boolean
   durableWorkEvidence?: boolean
   evidenceFingerprint?: string
 }
@@ -39,6 +53,8 @@ export interface AgentRuntimeProfile {
   model?: string
   effort?: Exclude<CodexEffort, 'default'>
   source: 'studio' | 'cli-config' | 'cli-default'
+  customizationProfile?: CustomizationProfile
+  qualityCeiling?: string
 }
 
 export interface AgentUsageTotals {
@@ -432,6 +448,11 @@ export interface AppSettings {
   codexEffort: CodexEffort
   claudeModel: string
   claudeEffort: AgentEffort
+  codexCustomizationProfile: CustomizationProfile
+  claudeCustomizationProfile: CustomizationProfile
+  trustedLocalCapabilitiesConfirmed: boolean
+  qualityRoutingProfile: QualityRoutingProfile
+  claudeWorkInferenceLimit: number
   defaultWorkspaceRoot: string
   defaultExecutionMode: ExecutionMode
   defaultVisibilityMode: VisibilityMode
@@ -456,6 +477,16 @@ export interface StartRunRequest {
   runTimeoutSeconds: number
   dangerousModeConfirmed: boolean
   unsafeWorkspaceRootConfirmed: boolean
+  /** Pinned at admission so later Settings changes cannot silently alter a resumed battle. */
+  codexCustomizationProfile?: CustomizationProfile
+  claudeCustomizationProfile?: CustomizationProfile
+  trustedLocalCapabilitiesConfirmed?: boolean
+  qualityRoutingProfile?: QualityRoutingProfile
+  claudeWorkInferenceLimit?: number
+  codexModel?: string
+  codexEffort?: CodexEffort
+  claudeModel?: string
+  claudeEffort?: AgentEffort
 }
 
 export interface StartRunResult {

@@ -69,6 +69,15 @@ describe('local runtime catalog parsing', () => {
       OPENAI_API_KEY: 'private',
       ANTHROPIC_AUTH_TOKEN: 'private',
       NODE_OPTIONS: '--require malicious.js'
-    })).toEqual({ PATH: 'C:\\Tools', NO_COLOR: '1', TERM: 'dumb' })
+    })).toEqual({
+      PATH: 'C:\\Tools',
+      NO_COLOR: '1',
+      TERM: 'dumb',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_DISABLE_CRON: '1',
+      CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1'
+    })
   })
 })

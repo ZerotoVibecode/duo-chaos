@@ -1,4 +1,4 @@
-import type { MissionProfile, TurnStageName } from '@shared/types'
+import type { CustomizationProfile, MissionProfile, TurnStageName } from '@shared/types'
 import type { RealTurn } from './real-turn-plan'
 
 export interface ComposeTurnStagePromptInput {
@@ -16,6 +16,18 @@ export interface ComposeTurnStagePromptInput {
   recoveryOriginStage?: TurnStageName
   quotaHandoffFrom?: 'claude' | 'codex'
   leanContribution?: boolean
+  contextBaton?: string
+  customizationProfile?: CustomizationProfile
+}
+
+function capabilityContract(profile: CustomizationProfile = 'core'): string {
+  if (profile === 'full-local') {
+    return 'Proactively consider the best relevant already-available user skill, plugin, app, or MCP capability for this mission. Invoke only a clear best fit; never inventory the toolbelt and never invoke subagents.'
+  }
+  if (profile === 'smart') {
+    return 'Use the app-owned duo-quality skill plus relevant already-available user plugins, apps, or MCP capabilities on demand only when they reduce uncertainty or improve evidence. The global user-skill catalog is intentionally suppressed in this profile. Never inventory the toolbelt and never invoke subagents.'
+  }
+  return 'Use the app-owned duo-quality skill when useful. The user capability toolbelt is disabled for this turn; never invoke subagents.'
 }
 
 function missionContract(input: ComposeTurnStagePromptInput): string {
@@ -72,6 +84,7 @@ Reply to the latest statement directly when it exists. Do not merely summarize i
 
 BOARD
 ${input.board}
+${input.contextBaton ? `\n${input.contextBaton}` : ''}
 ${input.quotaHandoffFrom
     ? `\nQUOTA HANDOFF\n${input.quotaHandoffFrom === 'claude' ? 'Claude' : 'Codex'} is provider-limited. Claim any released task needed to finish the shared build; preserve completed work and do not wait for that agent.`
     : ''}
@@ -145,6 +158,8 @@ This is one fresh, self-contained source contribution. Do not expect a later pai
 - State your direct answer to the teammate's latest position, then act on it.
 - Read .duo/sealed/idea.md, .duo/sealed/spec.md, and .duo/board.json before choosing the implementation boundary. The complete sealed decision outranks a shortened handoff.
 - Batch independent reads and searches. Inspect only files needed for this mission; do not tour the repository.
+- A small app-owned skill lives at .duo/private/skills/duo-quality/SKILL.md. Use it when it sharpens implementation or review; do not reread it repeatedly.
+- ${capabilityContract(input.customizationProfile)}
 - Git metadata is supervisor-private and intentionally absent here. Do not run Git commands; inspect and verify the workspace files directly.
 - Preserve accepted teammate work. For an integration turn, review that work before adding your distinct slice.
 - Claim or update your matching task in .duo/board.json, implement the goal, and run the smallest useful verification set.
@@ -158,6 +173,7 @@ The supervisor builds the reveal packet from verified evidence. Do not spend tim
 WORK LEASE
 Implement the distinct source-changing goal and produce real workspace evidence. Do not redo or reopen the settled product decision unless the current build proves it impossible.
 Read .duo/sealed/idea.md, .duo/sealed/spec.md, and .duo/board.json before choosing the implementation boundary.
+Use the supervisor FOCUS BATON as the starting map. ${capabilityContract(input.customizationProfile)}
 Claim or update the matching task in .duo/board.json, keep the teammate's slice intact, run the most useful available checks, and leave the workspace in a recoverable state.
 ${input.missionProfile === 'serious' ? 'Treat the sealed acceptance checks as binding: preserve the requested product and verify the requirements touched by this slice.' : ''}
 After a meaningful milestone, you may append one concise update/evidence dispatch. Do not fabricate heartbeat messages or repeat the opening contract.

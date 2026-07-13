@@ -60,6 +60,39 @@ describe('run safety policy', () => {
     ).toThrow(/confirmation/i)
   })
 
+  it('does not require local capability trust for Simulation Mode because no provider is launched', () => {
+    expect(validateRunRequest({
+      ...validRequest,
+      executionMode: 'simulation',
+      codexCustomizationProfile: 'smart',
+      claudeCustomizationProfile: 'smart',
+      trustedLocalCapabilitiesConfirmed: false
+    })).toMatchObject({ executionMode: 'simulation' })
+
+    expect(() => validateRunRequest({
+      ...validRequest,
+      codexCustomizationProfile: 'smart',
+      trustedLocalCapabilitiesConfirmed: false
+    })).toThrow(/trust confirmation/i)
+  })
+
+  it('keeps Safe execution on Core tools because unattended MCP approvals cannot be requested', () => {
+    expect(() => validateRunRequest({
+      ...validRequest,
+      executionMode: 'safe',
+      codexCustomizationProfile: 'smart',
+      claudeCustomizationProfile: 'smart',
+      trustedLocalCapabilitiesConfirmed: true
+    })).toThrow(/safe.*core|core.*safe/i)
+
+    expect(validateRunRequest({
+      ...validRequest,
+      executionMode: 'safe',
+      codexCustomizationProfile: 'core',
+      claudeCustomizationProfile: 'core'
+    })).toMatchObject({ executionMode: 'safe' })
+  })
+
   it('rejects a home-directory root unless separately confirmed', () => {
     expect(() => validateRunRequest({ ...validRequest, workspaceRoot: homedir() })).toThrow(
       /protected root/i

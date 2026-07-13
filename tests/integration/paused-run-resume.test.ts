@@ -316,7 +316,18 @@ describe('durable paused-run recovery', () => {
       protocolPollMs: 5
     })
 
-    const started = await orchestrator.start(request(root))
+    const started = await orchestrator.start({
+      ...request(root),
+      codexModel: 'pinned-codex',
+      codexEffort: 'high',
+      claudeModel: 'pinned-claude',
+      claudeEffort: 'max',
+      codexCustomizationProfile: 'full-local',
+      claudeCustomizationProfile: 'smart',
+      trustedLocalCapabilitiesConfirmed: true,
+      qualityRoutingProfile: 'force-selected',
+      claudeWorkInferenceLimit: 13
+    })
     await orchestrator.waitForSettled(started.runId)
     expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
       status: 'paused',
@@ -328,6 +339,7 @@ describe('durable paused-run recovery', () => {
     })
     expect(['claude', 'codex']).toContain(orchestrator.getSnapshot(started.runId)?.pause?.provider)
     expect(new Set(runner.calls).size).toBe(1)
+    const preservedLoadout = orchestrator.getSnapshot(started.runId)?.agentRuntimes
 
     runner.rejectQuota = false
     settings = {
@@ -335,15 +347,46 @@ describe('durable paused-run recovery', () => {
       codexModel: 'gpt-5.6-sol',
       codexEffort: 'max',
       claudeModel: 'fable',
-      claudeEffort: 'low'
+      claudeEffort: 'low',
+      codexCustomizationProfile: 'core',
+      claudeCustomizationProfile: 'core',
+      trustedLocalCapabilitiesConfirmed: false,
+      qualityRoutingProfile: 'balanced',
+      claudeWorkInferenceLimit: 3
     }
-    const resumed = await orchestrator.resume(started.runId)
-    expect(resumed.agentRuntimes).toEqual({
-      codex: { model: 'gpt-5.6-sol', effort: 'max', source: 'studio' },
-      claude: { model: 'fable', effort: 'low', source: 'studio' }
+    const restored = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(settings),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
     })
-    await orchestrator.waitForSettled(started.runId)
-    expect(orchestrator.getSnapshot(started.runId)?.status).toBe('reveal-ready')
+    await expect(restored.restore()).resolves.toBe(1)
+
+    const manifest = JSON.parse(await readFile(join(runtimeRoot, started.runId, 'run-manifest.json'), 'utf8')) as {
+      request: Record<string, unknown>
+      loadout: {
+        codex: Record<string, unknown>
+        claude: Record<string, unknown>
+      }
+    }
+    expect(manifest.request).toMatchObject({
+      codexCustomizationProfile: 'full-local',
+      claudeCustomizationProfile: 'smart',
+      trustedLocalCapabilitiesConfirmed: true,
+      qualityRoutingProfile: 'force-selected',
+      claudeWorkInferenceLimit: 13
+    })
+    expect(manifest.loadout).toMatchObject({
+      codex: { requestedModel: 'pinned-codex', requestedEffort: 'high' },
+      claude: { requestedModel: 'pinned-claude', requestedEffort: 'max' }
+    })
+
+    const resumed = await restored.resume(started.runId)
+    expect(resumed.agentRuntimes).toEqual(preservedLoadout)
+    await restored.waitForSettled(started.runId)
+    expect(restored.getSnapshot(started.runId)?.status).toBe('reveal-ready')
     expect(new Set(runner.calls)).toEqual(new Set(['claude', 'codex']))
   })
 
@@ -459,6 +502,47 @@ describe('durable paused-run recovery', () => {
     })
     await expect(restored.restore()).resolves.toBe(0)
     expect(restored.getSnapshot(started.runId)).toBeUndefined()
+  })
+
+  it('restores crash-time source drift and adopts it only after an explicit Resume', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-restore-drift-root-'))
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'duo-restore-drift-runtime-'))
+    const runner = new RecoverableQuotaRunner()
+    const first = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+    const started = await first.start(request(root))
+    await first.waitForSettled(started.runId)
+    expect(first.getSnapshot(started.runId)).toMatchObject({ status: 'paused' })
+    const recoveredAppPath = join(started.workspacePath, 'app')
+    await writeFile(join(recoveredAppPath, 'crash-preserved.txt'), 'uncheckpointed source survives\n', 'utf8')
+
+    const restored = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+    await expect(restored.restore()).resolves.toBe(1)
+    expect(restored.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'workspace-drift', resumable: true }
+    })
+    expect(restored.getSnapshot(started.runId)?.pause?.action).toMatch(/adopt.*reverify/iu)
+
+    runner.rejectQuota = false
+    await expect(restored.resume(started.runId)).resolves.toMatchObject({ status: 'running' })
+    await expect(readFile(join(recoveredAppPath, 'crash-preserved.txt'), 'utf8')).resolves.toBe(
+      'uncheckpointed source survives\n'
+    )
+    expect(restored.getSnapshot(started.runId)?.events.some((event) => event.topic === 'workspace-adopted')).toBe(true)
   })
 
   it('checkpoints an active battle before app shutdown terminates child processes', async () => {

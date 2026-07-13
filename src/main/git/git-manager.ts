@@ -4,7 +4,9 @@ import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-const CHECKPOINT_COORDINATION_ROOT = '.duo'
+const CHECKPOINT_SUPERVISOR_PATHS = [
+  '.duo', '.agents', '.claude', '.codex', '.mcp.json', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md'
+] as const
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024
 
 async function pathExists(path: string): Promise<boolean> {
@@ -200,7 +202,9 @@ export class GitManager {
     if (!status.stdout) return { ok: true, detail: 'No changes to checkpoint.' }
     const add = await this.run(workspacePath, ['add', '-A'])
     if (add.code !== 0) return { ok: false, detail: add.stderr || 'Unable to stage checkpoint.' }
-    const removePrivate = await this.run(workspacePath, ['rm', '--cached', '-r', '--ignore-unmatch', '--', CHECKPOINT_COORDINATION_ROOT])
+    const removePrivate = await this.run(workspacePath, [
+      'rm', '--cached', '-r', '--ignore-unmatch', '--', ...CHECKPOINT_SUPERVISOR_PATHS
+    ])
     if (removePrivate.code !== 0) {
       return { ok: false, detail: removePrivate.stderr || 'Unable to enforce checkpoint privacy.' }
     }

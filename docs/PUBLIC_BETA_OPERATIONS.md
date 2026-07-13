@@ -12,12 +12,15 @@ Serious missions create `serious_contract.json`, `human_brief.md`, and a brief-a
 2. Start Duo Chaos and refresh **Agent loadout**.
 3. Confirm both CLIs are available and that the selected model and effort are advertised by the local catalog.
 4. Treat an **unverified** capability as a warning, not proof that a model, structured stream, or session resume will work.
-5. Use a fresh workspace root with enough disk space and no credentials.
-6. Rehearse the current screen layout with Simulation Mode before recording or spending provider usage.
+5. Choose a source-stage toolbelt. Core disables user capabilities. Smart (default) uses Duo's compact quality skill plus configured plugins, apps, and MCPs while suppressing the global user-skill catalog. Broad restores the full user-skill catalog and can use substantially more context and quota. Smart and Broad require **Trust my local CLI capabilities**.
+6. Use Core for Safe Mode. Choose Chaos for unattended Smart/Broad capability calls; a noninteractive provider cannot stop to request an MCP approval.
+7. Review the local CLI's user configuration before granting that trust. Duo does not enumerate capability names or credentials, and generated-workspace project/local settings, hooks, and hidden subagents remain disabled.
+8. Use a fresh workspace root with enough disk space and no credentials.
+9. Rehearse the current screen layout with Simulation Mode before recording or spending provider usage.
 
-The compatibility preflight pins a per-run snapshot of CLI version, transport formats, structured output, session resume, tool suppression, models, efforts, and quota-reset support. A verified unsupported model or transport blocks the run. Fallback catalogs remain visibly unverified because Duo cannot prove an account-specific capability from a name alone.
+The compatibility preflight pins a per-run snapshot of CLI version, transport formats, structured output, session resume, tool suppression, models, efforts, selected toolbelt profile, and quota-reset support. A verified unsupported model or transport blocks the run. Fallback catalogs remain visibly unverified because Duo cannot prove an account-specific capability from a name alone. Preflight does not inventory or certify an individual skill, plugin, app, or MCP server.
 
-Dialogue uses provider-native structured output with a turn-specific schema. Claude receives no tools; Codex disables its shell feature. If a provider crosses that boundary, Duo rejects the capsule and runs one bounded contract-only recovery without repeating implementation. Source contributions are fresh compact calls that must leave a direct teammate handoff. Missing private candidate-name redactions are repaired locally with canonical title terms, bounded capacity, and punctuation-normalized leak checks because deterministic repair is safer and cheaper than another model call. Workspace-authored protocol remains untrusted: Spoiler Shield shows exact text only when placeholders or the sealed dictionary remove hidden terms, and otherwise substitutes a factual spoiler-sealed handoff.
+Dialogue uses provider-native structured output with a turn-specific schema. Claude receives no tools; Codex disables its shell feature. If a provider crosses that boundary, Duo rejects the capsule and runs one bounded contract-only recovery without repeating implementation. Source contributions are fresh compact calls that receive a supervisor-built focus baton and must leave a direct teammate handoff. Core uses supervised workspace tools with no user capabilities. Smart uses the app-owned `duo-quality` skill plus configured plugins, apps, and MCPs without advertising the global user-skill catalog. Broad restores that full catalog and accepts the higher context/quota cost. Neither trusted profile imports generated-workspace project/local settings, hooks, or hidden subagents. Missing private candidate-name redactions are repaired locally with canonical title terms, bounded capacity, and punctuation-normalized leak checks because deterministic repair is safer and cheaper than another model call. Workspace-authored protocol remains untrusted: Spoiler Shield shows exact text only when placeholders or the sealed dictionary remove hidden terms, and otherwise substitutes a factual spoiler-sealed handoff.
 
 ## Pause and resume contract
 
@@ -32,8 +35,9 @@ When a recoverable boundary is detected, Duo Chaos:
 - shows the provider, stage, reason, suggested action, and reset time when the CLI reports one;
 - resumes the same logical call before the opponent moves;
 - retains the exact call cursor during the Resume-to-provider-launch window. Legacy v1 battles additionally retain their staged work/verdict/recovery cursor.
+- pins the selected models, effort ceilings, toolbelt profiles, quality routing, Claude inference lease, stage receipt, continuation count, and durable evidence so later Settings changes cannot silently alter the preserved battle.
 
-After restarting Duo Chaos, active or half-written runs are reconstructed as paused battles. The newest valid manifest or journal record wins; a truncated final journal line is ignored. A run/workspace identity or app-checkpoint mismatch is never auto-resumed or silently restored. Unknown drift hard-stops so a later human edit cannot be mistaken for rejected provider output.
+After restarting Duo Chaos, active or half-written runs are reconstructed as paused battles. The newest valid manifest or journal record wins; a truncated final journal line is ignored. A run/workspace identity mismatch is rejected. An app-checkpoint mismatch becomes a visible workspace-drift pause and never auto-runs: after reviewing the preserved tree, the user can explicitly Resume to adopt it into a new checkpoint, invalidate stale verification, and reconcile the same logical turn.
 
 Normal lean source calls do not resume provider history. They restart from the preserved Git revision plus a compact evidence baton, which reduces context growth and avoids fragile session replay. Legacy paused v1 battles may still carry a provider session identifier for staged compatibility. Provider-side history is controlled by the provider CLI, not Duo.
 
@@ -49,9 +53,11 @@ Crash recovery is intentionally conservative. Duo can reconstruct its local curs
 | Provider unavailable, lost session, or host interruption | Pause | Existing evidence and cursor remain; resume when available. |
 | Object/array/mixed stream compatibility | Local replay first | Duo decodes the bounded local spool before considering another model call. |
 | Missing or invalid collaboration contract | One narrow tool-free recovery | Dialogue repair uses the capsule schema and supervisor persistence; expensive implementation is not repeated. Legacy staged handoff recovery remains available only to restored v1 battles. If recovery remains invalid, pause. |
-| Planned dialogue or source-call deadline | Timebox | Preserve durable work and advance only according to the balanced call contract. |
+| Planned dialogue or wall-clock source deadline | Timebox | Preserve durable work and advance only according to the balanced call contract. |
+| Claude inference-message lease | Durable handoff | Finish every in-flight Bash, Skill, MCP, or edit result, preserve durable work, and hand off. If no edit landed, run one fresh compact continuation; a second empty boundary pauses safely instead of ending the run. |
 | Supervisor verification failure | Bounded repair | Agent claims are advisory. A result cannot become ready until the independent supervisor passes the exact latest revision. |
-| Workspace drift or safety violation | Terminal failure | Stop before allowing unsafe or mismatched workspace changes. Unknown paused drift is never auto-restored. |
+| Workspace drift | Explicit adoption pause | Never auto-run changed source. Preserve it, require Resume to adopt a new checkpoint, invalidate stale verification, and reconcile before advancing. |
+| Safety violation | Terminal failure | Stop before following linked paths or allowing unsafe workspace changes. |
 | Human **Stop** | Cancelled | Terminate process trees, preserve files, and return the prompt for revision. This is not a resumable pause. |
 
 Unknown failures do not become generic terminal failures. They pause with local diagnostics so a user can inspect the preserved battle instead of losing the run.
@@ -62,8 +68,10 @@ Token reduction must not silently reduce the artifact quality gate.
 
 - Product dialogue is schema-constrained, tool-free, and receives bounded board/opponent context rather than raw transcripts.
 - Normal Real Mode uses seven provider calls: four tool-free debate calls, two fresh deep source contributions, and one compact reciprocal review. Repair pairs are evidence-triggered.
-- Source contributions receive a compact brief, sealed decision, board, teammate handoff, and current files instead of resumed transcript history. Reads/searches are batched and Claude receives only essential workspace tools.
-- Max/Ultra effort remains concentrated on implementation, visual polish, and evidenced repairs. Debate and cross-review use bounded effort.
+- Source contributions receive a compact focus baton with the mission, board, teammate handoff, current verification, and bounded app inventory instead of resumed transcript history.
+- Core source work uses only supervised workspace tools and no user capabilities. Smart uses the compact app-owned skill plus configured plugins, apps, and MCPs while suppressing the global user-skill catalog. Broad restores that catalog and is the high-context/high-quota option. Neither profile loads generated-workspace project/local settings, hooks, or hidden subagents.
+- Balanced quality routing keeps long Claude implementation at High, bounds routine debate and verification lower, and retains the selected premium effort for bounded review. The force-selected override is available but intentionally spends more quota.
+- The Claude inference-message lease prevents one source capsule from consuming the entire provider window. It is a durable handoff boundary, not a run timeout or a silent quality downgrade.
 - The local provider spool is decoded and replayed before a contract-recovery call.
 - Narrow recovery fixes missing dialogue records without repeating implementation. It is structured, ephemeral, and tool-free, and the supervisor writes the protocol.
 - Both agents still need accepted implementation, an owned completed task, reply-linked cross-review, and current verification before `ready` is truthful.
@@ -73,7 +81,7 @@ These controls reduce avoidable context and duplicate calls. They do not guarant
 
 ## Privacy and support reports
 
-Prompts, sealed ideas, transcripts, raw streams, and provider-owned session data remain local. Do not attach the entire runtime or workspace to a public issue.
+Prompts, sealed ideas, transcripts, raw streams, and provider-owned session data remain local. Raw provider payload, private metadata, capability configuration, and credentials never cross the preload bridge, even in Full Chaos or after reveal. Do not attach the entire runtime or workspace to a public issue.
 
 The main-process support-bundle foundation emits a bounded allowlist of diagnostic facts: run status, pause/failure code, stage cursor, CLI versions/capabilities supplied by the caller, numeric usage totals, public event-type counts, and relative file fingerprints. It excludes raw/private/transcript content, absolute user paths, environment tokens, emails, and hidden product terms. Unknown file names are pseudonymized and large files receive a clearly marked prefix hash.
 
@@ -85,6 +93,7 @@ The support-bundle generator currently has no renderer export button. Until one 
 - Confirm the title bar says **Live run** only after both providers pass preflight.
 - Use **Chaos + Spoiler Shield** for the intended on-camera experience.
 - Verify the selected model and effort on both agent cards before pressing Start.
+- Verify the toolbelt and effective effort shown on both agent cards. Use Core when external capabilities are not needed; review the local CLI's user configuration before recording with Smart or Broad.
 - Keep raw process streams collapsed; they can contain paths or provider metadata.
 - Hide desktop notifications and avoid showing Settings if the workspace path identifies the Windows account.
 - Leave sufficient provider quota for both agents. A quota pause is safe, but a long reset is poor live pacing.
@@ -97,6 +106,7 @@ The support-bundle generator currently has no renderer export button. Until one 
 - Application workspace scoping is not VM/container isolation.
 - Upstream CLI output, model aliases, effort flags, usage fields, and session-resume behavior may change.
 - Capability snapshots prove only what the local health/catalog probes can observe.
+- Smart/Broad capabilities may access user-authorized services beyond the generated workspace; Duo cannot inspect or reduce those external permissions. Broad additionally loads the full user-skill catalog and may consume substantially more context and quota.
 - Paused runs require a manual Resume action; Duo does not wait in the background for quota reset.
 - Provider-owned session history may remain after a local Duo run is deleted.
 - Active-time recovery is local and durable, but remote calls cannot be made exactly-once across power loss.

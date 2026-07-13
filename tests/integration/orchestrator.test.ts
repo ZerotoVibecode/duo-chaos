@@ -129,7 +129,7 @@ describe('simulation orchestration', () => {
     expect(fakeRunner.turns).toBe(7)
     expect(locked?.totalTurns).toBe(7)
     expect(locked?.round).toBe(7)
-    expect(locked?.agentRuntimes).toEqual({
+    expect(locked?.agentRuntimes).toMatchObject({
       codex: { model: 'gpt-5.6-sol', effort: 'max', source: 'studio' },
       claude: { model: 'fable', effort: 'high', source: 'studio' }
     })

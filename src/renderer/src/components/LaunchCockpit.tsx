@@ -15,7 +15,7 @@ const executionModes: Array<{ id: ExecutionMode; label: string; detail: string; 
 const visibilityModes: Array<{ id: VisibilityMode; label: string; detail: string; icon: React.ReactNode }> = [
   { id: 'blind', label: 'Blind', detail: 'Only phase signals', icon: <EyeOff size={15} /> },
   { id: 'spoiler-shield', label: 'Spoiler Shield', detail: 'Drama, nouns redacted', icon: <Shield size={15} /> },
-  { id: 'full-chaos', label: 'Full Chaos', detail: 'Raw output may spoil', icon: <Eye size={15} /> }
+  { id: 'full-chaos', label: 'Full Chaos', detail: 'Unredacted detail may spoil', icon: <Eye size={15} /> }
 ]
 
 const missionProfiles: Array<{ id: MissionProfile; label: string; detail: string; icon: React.ReactNode }> = [
@@ -62,10 +62,16 @@ export function LaunchCockpit(): React.JSX.Element {
   const gitHealth = health.find((item) => item.id === 'git')
   const realReady = Boolean(codexHealth?.available && claudeHealth?.available && gitHealth?.available)
   const realUnavailable = form.executionMode !== 'simulation' && !realReady
+  const toolbeltNeedsTrust = form.executionMode !== 'simulation' && form.executionMode !== 'safe' && Boolean(settings) && (
+    settings?.codexCustomizationProfile !== 'core' || settings?.claudeCustomizationProfile !== 'core'
+  ) && settings?.trustedLocalCapabilitiesConfirmed !== true
+  const toolbeltUnsupportedInSafe = form.executionMode === 'safe' && Boolean(settings) && (
+    settings?.codexCustomizationProfile !== 'core' || settings?.claudeCustomizationProfile !== 'core'
+  )
   const startLabel = form.executionMode === 'simulation'
     ? 'Start simulation'
     : form.missionProfile === 'serious' ? 'Start serious build' : 'Start blind build'
-  const canStart = form.prompt.trim().length >= 3 && form.workspaceRoot.length > 0 && !busy && !realUnavailable && Boolean(settings)
+  const canStart = form.prompt.trim().length >= 3 && form.workspaceRoot.length > 0 && !busy && !realUnavailable && !toolbeltNeedsTrust && !toolbeltUnsupportedInSafe && Boolean(settings)
   const codexEffort = settings?.codexEffort && settings.codexEffort !== 'default' ? settings.codexEffort : codexHealth?.runtime?.effort
   const claudeEffort = settings?.claudeEffort && settings.claudeEffort !== 'default' ? settings.claudeEffort : claudeHealth?.runtime?.effort
   const codexProfile = formatRuntimeProfile({
@@ -80,7 +86,9 @@ export function LaunchCockpit(): React.JSX.Element {
   })
   const workLease = formatBudget(settings?.turnTimeoutSeconds ?? 7_200)
   const runCeiling = formatBudget(settings?.runTimeoutSeconds ?? 86_400)
-  const deepEffort = deepWorkEffort(codexEffort, claudeEffort)
+  const deepEffort = settings?.qualityRoutingProfile === 'balanced' && ['max', 'xhigh'].includes(claudeEffort ?? '')
+    ? `${deepWorkEffort(claudeEffort)} ceiling`
+    : deepWorkEffort(codexEffort, claudeEffort)
   const scheduledTurns = settings?.maxTurns ?? 11
 
   return (
@@ -121,7 +129,7 @@ export function LaunchCockpit(): React.JSX.Element {
             <article><Scale size={15} /><span><strong>Reciprocal authority</strong><small>7 core calls · {Math.max(0, scheduledTurns - 7)} adaptive capacity</small></span></article>
             <article><RotateCcw size={15} /><span><strong>Crash-safe resume</strong><small>Durable local checkpoint</small></span></article>
             <article><TimerReset size={15} /><span><strong>Soft work leases</strong><small>{workLease} handoff · work preserved</small></span></article>
-            <article><Gauge size={15} /><span><strong>{deepEffort}</strong><small>Reserved for source · dialogue stays lean</small></span></article>
+            <article><Gauge size={15} /><span><strong>{deepEffort}</strong><small>{settings?.qualityRoutingProfile === 'balanced' ? 'Claude implementation High · premium review bounded' : 'Selected effort for source · dialogue stays lean'}</small></span></article>
           </section>
 
           <div className="prompt-field">
@@ -225,6 +233,8 @@ export function LaunchCockpit(): React.JSX.Element {
 
           {error && <div className="inline-error" role="alert"><TriangleAlert size={16} />{error}</div>}
           {realUnavailable && <div className="inline-error quiet"><TriangleAlert size={16} />Real Mode needs Codex, Claude Code, and Git ready—or switch back to Simulation.</div>}
+          {toolbeltNeedsTrust && <div className="inline-error quiet"><TriangleAlert size={16} />Confirm the local CLI toolbelt in Agent loadout before Real Mode. Capability names and credentials stay private.</div>}
+          {toolbeltUnsupportedInSafe && <div className="inline-error quiet"><TriangleAlert size={16} />Safe Mode supports Core tools only. Choose Chaos to let unattended turns use plugins, apps, or MCPs.</div>}
 
           <div className="launch-actions">
             <div className="safety-copy"><Shield size={15} /><span>Generated runs stay in a fresh local workspace. Nothing is published.</span></div>
@@ -239,7 +249,7 @@ export function LaunchCockpit(): React.JSX.Element {
 
         <aside className="launch-side-rail">
           <AgentLoadoutPanel
-            key={`${settings?.codexModel ?? ''}:${settings?.codexEffort ?? 'default'}:${settings?.claudeModel ?? ''}:${settings?.claudeEffort ?? 'default'}`}
+            key={`${settings?.codexModel ?? ''}:${settings?.codexEffort ?? 'default'}:${settings?.claudeModel ?? ''}:${settings?.claudeEffort ?? 'default'}:${settings?.codexCustomizationProfile ?? 'core'}:${settings?.claudeCustomizationProfile ?? 'core'}:${String(settings?.trustedLocalCapabilitiesConfirmed ?? false)}`}
             health={health}
             settings={settings}
             busy={busy}

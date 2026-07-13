@@ -36,7 +36,8 @@ const capabilitySchema = z.object({
   sessionResume: z.boolean(),
   discoveredAt: timestampSchema,
   models: z.array(z.string().trim().min(1).max(256)).max(100).optional(),
-  efforts: z.array(z.string().trim().min(1).max(64)).max(20).optional()
+  efforts: z.array(z.string().trim().min(1).max(64)).max(20).optional(),
+  customizationProfile: z.enum(['core', 'smart', 'full-local']).optional()
 }).strict()
 
 const retrySchema = z.object({
@@ -72,7 +73,12 @@ export const durableRunManifestSchema = z.object({
     maxTurns: z.number().int().min(2).max(50),
     maxRepairLoops: z.number().int().min(0).max(10),
     turnTimeoutSeconds: z.number().int().positive(),
-    runTimeoutSeconds: z.number().int().positive()
+    runTimeoutSeconds: z.number().int().positive(),
+    codexCustomizationProfile: z.enum(['core', 'smart', 'full-local']).optional(),
+    claudeCustomizationProfile: z.enum(['core', 'smart', 'full-local']).optional(),
+    trustedLocalCapabilitiesConfirmed: z.boolean().optional(),
+    qualityRoutingProfile: z.enum(['balanced', 'force-selected']).optional(),
+    claudeWorkInferenceLimit: z.number().int().min(3).max(20).optional()
   }).strict(),
   loadout: z.object({
     claude: loadoutSchema,
@@ -88,7 +94,27 @@ export const durableRunManifestSchema = z.object({
     attempt: z.number().int().positive(),
     idempotencyKey: z.string().trim().min(1).max(256),
     recoveryOriginStage: z.enum(['dialogue', 'opening', 'work', 'verdict']).optional(),
-    recoveryReasons: z.array(z.string().trim().min(1).max(128)).max(20).optional()
+    recoveryReasons: z.array(z.string().trim().min(1).max(128)).max(20).optional(),
+    stageReceipt: z.object({
+      turnId: z.string().trim().min(1).max(256),
+      agent: agentSchema,
+      kind: z.string().trim().min(1).max(64),
+      stage: z.enum(['dialogue', 'opening', 'work', 'verdict', 'recovery']),
+      status: z.enum(['running', 'completed', 'timeboxed', 'paused']),
+      startedAt: timestampSchema,
+      deadlineAt: timestampSchema,
+      attempt: z.number().int().positive(),
+      effort: z.string().trim().min(1).max(64).optional(),
+      qualityCeiling: z.string().trim().min(1).max(64).optional(),
+      customizationProfile: z.enum(['core', 'smart', 'full-local']).optional(),
+      inferenceSteps: z.number().int().nonnegative().optional(),
+      inferenceLimit: z.number().int().positive().max(100).optional(),
+      continuationCount: z.number().int().nonnegative().max(10).optional(),
+      nextAgent: agentSchema.optional(),
+      durableSourceChanged: z.boolean().optional(),
+      durableWorkEvidence: z.boolean().optional(),
+      evidenceFingerprint: z.string().max(64_000).optional()
+    }).strict().optional()
   }).strict(),
   providerSessions: z.object({
     claude: z.string().trim().min(1).max(256).optional(),

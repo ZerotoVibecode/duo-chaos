@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_TURN_BUDGET_POLICY,
+  extendStageDeadlineForPause,
+  remainingStageLeaseSeconds,
   resolveStageBudgetSeconds,
   validateTurnBudgetPolicy
 } from '../../src/main/orchestrator/turn-budget'
@@ -42,5 +44,17 @@ describe('broadcast turn budget policy', () => {
     expect(resolveStageBudgetSeconds('work', DEFAULT_TURN_BUDGET_POLICY, 75)).toBe(75)
     expect(resolveStageBudgetSeconds('verdict', DEFAULT_TURN_BUDGET_POLICY, 45)).toBe(45)
     expect(resolveStageBudgetSeconds('recovery', DEFAULT_TURN_BUDGET_POLICY, 0)).toBe(0)
+  })
+
+  it('freezes a stage lease during a pause and resumes only its exact remainder', () => {
+    const deadline = '2026-07-13T12:10:00.000Z'
+    const resumedDeadline = extendStageDeadlineForPause(
+      deadline,
+      Date.parse('2026-07-13T12:04:00.000Z'),
+      Date.parse('2026-07-13T13:04:00.000Z')
+    )
+    expect(resumedDeadline).toBe('2026-07-13T13:10:00.000Z')
+    expect(remainingStageLeaseSeconds(resumedDeadline, Date.parse('2026-07-13T13:04:00.000Z'))).toBe(360)
+    expect(resolveStageBudgetSeconds('work', DEFAULT_TURN_BUDGET_POLICY, 10_000, 360)).toBe(360)
   })
 })

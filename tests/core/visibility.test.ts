@@ -115,7 +115,7 @@ describe('renderer visibility projection', () => {
     expect(dictionaryRedacted.publicText).toBe('Claude thinks [APP_NAME] needs a clearer completion state.')
   })
 
-  it('does not quarantine agent protocol speech in Full Chaos or after reveal', () => {
+  it('keeps public protocol speech in Full Chaos and after reveal without forwarding provider-private fields', () => {
     const staged = {
       ...opinion,
       id: 'staged-full-chaos',
@@ -131,22 +131,56 @@ describe('renderer visibility projection', () => {
     }
 
     expect(projectEventForRenderer(staged, 'full-chaos', false, terms).publicText)
-      .toBe('The private emoji button responds after seven clicks.')
+      .toBe('The emoji button responds after seven clicks.')
     expect(projectEventForRenderer(staged, 'spoiler-shield', true, terms).publicText)
       .toBe('The emoji button responds after seven clicks.')
+    expect(projectEventForRenderer(staged, 'full-chaos', false, terms).privateText).toBeUndefined()
+    expect(projectEventForRenderer(staged, 'spoiler-shield', true, terms).metadata).toBeUndefined()
   })
 
-  it('allows private details after reveal', () => {
+  it('never forwards provider-private details after reveal', () => {
     const projected = projectEventForRenderer(opinion, 'spoiler-shield', true, terms)
-    expect(projected.privateText).toContain('pantry duel')
+    expect(projected.privateText).toBeUndefined()
+    expect(projected.metadata).toBeUndefined()
+    expect(projected.revealPacket).toBeUndefined()
   })
 
-  it('allows raw detail in explicitly selected Full Chaos mode', () => {
+  it('uses spoiler-full public speech rather than raw provider detail in Full Chaos mode', () => {
     const projected = projectEventForRenderer(opinion, 'full-chaos', false, terms)
-    expect(projected.publicText).toContain('pantry duel')
+    expect(projected.publicText).toBe('Claude thinks the Nebula Pantry interaction is overbuilt.')
     expect(projected.privateText).toBeUndefined()
     expect(projected.metadata).toBeUndefined()
     expect(projected.privateTopic).toBeUndefined()
+  })
+
+  it('keeps arbitrary MCP/plugin payload secrets and capability inventory out of renderer IPC', () => {
+    const sensitive = {
+      ...opinion,
+      id: 'provider-payload',
+      type: 'cli.log' as const,
+      publicText: 'Claude completed a private capability call.',
+      privateText: JSON.stringify({
+        server: 'private-company-mcp',
+        tool: 'read_customer_records',
+        input: { apiKey: 'not-a-real-key', cookie: 'session=secret' },
+        result: { accessToken: 'not-a-real-token', signedUrl: 'https://example.invalid/?sig=secret' }
+      }),
+      metadata: {
+        plugin: 'private-company-plugin',
+        toolInput: { password: 'not-a-real-password' },
+        toolResult: { jwt: 'not-a-real-jwt' }
+      }
+    }
+
+    for (const mode of ['blind', 'spoiler-shield', 'full-chaos'] as const) {
+      for (const revealed of [false, true]) {
+        const projected = projectEventForRenderer(sensitive, mode, revealed, [])
+        const serialized = JSON.stringify(projected)
+        expect(projected.privateText).toBeUndefined()
+        expect(projected.metadata).toBeUndefined()
+        expect(serialized).not.toMatch(/private-company|apiKey|cookie|accessToken|signedUrl|password|jwt|secret/iu)
+      }
+    }
   })
 
   it('never exposes a reveal packet or private task structure through Full Chaos before reveal', () => {
@@ -166,7 +200,7 @@ describe('renderer visibility projection', () => {
       }
     }, 'full-chaos', false, terms)
 
-    expect(projected.publicText).toContain('pantry duel')
+    expect(projected.publicText).toBe(opinion.publicText)
     expect(projected.revealPacket).toBeUndefined()
     expect(projected.privateText).toBeUndefined()
     expect(projected.privateTopic).toBeUndefined()

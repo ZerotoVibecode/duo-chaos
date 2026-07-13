@@ -118,7 +118,11 @@ export function RunDashboard({ run }: { run: RunSnapshot }): React.JSX.Element {
             <span>Turn {run.round} of {totalTurns}</span>
             {turnStage && (
               <span className={`turn-stage-clock stage-${turnStage.stage} status-${turnStage.status}`}>
-                {turnStageLabel(turnStage)}{turnStage.status === 'running' ? ` · ${clockText(remaining)} left` : ''}
+                {turnStageLabel(turnStage)}
+                {turnStage.status === 'running' ? ` · ${clockText(remaining)} left` : ''}
+                {turnStage.inferenceLimit !== undefined
+                  ? ` · ${String(turnStage.inferenceSteps ?? 0)}/${String(turnStage.inferenceLimit)} model steps`
+                  : ''}
               </span>
             )}
           </div>

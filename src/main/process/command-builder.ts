@@ -1,4 +1,4 @@
-import type { AgentEffort, CodexEffort, ExecutionMode } from '@shared/types'
+import type { AgentEffort, CodexEffort, CustomizationProfile, ExecutionMode } from '@shared/types'
 
 export interface StructuredDialoguePolicy {
   kind: 'structured-dialogue' | 'structured-recovery'
@@ -18,6 +18,7 @@ interface BuildAgentCommandBase {
   dialoguePolicy?: StructuredDialoguePolicy
   sourcePolicy?: {
     toolPolicy: 'workspace-essential'
+    customizationProfile?: CustomizationProfile
   }
   session?:
     | { mode: 'start'; id?: string }
@@ -95,6 +96,10 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
   const effort = input.effort && input.effort !== 'default' ? input.effort : undefined
   const dialoguePolicy = input.dialoguePolicy
   const sourcePolicy = input.sourcePolicy
+  const customizationProfile = sourcePolicy?.customizationProfile ?? 'core'
+  if (input.executionMode === 'safe' && sourcePolicy && customizationProfile !== 'core') {
+    throw new Error('Safe execution supports Core toolbelts only; unattended local capabilities require Chaos or YOLO Sandbox.')
+  }
   const prompt = dialoguePolicy ? structuredOutputPrompt(input.prompt, dialoguePolicy.kind) : input.prompt
   // Supervised runs are a closed command contract. Legacy extra-argument fields
   // remain loadable for settings compatibility, but never enter a child command:
@@ -108,15 +113,26 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
         : input.executionMode === 'yolo-sandbox'
         ? ['--dangerously-bypass-approvals-and-sandbox']
         : ['--ask-for-approval', 'never', '--sandbox', 'workspace-write']
-    const leanContextArgs = [
-      '--disable', 'plugins',
-      '--disable', 'apps',
-      '--disable', 'multi_agent',
-      '--disable', 'hooks',
-      ...(dialoguePolicy ? ['--disable', 'shell_tool'] : []),
-      '-c', 'skills.include_instructions=false',
-      '-c', 'mcp_servers={}'
-    ]
+    const leanContextArgs = dialoguePolicy || customizationProfile === 'core'
+      ? [
+          '--disable', 'plugins',
+          '--disable', 'apps',
+          '--disable', 'multi_agent',
+          '--disable', 'hooks',
+          ...(dialoguePolicy ? ['--disable', 'shell_tool'] : []),
+          '-c', 'skills.include_instructions=false',
+          '-c', 'mcp_servers={}'
+        ]
+      : [
+          // User MCP servers, apps and plugins stay available in source work;
+          // Broad also keeps user skills. Hidden subagent fan-out and hooks stay
+          // disabled in every profile.
+          '--disable', 'multi_agent',
+          '--disable', 'hooks',
+          // Smart mode avoids paying to advertise every user skill. Duo's
+          // app-owned workflow remains available by its explicit workspace path.
+          ...(customizationProfile === 'smart' ? ['-c', 'skills.include_instructions=false'] : [])
+        ]
     const executionArgs = [
       // Generated workspaces intentionally keep Git metadata outside the
       // agent-writable tree. Tell Codex that the supervisor has already
@@ -158,6 +174,24 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
     : input.session?.mode === 'start'
       ? input.session.id ? ['--session-id', input.session.id] : []
       : ['--no-session-persistence']
+  const lockedClaudeContext = dialoguePolicy || customizationProfile === 'core'
+  const supervisedClaudeSettings = JSON.stringify({
+    disableAllHooks: true,
+    includeGitInstructions: false
+  })
+  const claudeCustomizationArgs = lockedClaudeContext
+    ? ['--safe-mode', '--disable-slash-commands']
+    // Both capability profiles inherit authenticated user-level plugin/MCP
+    // settings. Smart suppresses the skill catalog below; Broad retains it.
+    // Project/local settings are never trusted by supervised runs.
+    : [
+        '--setting-sources', 'user',
+        '--settings', supervisedClaudeSettings,
+        '--disallowedTools', 'Agent,Task',
+        // Smart keeps plugins/apps/MCPs but suppresses the potentially huge
+        // user skill catalog. Broad intentionally leaves user skills enabled.
+        ...(customizationProfile === 'smart' ? ['--disable-slash-commands'] : [])
+      ]
   return {
     bin: input.binary,
     args: [
@@ -167,18 +201,16 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
       '--output-format',
       dialoguePolicy ? 'json' : 'stream-json',
       '--verbose',
-      // `--bare` also disables OAuth and keychain reads. Safe mode gives us
-      // the lean, customization-free context without breaking subscription
-      // authentication for local Claude Code users.
-      '--safe-mode',
-      '--disable-slash-commands',
+      // `--bare` also disables OAuth and keychain reads. Core mode uses safe
+      // mode; source stages can instead inherit a deliberately scoped toolbelt.
+      ...claudeCustomizationArgs,
       '--exclude-dynamic-system-prompt-sections',
       '--prompt-suggestions',
       'false',
       ...permissionMode,
       ...sessionArgs,
       ...(dialoguePolicy ? ['--tools', '', '--json-schema', JSON.stringify(dialoguePolicy.outputSchema)] : []),
-      ...(sourcePolicy?.toolPolicy === 'workspace-essential'
+      ...(sourcePolicy?.toolPolicy === 'workspace-essential' && lockedClaudeContext
         ? ['--tools', 'Read,Glob,Grep,Edit,Write,Bash']
         : []),
       ...(model ? ['--model', model] : []),

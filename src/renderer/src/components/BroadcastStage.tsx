@@ -183,8 +183,10 @@ export function BroadcastStage({ run, conflict }: BroadcastStageProps): React.JS
       </ol>
 
       <article
+        key={beat.id}
         className="broadcast-beat"
         role="status"
+        aria-atomic="true"
         aria-label="Current broadcast beat"
         data-testid="broadcast-beat"
         data-beat-id={beat.id}

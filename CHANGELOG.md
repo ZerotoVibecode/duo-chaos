@@ -2,7 +2,18 @@
 
 ## Unreleased
 
-- Keep Claude source contributions in safe mode without `--bare`, preserving local OAuth/keychain authentication while retaining limited tools and fresh non-persistent sessions.
+- Added explicit Core, Smart, and Broad source-stage toolbelts. Core disables user capabilities. Smart, the default, combines the compact app-owned `duo-quality` skill with configured plugins, apps, and MCPs while suppressing the global user-skill catalog. Broad restores the full user-skill catalog and is explicitly the high-context, high-quota option. Smart/Broad require local-capability trust; generated-workspace project/local settings, hooks, and hidden subagents remain disabled.
+- Hardened that toolbelt boundary by restoring canonical supervisor instructions between turns, quarantining generated project CLI configuration, keeping Safe Mode Core-only, and preventing supervisor scaffolding from entering generated Git checkpoints.
+- Seeded a small app-owned `duo-quality` skill into generated workspaces so both CLIs receive the same quality, evidence, accessibility, and teammate-preservation contract without replaying a large instruction pack.
+- Added balanced quality routing: long Claude implementation is capped at High, routine dialogue and verification remain bounded, and the selected premium effort is retained as the visible quality ceiling for bounded review. A force-selected override remains available.
+- Added a Claude inference-message lease that waits for every in-flight tool result, preserves completed edit boundaries, performs at most one fresh compact no-edit continuation, and pauses safely rather than terminating a run when a second capsule cannot land durable evidence.
+- Added explicit crash-drift adoption: preserved uncheckpointed source reappears as a resumable workspace-drift boundary, is checkpointed only after the user resumes, and must be reverified before release.
+- Added supervisor-built focus batons with the owned mission, bounded board, latest verification, and small app inventory to reduce repeated repository discovery without weakening the source or release gates.
+- Pinned model, effort ceiling, toolbelt, quality routing, inference lease, stage receipt, continuation count, and durable evidence across pause, resume, and restart reconstruction.
+- Normalize bounded dialogue text locally before spending a contract-recovery call, while retaining strict structured-output and Spoiler Shield validation.
+- Restored the factual, deduplicated Live Pulse ticker, re-keyed broadcast transitions to real evidence beats, and raised the minimum interface type floor to 11px.
+- Added a deterministic `benchmark:quality` architecture-contract benchmark that makes zero provider calls, gates quality before efficiency, and rejects Claude, direct-API, and Sol-Ultra fixture commands.
+- Kept raw provider payload, private metadata, capability configuration, and credentials out of renderer IPC in every visibility and reveal state.
 - Persist successful workspace-inspection and verification receipts across durable resumes, invalidate them on source revision changes, and let a later pass supersede an earlier failed command instead of repeating an expensive provider turn.
 - Allow integrating and repair agents to preserve already-correct source after durable workspace proof and a direct handoff; the first builder still requires a real source change, and the independent supervisor remains the only release authority.
 - Completed a real Chaos + Spoiler Shield canary with Terra Low and Sonnet Low: seven core calls, direct rivalry, two owned tasks, reciprocal review, exact-revision supervisor verification, artifact preview, and successful reveal.

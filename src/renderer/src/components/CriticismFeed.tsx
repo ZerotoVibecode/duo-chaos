@@ -1,4 +1,4 @@
-import { Flame, LockKeyhole, MessageSquareReply, MessageSquareQuote, SlidersHorizontal } from 'lucide-react'
+import { Activity, Flame, LockKeyhole, MessageSquareReply, MessageSquareQuote, SlidersHorizontal } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { DuoEvent, MissionProfile } from '@shared/types'
 import { missionPresentation } from '@renderer/lib/mission-presentation'
@@ -9,6 +9,27 @@ interface CriticismFeedProps {
 }
 
 type FeedFilter = 'all' | 'claude' | 'codex' | 'hot'
+
+const LIVE_ACTIVITY_TYPES = new Set<DuoEvent['type']>([
+  'agent.started',
+  'agent.activity',
+  'task.created',
+  'task.claimed',
+  'task.updated',
+  'file.changed',
+  'git.checkpoint',
+  'build.started',
+  'build.failed',
+  'build.passed',
+  'repair.started',
+  'repair.completed',
+  'run.paused',
+  'run.resumed',
+  'reveal.ready',
+  'run.completed',
+  'run.failed',
+  'run.cancelled'
+])
 
 function timestamp(value: string): number {
   const parsed = Date.parse(value)
@@ -31,6 +52,20 @@ export function CriticismFeed({ events, missionProfile = 'surprise' }: Criticism
       .sort((left, right) => timestamp(left.timestamp) - timestamp(right.timestamp)),
     [events, filter]
   )
+  const activity = useMemo(() => {
+    const latestBySignal = new Map<string, DuoEvent>()
+    events
+      .filter((event) => LIVE_ACTIVITY_TYPES.has(event.type) && event.publicText.trim().length > 0)
+      .sort((left, right) => timestamp(left.timestamp) - timestamp(right.timestamp))
+      .forEach((event) => {
+        const signal = `${event.agent}|${event.topic ?? ''}|${event.publicText}`
+        latestBySignal.set(signal, event)
+      })
+
+    return [...latestBySignal.values()]
+      .sort((left, right) => timestamp(left.timestamp) - timestamp(right.timestamp))
+      .slice(-6)
+  }, [events])
 
   useEffect(() => {
     if (followLatest.current) bottom.current?.scrollIntoView?.({ block: 'nearest' })
@@ -47,6 +82,30 @@ export function CriticismFeed({ events, missionProfile = 'surprise' }: Criticism
           ))}
         </div>
       </div>
+      <section className="live-activity" role="region" aria-label="Live activity">
+        <div className="live-activity-heading">
+          <span><Activity size={12} /> Live pulse</span>
+          <small>{activity.length} recent</small>
+        </div>
+        {activity.length > 0 ? (
+          <div className="activity-list" role="list" aria-label="Recent factual run activity">
+            {activity.map((event) => (
+              <article
+                role="listitem"
+                className={`activity-item activity-${event.agent}`}
+                key={event.id}
+              >
+                <i aria-hidden="true" />
+                <span>{displayAgent(event.agent)}</span>
+                <p>{event.publicText}</p>
+                <small>R{event.round}</small>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="activity-placeholder"><i aria-hidden="true" /><span>Listening for the first factual workspace signal…</span></div>
+        )}
+      </section>
       <div
         ref={feed}
         className="opinion-feed"
@@ -60,7 +119,7 @@ export function CriticismFeed({ events, missionProfile = 'surprise' }: Criticism
         }}
       >
         {dialogue.length === 0 ? (
-          <div className="empty-feed"><MessageSquareQuote size={22} /><strong>First public position pending.</strong><span>Live activity continues above; opinions appear as soon as an agent files one.</span></div>
+          <div className="empty-feed"><MessageSquareQuote size={22} /><strong>First public position pending.</strong><span>Public positions appear here when an agent addresses the other.</span></div>
         ) : dialogue.map((event) => <OpinionCard event={event} key={event.id} />)}
         <div ref={bottom} className="feed-bottom-anchor" aria-hidden="true" />
       </div>

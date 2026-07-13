@@ -151,12 +151,25 @@ export function projectEventForRenderer(
   revealed: boolean,
   terms: RedactionTerm[]
 ): DuoEvent {
-  if (revealed) return { ...event, publicText: redactText(event.publicText, terms) }
+  // Provider envelopes, tool inputs/results and private transcripts are a
+  // main-process-only record. Reveal unlocks product spoilers, never raw CLI
+  // payloads or capability inventories across IPC.
+  if (revealed) {
+    return {
+      ...stripPrivateStructure(event),
+      publicText: redactText(event.publicText, []),
+      ...(event.task
+        ? { task: projectTaskForRenderer(event.task, visibilityMode, true, terms) }
+        : {}),
+      rawAvailable: Boolean(event.privateText || event.rawAvailable)
+    }
+  }
 
   if (visibilityMode === 'full-chaos') {
     return {
       ...stripPrivateStructure(event),
-      publicText: redactText(event.privateText ?? event.publicText, []),
+      // Full Chaos is spoiler-full structured speech, not raw provider output.
+      publicText: redactText(event.publicText, []),
       rawAvailable: Boolean(event.privateText || event.rawAvailable)
     }
   }

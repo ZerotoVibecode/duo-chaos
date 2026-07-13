@@ -1,6 +1,6 @@
 import { Check, CircleAlert, RefreshCw, ShieldCheck, SquareTerminal } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { AgentEffort, AppSettings, CodexEffort, ToolHealth } from '@shared/types'
+import type { AgentEffort, AppSettings, CodexEffort, CustomizationProfile, ToolHealth } from '@shared/types'
 import { formatRuntimeProfile } from '@renderer/lib/runtime-label'
 import {
   catalogSourceLabel,
@@ -28,6 +28,9 @@ interface RuntimeDraft {
   codexEffort: CodexEffort
   claudeModel: string
   claudeEffort: AgentEffort
+  codexCustomizationProfile: CustomizationProfile
+  claudeCustomizationProfile: CustomizationProfile
+  trustedLocalCapabilitiesConfirmed: boolean
 }
 
 function draftFrom(settings?: AppSettings): RuntimeDraft {
@@ -35,7 +38,10 @@ function draftFrom(settings?: AppSettings): RuntimeDraft {
     codexModel: settings?.codexModel ?? '',
     codexEffort: settings?.codexEffort ?? 'default',
     claudeModel: settings?.claudeModel ?? '',
-    claudeEffort: settings?.claudeEffort ?? 'default'
+    claudeEffort: settings?.claudeEffort ?? 'default',
+    codexCustomizationProfile: settings?.codexCustomizationProfile ?? 'core',
+    claudeCustomizationProfile: settings?.claudeCustomizationProfile ?? 'core',
+    trustedLocalCapabilitiesConfirmed: settings?.trustedLocalCapabilitiesConfirmed ?? false
   }
 }
 
@@ -44,6 +50,9 @@ function sameDraft(left: RuntimeDraft, right: RuntimeDraft): boolean {
     && left.codexEffort === right.codexEffort
     && left.claudeModel === right.claudeModel
     && left.claudeEffort === right.claudeEffort
+    && left.codexCustomizationProfile === right.codexCustomizationProfile
+    && left.claudeCustomizationProfile === right.claudeCustomizationProfile
+    && left.trustedLocalCapabilitiesConfirmed === right.trustedLocalCapabilitiesConfirmed
 }
 
 function versionText(item?: ToolHealth): string {
@@ -92,7 +101,10 @@ export function AgentLoadoutPanel({ health, settings, busy, onRefresh, onSave, o
     draft.codexModel !== settings.codexModel ||
     effectiveCodexEffort !== settings.codexEffort ||
     draft.claudeModel !== settings.claudeModel ||
-    effectiveClaudeEffort !== settings.claudeEffort
+    effectiveClaudeEffort !== settings.claudeEffort ||
+    draft.codexCustomizationProfile !== settings.codexCustomizationProfile ||
+    draft.claudeCustomizationProfile !== settings.claudeCustomizationProfile ||
+    draft.trustedLocalCapabilitiesConfirmed !== settings.trustedLocalCapabilitiesConfirmed
   )
 
   const update = <K extends keyof RuntimeDraft>(key: K, value: RuntimeDraft[K]): void => {
@@ -155,6 +167,7 @@ export function AgentLoadoutPanel({ health, settings, busy, onRefresh, onSave, o
             <label className="loadout-field"><span>Effort</span><select aria-label="Codex effort" value={effectiveCodexEffort} onChange={(event) => update('codexEffort', event.target.value as CodexEffort)} disabled={busy}>{codexEfforts.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
           <div className="loadout-effective" title={codex?.catalog?.note}><span>{catalogSourceLabel(codex?.catalog)}</span><strong>{formatRuntimeProfile(codex?.runtime)}</strong></div>
+          <label className="loadout-field toolbelt-select"><span>Toolbelt</span><select aria-label="Codex toolbelt" value={draft.codexCustomizationProfile} onChange={(event) => update('codexCustomizationProfile', event.target.value as CustomizationProfile)} disabled={busy}><option value="smart">Smart · Duo + connected tools</option><option value="core">Core · no user capabilities</option><option value="full-local">Broad · all user skills</option></select></label>
         </article>
 
         <article className="loadout-agent loadout-claude">
@@ -172,8 +185,16 @@ export function AgentLoadoutPanel({ health, settings, busy, onRefresh, onSave, o
             <label className="loadout-field"><span>Effort</span><select aria-label="Claude effort" value={effectiveClaudeEffort} onChange={(event) => update('claudeEffort', event.target.value as AgentEffort)} disabled={busy}>{claudeEfforts.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
           <div className="loadout-effective" title={claude?.catalog?.note}><span>{catalogSourceLabel(claude?.catalog)}</span><strong>{formatRuntimeProfile(claude?.runtime)}</strong></div>
+          <label className="loadout-field toolbelt-select"><span>Toolbelt</span><select aria-label="Claude toolbelt" value={draft.claudeCustomizationProfile} onChange={(event) => update('claudeCustomizationProfile', event.target.value as CustomizationProfile)} disabled={busy}><option value="smart">Smart · Duo + connected tools</option><option value="core">Core · no user capabilities</option><option value="full-local">Broad · all user skills</option></select></label>
         </article>
       </div>
+
+      {(draft.codexCustomizationProfile !== 'core' || draft.claudeCustomizationProfile !== 'core') && (
+        <label className="toggle-field toolbelt-consent">
+          <input type="checkbox" checked={draft.trustedLocalCapabilitiesConfirmed} onChange={(event) => update('trustedLocalCapabilitiesConfirmed', event.target.checked)} disabled={busy} />
+          <span><strong>Allow my local CLI toolbelts</strong><small>Smart uses Duo's skill plus connected MCP/app/plugin tools. Broad also loads every user and plugin skill. Debate stays isolated.</small></span>
+        </label>
+      )}
 
       <section className="system-checks" role="group" aria-label="System checks">
         <div className="system-checks-heading"><span>System checks</span><strong>{systemReady}/{systemTools.length}</strong></div>

@@ -19,6 +19,10 @@ type TurnStage = {
   deadlineAt: string
   attempt: number
   effort?: string
+  qualityCeiling?: string
+  customizationProfile?: 'core' | 'smart' | 'full-local'
+  inferenceSteps?: number
+  inferenceLimit?: number
   nextAgent?: 'claude' | 'codex'
 }
 
@@ -49,6 +53,10 @@ function run(overrides: Partial<RunSnapshot> = {}, turnStage?: Partial<TurnStage
     workspacePath: 'C:\\DuoChaos\\workspaces\\run-broadcast-turn-ui',
     appPath: 'C:\\DuoChaos\\workspaces\\run-broadcast-turn-ui\\app',
     activeAgent: 'claude',
+    agentRuntimes: {
+      claude: { model: 'fable', effort: 'max', source: 'studio', qualityCeiling: 'max', customizationProfile: 'smart' },
+      codex: { model: 'gpt-5.6-terra', effort: 'low', source: 'studio', qualityCeiling: 'low', customizationProfile: 'core' }
+    },
     tasks: [],
     events: [],
     turnStage: {
@@ -60,7 +68,11 @@ function run(overrides: Partial<RunSnapshot> = {}, turnStage?: Partial<TurnStage
       startedAt: '2026-07-10T18:00:00.000Z',
       deadlineAt: '2026-07-10T20:00:00.000Z',
       attempt: 1,
-      effort: 'max',
+      effort: 'high',
+      qualityCeiling: 'max',
+      customizationProfile: 'smart',
+      inferenceSteps: 5,
+      inferenceLimit: 8,
       nextAgent: 'codex',
       ...turnStage
     },
@@ -108,7 +120,13 @@ describe('broadcast turn UI contract', () => {
     expect(pulse).toHaveTextContent(/turn 3 of 8/i)
     expect(pulse).toHaveTextContent(/work lease/i)
     expect(pulse).toHaveTextContent(/01:55:00 left/i)
+    expect(pulse).toHaveTextContent(/5\/8 model steps/i)
     expect(pulse).not.toHaveTextContent(/convergence/i)
+
+    const claudeCard = screen.getByRole('article', { name: /claude/i })
+    expect(claudeCard).toHaveTextContent(/high now/i)
+    expect(claudeCard).toHaveTextContent(/max ceiling/i)
+    expect(claudeCard).toHaveTextContent(/smart · duo \+ connected tools/i)
   })
 
   it('surfaces typed verification failures as decisive live evidence', () => {
@@ -126,6 +144,34 @@ describe('broadcast turn UI contract', () => {
     const beat = screen.getByTestId('broadcast-beat')
     expect(beat).toHaveAttribute('data-beat-kind', 'failure')
     expect(beat).toHaveTextContent(/verification command that failed/i)
+  })
+
+  it('remounts and atomically announces the broadcast beat when the live voice changes', () => {
+    const opening = event({
+      id: 'opening-beat',
+      type: 'agent.dispatch',
+      agent: 'claude',
+      dispatchKind: 'opening',
+      publicText: 'I want one unmistakable interaction.'
+    })
+    const counter = event({
+      id: 'counter-beat',
+      type: 'agent.dispatch',
+      agent: 'codex',
+      dispatchKind: 'counter',
+      timestamp: '2026-07-10T18:00:10.000Z',
+      publicText: 'I agree, but it needs a keyboard path.'
+    })
+    const { rerender } = render(<BroadcastStage run={run({ events: [opening] })} />)
+    const firstBeat = screen.getByTestId('broadcast-beat')
+
+    expect(firstBeat).toHaveAttribute('aria-atomic', 'true')
+
+    rerender(<BroadcastStage run={run({ events: [opening, counter] })} />)
+
+    const nextBeat = screen.getByTestId('broadcast-beat')
+    expect(nextBeat).not.toBe(firstBeat)
+    expect(nextBeat).toHaveTextContent(/keyboard path/i)
   })
 
   it('freezes elapsed time at finishedAt after a run ends', () => {
@@ -187,5 +233,27 @@ describe('broadcast turn UI contract', () => {
 
     expect(all).toHaveAttribute('aria-pressed', 'false')
     expect(claude).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('shows recent factual activity without duplicating repeated CLI signals', () => {
+    const repeatedSignal = 'Codex is inspecting the shared workspace.'
+    render(<CriticismFeed events={[
+      event({ id: 'activity-old', type: 'agent.activity', agent: 'codex', category: 'command', publicText: repeatedSignal }),
+      event({ id: 'activity-new', type: 'agent.activity', agent: 'codex', category: 'command', timestamp: '2026-07-10T18:00:10.000Z', publicText: repeatedSignal }),
+      event({ id: 'checkpoint', type: 'git.checkpoint', agent: 'director', timestamp: '2026-07-10T18:00:20.000Z', publicText: 'A durable checkpoint was recorded.' }),
+      event({ id: 'opinion', type: 'agent.dispatch', agent: 'claude', dispatchKind: 'counter', timestamp: '2026-07-10T18:00:30.000Z', publicText: 'The interaction still needs clearer feedback.' })
+    ]} />)
+
+    const liveActivity = screen.getByRole('region', { name: /live activity/i })
+    expect(within(liveActivity).getAllByText(repeatedSignal)).toHaveLength(1)
+    expect(within(liveActivity).getByText(/durable checkpoint/i)).toBeVisible()
+    expect(screen.getByRole('log', { name: /live rivalry/i })).toHaveTextContent(/clearer feedback/i)
+  })
+
+  it('describes the quiet activity and dialogue states without claiming hidden content exists', () => {
+    render(<CriticismFeed events={[]} />)
+
+    expect(screen.getByRole('region', { name: /live activity/i })).toHaveTextContent(/listening for the first factual workspace signal/i)
+    expect(screen.getByRole('log', { name: /live rivalry/i })).toHaveTextContent(/public positions appear here when an agent addresses the other/i)
   })
 })

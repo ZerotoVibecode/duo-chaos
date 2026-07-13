@@ -35,6 +35,11 @@ describe('public JSON schema contracts', () => {
     expect(value.properties).toHaveProperty('codexEffort')
     expect(value.properties).toHaveProperty('claudeModel')
     expect(value.properties).toHaveProperty('claudeEffort')
+    expect(value.properties).toHaveProperty('codexCustomizationProfile')
+    expect(value.properties).toHaveProperty('claudeCustomizationProfile')
+    expect(value.properties).toHaveProperty('trustedLocalCapabilitiesConfirmed')
+    expect(value.properties).toHaveProperty('qualityRoutingProfile')
+    expect(value.properties).toHaveProperty('claudeWorkInferenceLimit')
     const properties = value.properties as Record<string, { enum?: string[]; default?: number; maximum?: number }>
     expect(properties.codexEffort?.enum).toContain('ultra')
     expect(properties.claudeEffort?.enum).not.toContain('ultracode')
@@ -54,7 +59,15 @@ describe('public JSON schema contracts', () => {
     expect(value.properties).toHaveProperty('turnStage')
     const definitions = value.$defs as Record<string, { properties?: Record<string, { enum?: string[] }> }>
     expect(definitions.turnStage?.properties?.stage?.enum).toEqual(['dialogue', 'opening', 'work', 'verdict', 'recovery'])
+    expect(definitions.turnStage?.properties).toHaveProperty('qualityCeiling')
+    expect(definitions.turnStage?.properties).toHaveProperty('customizationProfile')
+    expect(definitions.turnStage?.properties).toHaveProperty('inferenceSteps')
+    expect(definitions.turnStage?.properties).toHaveProperty('inferenceLimit')
+    expect(definitions.turnStage?.properties).toHaveProperty('continuationCount')
+    expect(definitions.turnStage?.properties).toHaveProperty('durableSourceChanged')
     expect(definitions.agentRuntime?.properties?.effort?.enum).toContain('ultra')
+    expect(definitions.agentRuntime?.properties).toHaveProperty('qualityCeiling')
+    expect(definitions.agentRuntime?.properties).toHaveProperty('customizationProfile')
   })
 
   it('publishes agent dispatch and broadcast provenance contracts', async () => {

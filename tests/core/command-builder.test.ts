@@ -133,6 +133,90 @@ describe('CLI command builder', () => {
     expect(command.args).not.toContain('--resume')
   })
 
+  it('enables the user-level Claude toolbelt only for an explicit smart source stage', () => {
+    const command = buildAgentCommand({
+      agent: 'claude', executionMode: 'chaos', binary: 'claude', workspacePath: '/tmp/run',
+      prompt: 'Use relevant local capabilities on demand.', dangerousModeConfirmed: false,
+      model: 'fable', effort: 'high', extraArgs: [],
+      sourcePolicy: { toolPolicy: 'workspace-essential', customizationProfile: 'smart' }
+    })
+
+    expect(command.args).toEqual(expect.arrayContaining(['--setting-sources', 'user']))
+    expect(command.args).toEqual(expect.arrayContaining([
+      '--settings', '{"disableAllHooks":true,"includeGitInstructions":false}'
+    ]))
+    expect(command.args).not.toContain('--safe-mode')
+    expect(command.args).toContain('--disable-slash-commands')
+    expect(command.args).not.toContain('Read,Glob,Grep,Edit,Write,Bash')
+    expect(command.args).toEqual(expect.arrayContaining(['--disallowedTools', 'Agent,Task']))
+  })
+
+  it('never trusts generated-workspace settings, hooks, or subagent fan-out in full-local source stages', () => {
+    const claude = buildAgentCommand({
+      agent: 'claude', executionMode: 'chaos', binary: 'claude', workspacePath: '/tmp/generated-run',
+      prompt: 'Use relevant local capabilities on demand.', dangerousModeConfirmed: false,
+      model: 'fable', effort: 'high', extraArgs: [],
+      sourcePolicy: { toolPolicy: 'workspace-essential', customizationProfile: 'full-local' }
+    })
+    const codex = buildAgentCommand({
+      agent: 'codex', executionMode: 'chaos', binary: 'codex', workspacePath: '/tmp/generated-run',
+      prompt: 'Use relevant local capabilities on demand.', dangerousModeConfirmed: false,
+      model: 'gpt-5.6-terra', effort: 'low', extraArgs: [],
+      sourcePolicy: { toolPolicy: 'workspace-essential', customizationProfile: 'full-local' }
+    })
+
+    expect(claude.args).toEqual(expect.arrayContaining([
+      '--setting-sources', 'user', '--settings',
+      '{"disableAllHooks":true,"includeGitInstructions":false}',
+      '--disallowedTools', 'Agent,Task'
+    ]))
+    expect(claude.args).not.toContain('user,project,local')
+    expect(claude.args).not.toContain('--disable-slash-commands')
+    expect(codex.args).toEqual(expect.arrayContaining([
+      '--disable', 'multi_agent', '--disable', 'hooks'
+    ]))
+    expect(codex.args).not.toContain('skills.include_instructions=false')
+  })
+
+  it('enables Codex MCPs, apps, and plugins while suppressing skills, hidden subagents, and hooks in smart source stages', () => {
+    const command = buildAgentCommand({
+      agent: 'codex', executionMode: 'chaos', binary: 'codex', workspacePath: '/tmp/run',
+      prompt: 'Use relevant local capabilities on demand.', dangerousModeConfirmed: false,
+      model: 'gpt-5.6-terra', effort: 'low', extraArgs: [],
+      sourcePolicy: { toolPolicy: 'workspace-essential', customizationProfile: 'smart' }
+    })
+
+    expect(command.args).toEqual(expect.arrayContaining(['--disable', 'multi_agent', '--disable', 'hooks']))
+    expect(command.args).toContain('skills.include_instructions=false')
+    expect(command.args).not.toContain('mcp_servers={}')
+    expect(command.args).not.toEqual(expect.arrayContaining(['--disable', 'plugins']))
+    expect(command.args).not.toEqual(expect.arrayContaining(['--disable', 'apps']))
+  })
+
+  it('keeps structured dialogue locked even when a stale caller asks for local capabilities', () => {
+    const command = buildAgentCommand({
+      agent: 'claude', executionMode: 'chaos', binary: 'claude', workspacePath: '/tmp/run',
+      prompt: 'Debate only.', dangerousModeConfirmed: false, extraArgs: [],
+      dialoguePolicy: {
+        kind: 'structured-dialogue', outputSchema: { type: 'object' },
+        outputSchemaPath: '/tmp/schema.json', toolPolicy: 'none'
+      },
+      sourcePolicy: undefined
+    })
+
+    expect(command.args).toContain('--safe-mode')
+    expect(command.args).toContain('--disable-slash-commands')
+    expect(command.args).toEqual(expect.arrayContaining(['--tools', '']))
+  })
+
+  it('rejects Smart or Broad source toolbelts in unattended Safe execution', () => {
+    expect(() => buildAgentCommand({
+      agent: 'claude', executionMode: 'safe', binary: 'claude', workspacePath: '/tmp/run',
+      prompt: 'Use an MCP.', dangerousModeConfirmed: false, extraArgs: [],
+      sourcePolicy: { toolPolicy: 'workspace-essential', customizationProfile: 'smart' }
+    })).toThrow(/safe.*core|core.*safe/i)
+  })
+
   it('ignores legacy extra arguments that could override the visible loadout or permission mode', () => {
     const codex = buildAgentCommand({
       agent: 'codex', executionMode: 'chaos', binary: 'codex', workspacePath: '/tmp/run',

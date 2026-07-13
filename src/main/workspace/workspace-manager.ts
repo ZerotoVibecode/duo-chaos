@@ -1,7 +1,8 @@
-import { mkdir, realpath, writeFile } from 'node:fs/promises'
-import { resolve, sep } from 'node:path'
+import { lstat, mkdir, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { dirname, resolve, sep } from 'node:path'
 import type { ExecutionMode, MissionProfile, RunSnapshot, VisibilityMode } from '@shared/types'
 import { scanRecentBuilds, type RecentBuildScanOptions } from '@main/history/run-history'
+import { safeReadProtocolText, safeWriteProtocolText, UnsafeProtocolPathError } from './safe-protocol-files'
 import { writeSeriousMissionContract, writeSeriousMissionGuard } from './serious-mission-contract'
 
 export interface CreateRunWorkspaceInput {
@@ -57,9 +58,31 @@ const CLAUDE_RULES = `@AGENTS.md
 You are an equal collaborator, not a permanent planner or reviewer. Keep public text spoiler-safe and use private files for app-specific details.
 `
 
+const DUO_QUALITY_SKILL = `---
+name: duo-quality
+description: Focused acceptance-driven implementation and evidence review for a Duo Chaos source turn.
+---
+
+# Duo quality turn
+
+- Start from the supervisor FOCUS BATON and owned task. Broaden inspection only when evidence requires it.
+- Preserve accepted teammate work and make one distinct, complete contribution.
+- Use an existing skill, plugin, or MCP tool only when it reduces uncertainty or provides stronger evidence. Do not inventory the toolbelt and do not spawn subagents.
+- For UI work, choose a deliberate visual direction, readable type, responsive layout, accessible controls, and one memorable interaction instead of generic decoration.
+- Batch independent reads. Prefer the smallest useful verification command after the edit.
+- Finish with truthful board state and a concise teammate handoff. Never reveal hidden nouns in public files.
+`
+
 const GENERATED_GITIGNORE = `# All Duo coordination is runtime state. Agents can write it, so no .duo file
 # is ever promoted into a supervisor Git checkpoint.
 .duo/
+.agents/
+.claude/
+AGENTS.md
+AGENTS.override.md
+CLAUDE.md
+.codex/
+.mcp.json
 
 # Local credentials, dependencies, and generated output
 .env
@@ -71,6 +94,147 @@ build/
 coverage/
 *.log
 `
+
+const SUPERVISOR_IGNORE_RULES = [
+  '.duo/', '.agents/', '.claude/', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', '.codex/', '.mcp.json'
+] as const
+const PROJECT_POLICY_DIRECTORIES = new Set(['.agents', '.claude', '.codex'])
+const PROJECT_POLICY_FILES = new Set(['AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', '.mcp.json'])
+const POLICY_SCAN_SKIP_DIRECTORIES = new Set(['node_modules', '.git', 'dist', 'build', 'coverage'])
+const MAX_POLICY_SCAN_ENTRIES = 20_000
+const MAX_GITIGNORE_BYTES = 1024 * 1024
+
+async function assertCanonicalWorkspaceDirectory(path: string, workspaceRoot = path): Promise<void> {
+  const root = resolve(workspaceRoot)
+  const target = resolve(path)
+  if (!pathIsInside(target, root)) throw new UnsafeProtocolPathError()
+  const info = await lstat(target)
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new UnsafeProtocolPathError()
+  const canonical = await realpath(target)
+  if (comparisonPath(canonical) !== comparisonPath(target)) throw new UnsafeProtocolPathError()
+}
+
+async function ensureCanonicalWorkspaceDirectory(path: string, workspaceRoot: string): Promise<void> {
+  const root = resolve(workspaceRoot)
+  const target = resolve(path)
+  await assertCanonicalWorkspaceDirectory(root)
+  await assertCanonicalWorkspaceDirectory(dirname(target), root)
+  try {
+    await assertCanonicalWorkspaceDirectory(target, root)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    await mkdir(target)
+    await assertCanonicalWorkspaceDirectory(target, root)
+  }
+}
+
+async function safelyRemoveWorkspaceEntry(workspaceRoot: string, path: string): Promise<void> {
+  const root = resolve(workspaceRoot)
+  const target = resolve(path)
+  if (!pathIsInside(target, root) || target === root) throw new UnsafeProtocolPathError()
+  await assertCanonicalWorkspaceDirectory(root)
+  await assertCanonicalWorkspaceDirectory(dirname(target), root)
+  try {
+    const info = await lstat(target)
+    // `rm` removes a link itself. Recursive traversal is reserved for a real
+    // directory whose entire parent chain was just proven canonical.
+    await rm(target, { recursive: info.isDirectory() && !info.isSymbolicLink(), force: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+}
+
+async function scrubNestedProjectPolicy(root: string): Promise<void> {
+  let visited = 0
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      visited += 1
+      if (visited > MAX_POLICY_SCAN_ENTRIES) {
+        throw new Error('Generated app policy scan exceeded its safety boundary.')
+      }
+      const path = resolve(directory, entry.name)
+      if (PROJECT_POLICY_DIRECTORIES.has(entry.name) || PROJECT_POLICY_FILES.has(entry.name)) {
+        await rm(path, { recursive: true, force: true })
+        continue
+      }
+      if (entry.isDirectory() && !entry.isSymbolicLink() && !POLICY_SCAN_SKIP_DIRECTORIES.has(entry.name)) {
+        await visit(path)
+      }
+    }
+  }
+  await visit(root)
+}
+
+async function enforceSupervisorIgnoreRules(workspacePath: string): Promise<void> {
+  const path = resolve(workspacePath, '.gitignore')
+  await assertCanonicalWorkspaceDirectory(workspacePath)
+  let current = ''
+  try {
+    const info = await lstat(path)
+    // Never read through links or preserve a multiply-linked inode. Removing
+    // the entry first below makes the replacement workspace-local.
+    if (info.isFile() && !info.isSymbolicLink() && info.nlink === 1 && info.size <= MAX_GITIGNORE_BYTES) {
+      current = await safeReadProtocolText(workspacePath, path, MAX_GITIGNORE_BYTES) ?? ''
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const missing = SUPERVISOR_IGNORE_RULES.filter((rule) =>
+    !current.split(/\r?\n/u).some((line) => line.trim() === rule)
+  )
+  const separator = current.length === 0 || current.endsWith('\n') ? '' : '\n'
+  const content = missing.length === 0
+    ? current
+    : `${current}${separator}\n# Duo supervisor policy (restored between turns)\n${missing.join('\n')}\n`
+  await safelyRemoveWorkspaceEntry(workspacePath, path)
+  await safeWriteProtocolText(workspacePath, path, content)
+}
+
+/**
+ * Rebuilds the supervisor-authored instruction boundary before and after every
+ * provider call. Generated project configuration is never allowed to become
+ * configuration for the next authenticated local CLI process.
+ */
+export async function restoreSupervisorWorkspacePolicy(
+  workspace: RunWorkspace,
+  missionProfile: MissionProfile
+): Promise<void> {
+  await assertCanonicalWorkspaceDirectory(workspace.workspacePath)
+  await ensureCanonicalWorkspaceDirectory(workspace.appPath, workspace.workspacePath)
+  await assertCanonicalWorkspaceDirectory(workspace.duoPath, workspace.workspacePath)
+  const removablePaths = [
+    resolve(workspace.workspacePath, '.agents'),
+    resolve(workspace.workspacePath, '.claude'),
+    resolve(workspace.workspacePath, '.codex'),
+    resolve(workspace.workspacePath, '.mcp.json'),
+    resolve(workspace.workspacePath, 'AGENTS.md'),
+    resolve(workspace.workspacePath, 'AGENTS.override.md'),
+    resolve(workspace.workspacePath, 'CLAUDE.md'),
+    resolve(workspace.duoPath, 'private', 'skills', 'duo-quality')
+  ]
+  await Promise.all([
+    ...removablePaths.map((path) => safelyRemoveWorkspaceEntry(workspace.workspacePath, path)),
+    scrubNestedProjectPolicy(workspace.appPath)
+  ])
+  const skillDirectories = [
+    resolve(workspace.duoPath, 'private', 'skills', 'duo-quality'),
+    resolve(workspace.workspacePath, '.agents', 'skills', 'duo-quality'),
+    resolve(workspace.workspacePath, '.claude', 'skills', 'duo-quality')
+  ]
+  await Promise.all(skillDirectories.map((directory) => mkdir(directory, { recursive: true })))
+  await Promise.all(skillDirectories.map((directory) =>
+    assertCanonicalWorkspaceDirectory(directory, workspace.workspacePath)
+  ))
+  await Promise.all([
+    safeWriteProtocolText(workspace.workspacePath, resolve(workspace.workspacePath, 'AGENTS.md'), agentRules(missionProfile)),
+    safeWriteProtocolText(workspace.workspacePath, resolve(workspace.workspacePath, 'CLAUDE.md'), CLAUDE_RULES),
+    ...skillDirectories.map((directory) =>
+      safeWriteProtocolText(workspace.workspacePath, resolve(directory, 'SKILL.md'), DUO_QUALITY_SKILL)
+    ),
+    enforceSupervisorIgnoreRules(workspace.workspacePath)
+  ])
+}
 
 function assertRunId(runId: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{2,80}$/.test(runId)) {
@@ -131,7 +295,10 @@ export async function createRunWorkspace(input: CreateRunWorkspaceInput): Promis
     resolve(duoPath, 'public'),
     resolve(duoPath, 'private'),
     resolve(duoPath, 'sealed'),
-    resolve(duoPath, 'patches')
+    resolve(duoPath, 'patches'),
+    resolve(duoPath, 'private', 'skills', 'duo-quality'),
+    resolve(workspacePath, '.agents', 'skills', 'duo-quality'),
+    resolve(workspacePath, '.claude', 'skills', 'duo-quality')
   ]
   const runtimeDirectories = externalRuntime
     ? [
@@ -182,7 +349,10 @@ export async function createRunWorkspace(input: CreateRunWorkspaceInput): Promis
     writeFile(resolve(duoPath, 'locks.json'), '{\n  "locks": []\n}\n'),
     writeFile(resolve(workspacePath, 'AGENTS.md'), agentRules(missionProfile)),
     writeFile(resolve(workspacePath, 'CLAUDE.md'), CLAUDE_RULES),
-    writeFile(resolve(workspacePath, '.gitignore'), GENERATED_GITIGNORE)
+    writeFile(resolve(workspacePath, '.gitignore'), GENERATED_GITIGNORE),
+    writeFile(resolve(duoPath, 'private', 'skills', 'duo-quality', 'SKILL.md'), DUO_QUALITY_SKILL),
+    writeFile(resolve(workspacePath, '.agents', 'skills', 'duo-quality', 'SKILL.md'), DUO_QUALITY_SKILL),
+    writeFile(resolve(workspacePath, '.claude', 'skills', 'duo-quality', 'SKILL.md'), DUO_QUALITY_SKILL)
   ])
 
   const compactProtocolFiles = [

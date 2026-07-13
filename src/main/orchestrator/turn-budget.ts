@@ -46,7 +46,8 @@ export function validateTurnBudgetPolicy(policy: TurnBudgetPolicy): TurnBudgetPo
 export function resolveStageBudgetSeconds(
   stage: TurnStageName,
   policy: TurnBudgetPolicy,
-  remainingRunSeconds: number
+  remainingRunSeconds: number,
+  remainingStageSeconds?: number
 ): number {
   validateTurnBudgetPolicy(policy)
   const stageSeconds = stage === 'work'
@@ -59,5 +60,27 @@ export function resolveStageBudgetSeconds(
   const remaining = Number.isFinite(remainingRunSeconds)
     ? Math.max(0, Math.floor(remainingRunSeconds))
     : 0
-  return Math.min(stageSeconds, remaining)
+  const stageRemaining = remainingStageSeconds === undefined
+    ? Number.POSITIVE_INFINITY
+    : Number.isFinite(remainingStageSeconds)
+      ? Math.max(0, Math.floor(remainingStageSeconds))
+      : 0
+  return Math.min(stageSeconds, remaining, stageRemaining)
+}
+
+export function remainingStageLeaseSeconds(deadlineAt: string, nowMs: number): number {
+  const deadlineMs = Date.parse(deadlineAt)
+  if (!Number.isFinite(deadlineMs) || !Number.isFinite(nowMs)) return 0
+  return Math.max(0, Math.floor((deadlineMs - nowMs) / 1_000))
+}
+
+export function extendStageDeadlineForPause(
+  deadlineAt: string,
+  pausedAtMs: number,
+  resumedAtMs: number
+): string {
+  const deadlineMs = Date.parse(deadlineAt)
+  if (!Number.isFinite(deadlineMs)) throw new Error('Stage deadline must be a valid timestamp.')
+  const pausedDurationMs = Math.max(0, resumedAtMs - pausedAtMs)
+  return new Date(deadlineMs + pausedDurationMs).toISOString()
 }

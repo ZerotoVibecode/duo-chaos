@@ -204,7 +204,7 @@ describe('Duo Chaos launch cockpit', () => {
     expect(within(resilience).getByText(/crash-safe resume/i)).toBeVisible()
     expect(within(resilience).getByText(/soft work leases/i)).toBeVisible()
     expect(within(resilience).getByText(/max effort/i)).toBeVisible()
-    expect(resilience).toHaveTextContent(/reserved for source.*dialogue stays lean/i)
+    expect(resilience).toHaveTextContent(/implementation high.*premium review bounded/i)
     expect(resilience).not.toHaveTextContent(/guaranteed|unstoppable|always completes/i)
 
     const launchAction = screen.getByRole('button', { name: /start simulation/i })
@@ -245,6 +245,16 @@ describe('Duo Chaos launch cockpit', () => {
         })
       )
     )
+  })
+
+  it('explains that unattended Safe Mode requires Core toolbelts', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: /^safe\b/i }))
+
+    expect(screen.getByText(/Safe Mode supports Core tools only/i)).toBeVisible()
+    expect(screen.getByRole('button', { name: /start blind build/i })).toBeDisabled()
   })
 
   it('selects a serious mission independently and sends a binding profile to Electron', async () => {
@@ -373,6 +383,13 @@ describe('Duo Chaos launch cockpit', () => {
     expect(within(claudeModel).getByRole('option', { name: 'Sonnet' })).toBeVisible()
     await user.selectOptions(claudeModel, 'fable')
     await user.selectOptions(within(settingsDialog).getByLabelText(/claude effort/i), 'max')
+    expect(within(settingsDialog).getByLabelText(/codex toolbelt/i)).toHaveValue('smart')
+    expect(within(settingsDialog).getByLabelText(/claude toolbelt/i)).toHaveValue('smart')
+    expect(within(settingsDialog).getByLabelText(/quality routing/i)).toHaveValue('balanced')
+    const inferenceLease = within(settingsDialog).getByLabelText(/claude work inference lease/i)
+    await user.clear(inferenceLease)
+    await user.type(inferenceLease, '6')
+    await user.click(within(settingsDialog).getByLabelText(/trust my local cli capabilities/i))
     const workLease = within(settingsDialog).getByLabelText(/long work lease.*minutes/i)
     const runCeiling = within(settingsDialog).getByLabelText(/overall run ceiling.*hours/i)
     expect(workLease).toHaveValue(120)
@@ -390,6 +407,11 @@ describe('Duo Chaos launch cockpit', () => {
       codexEffort: 'ultra',
       claudeModel: 'fable',
       claudeEffort: 'max',
+      codexCustomizationProfile: 'smart',
+      claudeCustomizationProfile: 'smart',
+      trustedLocalCapabilitiesConfirmed: true,
+      qualityRoutingProfile: 'balanced',
+      claudeWorkInferenceLimit: 6,
       turnTimeoutSeconds: 10_800,
       runTimeoutSeconds: 64_800
     }))
@@ -692,7 +714,7 @@ describe('Duo Chaos launch cockpit', () => {
     render(<App />)
 
     expect(await screen.findByText('Turn 6 of 12')).toBeVisible()
-    expect(screen.getByText('Codex is testing the current build.')).toBeVisible()
+    expect(screen.getAllByText('Codex is testing the current build.').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Claude wants a stronger verification pass.').length).toBeGreaterThan(0)
     expect(screen.getByRole('heading', { name: 'Two positions are live' })).toBeVisible()
     expect(screen.getAllByText('Verification pass').length).toBeGreaterThan(0)

@@ -73,7 +73,27 @@ function manifest(overrides: Partial<DurableRunManifest> = {}): DurableRunManife
       turnIndex: 4,
       stage: 'work',
       attempt: 1,
-      idempotencyKey: 'turn-05-work-attempt-01'
+      idempotencyKey: 'turn-05-work-attempt-01',
+      stageReceipt: {
+        turnId: 'turn-05',
+        agent: 'claude',
+        kind: 'code',
+        stage: 'work',
+        status: 'paused',
+        startedAt: '2026-07-11T11:45:00.000Z',
+        deadlineAt: '2026-07-11T13:45:00.000Z',
+        attempt: 1,
+        effort: 'high',
+        qualityCeiling: 'max',
+        customizationProfile: 'smart',
+        inferenceSteps: 8,
+        inferenceLimit: 8,
+        continuationCount: 1,
+        nextAgent: 'codex',
+        durableSourceChanged: true,
+        durableWorkEvidence: true,
+        evidenceFingerprint: 'tree:fixture\nstatus:'
+      }
     },
     providerSessions: {
       claude: '11111111-1111-4111-8111-111111111111',

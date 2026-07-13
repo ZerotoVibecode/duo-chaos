@@ -34,6 +34,7 @@
     "tests/**/*.tsx",
     "scripts/generate-icon.mjs",
     "scripts/benchmark-run-receipts.mjs",
+    "scripts/benchmark-quality-per-token.mjs",
     "playwright.config.ts"
   ]
 }

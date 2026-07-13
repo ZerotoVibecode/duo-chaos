@@ -14,8 +14,12 @@ import {
   UnsafeProtocolPathError
 } from '@main/workspace/safe-protocol-files'
 
+const PUBLIC_TEXT_PRESENTATION_LIMIT = 180
+const PROVIDER_PUBLIC_TEXT_LIMIT = 1_200
+const CLIPPED_PUBLIC_TEXT_FALLBACK = 'Agent filed a longer statement; full wording remains sealed.'
+
 const speechSchema = z.object({
-  publicText: z.string().trim().min(1).max(180),
+  publicText: z.string().trim().min(1).max(PROVIDER_PUBLIC_TEXT_LIMIT),
   privateText: z.string().trim().min(1).max(1_200)
 }).strict()
 
@@ -90,7 +94,7 @@ export const DIALOGUE_CAPSULE_JSON_SCHEMA = {
       additionalProperties: false,
       required: ['publicText', 'privateText', 'tone'],
       properties: {
-        publicText: { type: 'string', minLength: 1, maxLength: 180 },
+        publicText: { type: 'string', minLength: 1, maxLength: PROVIDER_PUBLIC_TEXT_LIMIT },
         privateText: { type: 'string', minLength: 1, maxLength: 1_200 },
         tone: {
           type: 'string',
@@ -185,7 +189,7 @@ export const DIALOGUE_CAPSULE_JSON_SCHEMA = {
       additionalProperties: false,
       required: ['publicText', 'privateText'],
       properties: {
-        publicText: { type: 'string', minLength: 1, maxLength: 180 },
+        publicText: { type: 'string', minLength: 1, maxLength: PROVIDER_PUBLIC_TEXT_LIMIT },
         privateText: { type: 'string', minLength: 1, maxLength: 1_200 }
       }
     }
@@ -201,6 +205,46 @@ export class DialogueCapsuleError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'DialogueCapsuleError'
+  }
+}
+
+function normalizePublicTextForPresentation(value: string): string {
+  const normalized = value
+    .normalize('NFKC')
+    .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+  if (normalized.length <= PUBLIC_TEXT_PRESENTATION_LIMIT) return normalized
+
+  const prefix = normalized.slice(0, PUBLIC_TEXT_PRESENTATION_LIMIT - 1)
+  const wordBoundary = prefix.lastIndexOf(' ')
+  if (wordBoundary < 48) return CLIPPED_PUBLIC_TEXT_FALLBACK
+  const clipped = prefix
+    .slice(0, wordBoundary)
+    .replace(/[,:;.!?\-\u2013\u2014]+$/u, '')
+    .trimEnd()
+  return `${clipped}\u2026`
+}
+
+function normalizeDialoguePublicText(capsule: DialogueCapsule): DialogueCapsule {
+  return {
+    ...capsule,
+    opening: {
+      ...capsule.opening,
+      publicText: normalizePublicTextForPresentation(capsule.opening.publicText)
+    },
+    counter: {
+      ...capsule.counter,
+      publicText: normalizePublicTextForPresentation(capsule.counter.publicText)
+    },
+    verdict: {
+      ...capsule.verdict,
+      publicText: normalizePublicTextForPresentation(capsule.verdict.publicText)
+    },
+    opinion: {
+      ...capsule.opinion,
+      publicText: normalizePublicTextForPresentation(capsule.opinion.publicText)
+    }
   }
 }
 
@@ -719,16 +763,19 @@ async function persistPrivateProductContext(input: DialogueCapsuleProtocolInput)
 }
 
 export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtocolInput): Promise<void> {
-  const capsule = parseDialogueCapsule(input.capsule)
-  if (input.missionProfile === 'serious' && capsule.consensus) {
-    if (!input.humanBrief || !analyzeSeriousAgentSpecification(input.humanBrief, capsule.consensus.spec).valid) {
+  const providerCapsule = parseDialogueCapsule(input.capsule)
+  if (input.missionProfile === 'serious' && providerCapsule.consensus) {
+    if (!input.humanBrief || !analyzeSeriousAgentSpecification(input.humanBrief, providerCapsule.consensus.spec).valid) {
       throw new DialogueCapsuleError(
         'A serious consensus requires a detailed brief-anchored implementation plan with at least two testable acceptance checks.'
       )
     }
   }
   const accumulatedRedactions = await readAccumulatedRedactions(input.workspacePath)
-  assertPublicTextIsSpoilerSafe(capsule, accumulatedRedactions)
+  // Validate the complete provider statement before presentation clipping so a
+  // sealed term near the end cannot be hidden beyond the broadcast boundary.
+  assertPublicTextIsSpoilerSafe(providerCapsule, accumulatedRedactions)
+  const capsule = normalizeDialoguePublicText(providerCapsule)
   await persistAccumulatedRedactions(input.workspacePath, accumulatedRedactions, capsule)
   const validated = { ...input, capsule }
   const timestamp = new Date().toISOString()

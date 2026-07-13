@@ -150,7 +150,9 @@ describe('git checkpoints', () => {
 
     // A provider may try to force-stage every coordination file. The supervisor checkpoint
     // must still retain only spoiler-safe public protocol evidence before writing a commit.
-    await supervisorGit(metadataRoot, workspace.workspacePath, ['add', '-f', '--', '.duo'])
+    await supervisorGit(metadataRoot, workspace.workspacePath, [
+      'add', '-f', '--', '.duo', '.agents', '.claude', 'AGENTS.md', 'CLAUDE.md'
+    ])
     expect((await git.checkpoint(workspace.workspacePath, 'chore(duo): privacy boundary')).ok).toBe(true)
 
     const tree = await supervisorGit(metadataRoot, workspace.workspacePath, ['ls-tree', '-r', '--name-only', 'HEAD'])
@@ -161,6 +163,8 @@ describe('git checkpoints', () => {
       .map((path) => path.trim().replaceAll('\\', '/'))
       .filter((path) => path.startsWith('.duo/'))
     expect(trackedDuoFiles).toEqual([])
+    expect(tree.stdout).not.toMatch(/(?:^|\n)(?:\.agents|\.claude)\//u)
+    expect(tree.stdout).not.toMatch(/(?:^|\n)(?:AGENTS|CLAUDE)\.md(?:\n|$)/u)
     expect(history.stdout).not.toContain(uniqueSecret)
   })
 

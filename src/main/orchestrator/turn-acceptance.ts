@@ -74,8 +74,9 @@ export function assessTurnAcceptance(input: TurnAcceptanceInput): TurnAcceptance
   const durableSourceChanged = input.durableSourceChanged ?? observedSourceChange
   const durableWorkEvidence = input.durableWorkEvidence ?? durableSourceChanged
 
-  const fatalProcess = input.result.cancelled || input.result.exitCode !== 0 && !input.result.timedOut
-  if (input.result.cancelled) reasons.push('process-cancelled')
+  const leaseTimebox = input.result.cancelled && input.result.cancelReason === 'lease'
+  const fatalProcess = input.result.cancelled && !leaseTimebox || input.result.exitCode !== 0 && !input.result.timedOut && !leaseTimebox
+  if (input.result.cancelled && !leaseTimebox) reasons.push('process-cancelled')
   else if (input.result.exitCode !== 0 && !input.result.timedOut) reasons.push('process-failed')
   if (requiresDispatch && !relevant.some((event) => event.type === 'agent.dispatch')) reasons.push('missing-dispatch')
   if (requiresOpinion && !relevant.some((event) => event.type === 'opinion')) reasons.push('missing-opinion')
@@ -85,7 +86,7 @@ export function assessTurnAcceptance(input: TurnAcceptanceInput): TurnAcceptance
   if (relevant.some((event) => event.privateText && NO_TASK_RESPONSE.test(event.privateText))) reasons.push('no-task-response')
 
   if (fatalProcess) return { accepted: false, outcome: 'fatal', reasons }
-  if (input.result.timedOut) {
+  if (input.result.timedOut || leaseTimebox) {
     const timeoutReason = stage === 'work' ? 'work-lease-expired' : 'stage-timeout'
     const missingContract = reasons.some((reason) => reason === 'missing-dispatch' || reason === 'missing-opinion' || reason === 'no-task-response')
     const durableTimedWork = input.requiresSourceChange ? durableSourceChanged : durableWorkEvidence

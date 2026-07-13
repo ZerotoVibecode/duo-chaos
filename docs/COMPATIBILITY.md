@@ -14,6 +14,10 @@
 
 Duo probes each local CLI before a Real Mode run. Verified missing or unsupported capabilities block the run; unverified catalogs remain warnings because account-specific model aliases can differ.
 
+Smart and Broad toolbelt profiles require CLI versions that support user-scoped customizations or settings and the tool restrictions Duo applies. Smart suppresses the global user-skill catalog but retains the app-owned skill and configured plugins, apps, and MCP connections; Broad restores the full catalog at a higher context/quota cost. Preflight verifies CLI-level readiness; it cannot certify the availability, permissions, safety, or compatibility of every installed skill, plugin, app, or MCP connection. A user-authorized capability can still fail when an agent invokes it.
+
+Smart/Broad capabilities require Chaos or YOLO Sandbox. Safe Mode is Core-only because noninteractive provider calls cannot surface an MCP approval prompt to the user. Duo also strips arbitrary credential environment variables from child processes; environment-only integrations need to be reconfigured through a CLI-supported user configuration or keychain mechanism. Smart keeps MCP/app/plugin tools but suppresses skill/command catalogs; choose Broad when a skill-only plugin is genuinely required.
+
 Simulation Mode needs no model CLI and is the compatibility test to run first.
 
 ## Packaged builds

@@ -210,7 +210,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         turnTimeoutSeconds: settings.turnTimeoutSeconds,
         runTimeoutSeconds: settings.runTimeoutSeconds,
         dangerousModeConfirmed: form.dangerousModeConfirmed,
-        unsafeWorkspaceRootConfirmed: form.unsafeWorkspaceRootConfirmed
+        unsafeWorkspaceRootConfirmed: form.unsafeWorkspaceRootConfirmed,
+        codexCustomizationProfile: settings.codexCustomizationProfile,
+        claudeCustomizationProfile: settings.claudeCustomizationProfile,
+        trustedLocalCapabilitiesConfirmed: settings.trustedLocalCapabilitiesConfirmed,
+        qualityRoutingProfile: settings.qualityRoutingProfile,
+        claudeWorkInferenceLimit: settings.claudeWorkInferenceLimit,
+        codexModel: settings.codexModel,
+        codexEffort: settings.codexEffort,
+        claudeModel: settings.claudeModel,
+        claudeEffort: settings.claudeEffort
       })
       set({ busy: false })
     } catch (error) {

@@ -64,6 +64,10 @@ describe('dialogue capsule contract', () => {
     })
     const taskItems = DIALOGUE_CAPSULE_JSON_SCHEMA.properties.tasks.items
     expect(taskItems.required).toContain('files')
+    expect(DIALOGUE_CAPSULE_JSON_SCHEMA.$defs.speech.properties.publicText.maxLength).toBeGreaterThan(180)
+    expect(DIALOGUE_CAPSULE_JSON_SCHEMA.properties.opinion.properties.publicText.maxLength).toBe(
+      DIALOGUE_CAPSULE_JSON_SCHEMA.$defs.speech.properties.publicText.maxLength
+    )
     const claudeLine = JSON.stringify({ type: 'result', structured_output: capsule })
     const codexLine = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(capsule) } })
     const nonFinalCodexLine = JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', output: JSON.stringify(capsule) } })
@@ -93,6 +97,90 @@ describe('dialogue capsule contract', () => {
     const missingVerdict: Record<string, unknown> = { ...capsule }
     delete missingVerdict.verdict
     expect(() => parseDialogueCapsule(missingVerdict)).toThrow(/verdict/i)
+  })
+
+  it('accepts a longer provider statement and normalizes only the persisted broadcast copy', async () => {
+    const workspacePath = await protocolWorkspace('duo-dialogue-public-normalization-')
+    const longPublicText = [
+      'I think the [FEATURE] should remain focused',
+      'because every interaction needs a clear response',
+      'and the accessible path should feel equally deliberate',
+      'while the final state remains easy to test and explain on camera.'
+    ].join('   \n\t')
+    expect(longPublicText.length).toBeGreaterThan(180)
+    const longerCapsule = {
+      ...capsule,
+      opening: { ...capsule.opening, publicText: longPublicText },
+      opinion: { ...capsule.opinion, publicText: longPublicText }
+    }
+    const providerLine = JSON.stringify({ type: 'result', structured_output: longerCapsule })
+    const extracted = extractDialogueCapsuleFromCliLine('claude', providerLine)
+    expect(extracted).toBeDefined()
+
+    await writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-dialogue-public-normalization',
+      round: 1,
+      agent: 'claude',
+      targetAgent: 'codex',
+      claimKey: 'shared-direction',
+      contract: { kind: 'pitch', phase: 'round.pitch' },
+      capsule: extracted!
+    })
+
+    const publicDispatch = JSON.parse(
+      (await readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8')).trim()
+    ) as { publicText: string }
+    const publicOpinion = JSON.parse(
+      (await readFile(join(workspacePath, '.duo', 'public', 'opinions.jsonl'), 'utf8')).trim()
+    ) as { publicText: string }
+    const privateDispatch = JSON.parse(
+      (await readFile(join(workspacePath, '.duo', 'private', 'dispatches.jsonl'), 'utf8')).trim()
+    ) as { privateText: string }
+
+    for (const publicText of [publicDispatch.publicText, publicOpinion.publicText]) {
+      expect(publicText.length).toBeLessThanOrEqual(180)
+      expect(publicText).not.toMatch(/[\r\n\t]|\s{2,}/u)
+      expect(publicText).toMatch(/…$/u)
+    }
+    expect(privateDispatch.privateText).toBe(capsule.opening.privateText)
+  })
+
+  it('keeps semantic spoiler validation on the complete provider statement before clipping', async () => {
+    const workspacePath = await protocolWorkspace('duo-dialogue-long-leak-')
+    const safePrefix = Array.from(
+      { length: 8 },
+      () => 'The [FEATURE] remains focused, accessible, deterministic, and easy to verify.'
+    ).join(' ')
+    expect(safePrefix.length).toBeGreaterThan(180)
+    const unsafe = {
+      ...capsule,
+      opening: {
+        ...capsule.opening,
+        publicText: `${safePrefix} Orbit Garden should win.`
+      },
+      pitches: [
+        { title: 'Orbit Garden', idea: 'A spatial seed ritual.', appeal: 'Tactile.', risk: 'Input parity.' },
+        { title: 'Signal Room', idea: 'A disappearing message.', appeal: 'Immediate.', risk: 'Audio polish.' }
+      ],
+      tasks: [],
+      redactions: [
+        ...capsule.redactions,
+        { value: 'Orbit Garden', label: 'APP_NAME' },
+        { value: 'Signal Room', label: 'APP_NAME' }
+      ]
+    }
+
+    await expect(writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-dialogue-long-leak',
+      round: 1,
+      agent: 'claude',
+      targetAgent: 'codex',
+      claimKey: 'shared-direction',
+      contract: { kind: 'pitch', phase: 'round.pitch' },
+      capsule: parseDialogueCapsule(unsafe)
+    })).rejects.toThrow(/public|sealed|term/i)
   })
 
   it('enforces two pitches before consensus and locally balances two consensus tasks', () => {
