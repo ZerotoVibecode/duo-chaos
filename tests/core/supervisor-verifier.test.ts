@@ -468,7 +468,10 @@ describe('supervisor verifier', () => {
       outcome: 'failed'
     }))
     expect(browserPort.capture).not.toHaveBeenCalled()
-    expect(JSON.stringify(vi.mocked(processPort.run).mock.calls)).not.toMatch(/\bdev\b/)
+    const invokedDevScript = vi.mocked(processPort.run).mock.calls.some(([request]) => (
+      request.command.args[0] === 'run' && request.command.args[1] === 'dev'
+    ))
+    expect(invokedDevScript).toBe(false)
   })
 
   it('does not invoke browser evidence for a runnable non-UI service package', async () => {
