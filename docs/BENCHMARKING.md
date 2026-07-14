@@ -32,8 +32,8 @@ npm run benchmark:quality -- --output-dir test-results/my-quality-check
 
 This command validates the bounded-baton comparison pipeline against a strict, privacy-safe fixture. It writes `report.json` and `report.md` below the ignored `test-results/` directory and compares:
 
-- ready artifact and current-verification gates;
-- balanced implementation and cross-review evidence;
+- ready artifact, quality-brief coverage, browser proof, and current-verification gates;
+- materially balanced implementation plus exact-current reciprocal review evidence;
 - a fixture-owned hidden-judge result;
 - processed input, output, peak context, tool-output bytes, calls, recovery calls, and active time.
 
@@ -43,7 +43,7 @@ The fixture records an explicit local-Codex command selection for each logical v
 
 A separate, manually supervised local smoke used Codex Terra at Low only; Claude and Sol Ultra were not invoked. The bounded Smart source turn repaired exactly two permitted fixture files, printed `LOCAL_VERIFY_PASS`, and ended `SOURCE_SMOKE_READY` in 36.8 seconds. Provider receipts reported 65,118 processed input tokens (46,848 cached) and 566 output tokens. The same fixture before Smart suppressed the machine's large global skill catalog reported 118,488 processed input tokens, so this observed smoke reduced processed input by about 45%. A capability-locked independent reviewer then printed `REVIEW_SMOKE_PASS` in 12.6 seconds, reported 29,552 processed input tokens and 183 output tokens, and changed zero protected files.
 
-These are one-machine release-smoke observations, not a promise about future models or Claude quota. Raw provider JSONL stays under ignored `test-results/`; only bounded counts and pass/fail outcomes belong in public documentation. Deterministic command-contract and inference-lease tests are the release evidence for Claude because the owner explicitly prohibited consuming Claude quota during this pass.
+These are one-machine release-smoke observations, not a promise about future models or Claude quota. Raw provider JSONL stays under ignored `test-results/`; only bounded counts and pass/fail outcomes belong in public documentation. Deterministic command-contract, provider-neutral work-guard, receipt, and browser-proof tests are the release evidence for Claude because the owner explicitly prohibited consuming Claude quota during this pass.
 
 ## Receipt contract
 

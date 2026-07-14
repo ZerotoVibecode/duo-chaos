@@ -101,6 +101,24 @@ describe('git checkpoints', () => {
     await expect(git.initialize(root)).resolves.toMatchObject({ ok: false })
   })
 
+  it('summarizes only bounded app changes for supervisor contribution receipts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-git-receipt-'))
+    const git = new GitManager('git')
+    expect((await git.initialize(root)).ok).toBe(true)
+    await mkdir(join(root, 'app', 'src'), { recursive: true })
+    await writeFile(join(root, 'app', 'src', 'first.ts'), 'export const first = 1\n', 'utf8')
+    await writeFile(join(root, 'outside.txt'), 'not app evidence\n', 'utf8')
+
+    const summary = await git.summarizeAppChanges(root)
+
+    expect(summary.changed).toBe(true)
+    expect(summary.files).toEqual(['app/src/first.ts'])
+    expect(summary.files).not.toContain('outside.txt')
+    expect(summary.fileCount).toBe(1)
+    expect(summary.insertions).toBeGreaterThanOrEqual(1)
+    expect(summary.truncated).toBe(false)
+  })
+
   it('never checkpoints raw telemetry or transient prompt files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-git-telemetry-'))
     const workspace = await createRunWorkspace({
@@ -226,6 +244,8 @@ describe('git checkpoints', () => {
     await writeFile(join(workspace.appPath, 'index.html'), '<!doctype html><title>Delta</title>', 'utf8')
     const firstDirtyFingerprint = await git.appStateFingerprint(workspace.workspacePath)
     expect(firstDirtyFingerprint).not.toBe(baseline)
+    expect((await git.checkpoint(workspace.workspacePath, 'feat: seal exact app state')).ok).toBe(true)
+    await expect(git.appStateFingerprint(workspace.workspacePath)).resolves.toBe(firstDirtyFingerprint)
 
     await writeFile(join(workspace.appPath, 'index.html'), '<!doctype html><title>Different delta</title>', 'utf8')
     await expect(git.appStateFingerprint(workspace.workspacePath)).resolves.not.toBe(firstDirtyFingerprint)

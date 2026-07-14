@@ -19,6 +19,7 @@ const runRequestSchema = z.object({
   claudeCustomizationProfile: z.enum(['core', 'smart', 'full-local']).optional(),
   trustedLocalCapabilitiesConfirmed: z.boolean().optional(),
   qualityRoutingProfile: z.enum(['balanced', 'force-selected']).optional(),
+  workInferenceLimit: z.number().int().min(3).max(20).optional(),
   claudeWorkInferenceLimit: z.number().int().min(3).max(20).optional(),
   codexModel: z.string().max(256).optional(),
   codexEffort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),

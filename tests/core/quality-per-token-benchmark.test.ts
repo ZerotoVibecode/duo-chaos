@@ -49,7 +49,7 @@ describe('deterministic quality-per-token architecture benchmark', () => {
       claudeCommandsMade: number
       directApiCallsMade: number
       comparison: { verdict: string; qualityNonInferior: boolean; deltas: Record<string, number> }
-      variants: Array<{ id: string; gates: Record<string, boolean> }>
+      variants: Array<{ id: string; gates: Record<string, boolean>; score: Record<string, number> }>
     }
     expect(report).toMatchObject({
       providerCallsMade: 0,
@@ -59,6 +59,19 @@ describe('deterministic quality-per-token architecture benchmark', () => {
     })
     expect(report.variants.map((variant) => variant.id)).toEqual(['baseline-monolith', 'bounded-baton'])
     expect(report.variants.every((variant) => Object.values(variant.gates).every(Boolean))).toBe(true)
+    expect(report.variants[0]?.gates).toMatchObject({
+      briefAdherence: true,
+      acceptedContributions: true,
+      browserEvidence: true,
+      usageComplete: true
+    })
+    expect(report.variants[0]?.score).toMatchObject({
+      briefAdherence: 100,
+      acceptedContributions: 100,
+      browserEvidence: 100,
+      usageCompleteness: 100,
+      total: 100
+    })
     expect(report.comparison.deltas.processedInputReductionPct).toBe(56.3)
     expect(report.comparison.deltas.peakContextReductionPct).toBe(69.9)
 
@@ -76,6 +89,42 @@ describe('deterministic quality-per-token architecture benchmark', () => {
 
     await expect(readFile(resolve(first, 'report.json'), 'utf8')).resolves.toBe(await readFile(resolve(second, 'report.json'), 'utf8'))
     await expect(readFile(resolve(first, 'report.md'), 'utf8')).resolves.toBe(await readFile(resolve(second, 'report.md'), 'utf8'))
+  })
+
+  it.each([
+    ['brief adherence', (variant: Record<string, unknown>) => {
+      const quality = variant.quality as Record<string, unknown>
+      quality.briefAdherence = { passed: 5, total: 6, current: true }
+    }, 'briefAdherence'],
+    ['accepted contributions', (variant: Record<string, unknown>) => {
+      const quality = variant.quality as Record<string, unknown>
+      const roles = quality.roles as Record<string, Record<string, unknown>>
+      roles.roleB!.acceptedContributions = 0
+    }, 'acceptedContributions'],
+    ['browser evidence', (variant: Record<string, unknown>) => {
+      const quality = variant.quality as Record<string, unknown>
+      const browser = quality.browserEvidence as Record<string, unknown>
+      browser.fullscreenScreenshot = false
+    }, 'browserEvidence'],
+    ['usage completeness', (variant: Record<string, unknown>) => {
+      const efficiency = variant.efficiency as Record<string, unknown>
+      efficiency.usageEvidence = { accountedCalls: 4, totalCalls: 5, evidence: 'provider-partial' }
+    }, 'usageComplete']
+  ])('marks %s regression as a failed quality gate', async (name, patch, expectedGate) => {
+    const regressionFixture = await patchedFixture(`regression-${name.replaceAll(' ', '-')}`, (value) => {
+      const variants = value.variants as Array<Record<string, unknown>>
+      patch(variants[1]!)
+    })
+    const output = resolve(outputRoot, `regression-${name.replaceAll(' ', '-')}`)
+    const result = await execute(['--fixture', regressionFixture, '--output-dir', output])
+
+    expect(result.code).toBe(0)
+    const report = JSON.parse(await readFile(resolve(output, 'report.json'), 'utf8')) as {
+      comparison: { verdict: string; qualityNonInferior: boolean }
+      variants: Array<{ id: string; gates: Record<string, boolean> }>
+    }
+    expect(report.comparison).toMatchObject({ verdict: 'quality-regression', qualityNonInferior: false })
+    expect(report.variants.find((variant) => variant.id === 'bounded-baton')?.gates[expectedGate]).toBe(false)
   })
 
   it.each([

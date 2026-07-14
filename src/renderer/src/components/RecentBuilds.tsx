@@ -1,4 +1,4 @@
-import { Bot, Check, CircleAlert, Clock3, FolderClock, GitCommitHorizontal, PauseCircle, Play, RotateCcw, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
+import { Bot, Check, CircleAlert, Clock3, Eye, FolderClock, FolderOpen, GitCommitHorizontal, PauseCircle, Play, RotateCcw, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
 import type { RecentBuildSummary } from '@shared/types'
 
 interface RecentBuildsProps {
@@ -6,6 +6,8 @@ interface RecentBuildsProps {
   onRecover: (build: RecentBuildSummary) => void
   onResume?: (build: RecentBuildSummary) => void
   onOpen?: (build: RecentBuildSummary) => void
+  onReveal?: (build: RecentBuildSummary) => void
+  onOpenApp?: (build: RecentBuildSummary) => void
 }
 
 function statusLabel(build: RecentBuildSummary): string {
@@ -13,7 +15,7 @@ function statusLabel(build: RecentBuildSummary): string {
   if (build.status === 'complete' && build.releaseStatus === 'failed') return 'Failed · revealed'
   if (build.status === 'complete') return 'Complete'
   const status = build.status
-  if (status === 'paused') return 'Paused'
+  if (status === 'paused') return build.pauseReason === 'quality-repair' ? 'Quality repair ready' : 'Paused'
   if (status === 'reveal-ready') return 'Ready · sealed'
   if (status === 'interrupted') return 'Interrupted'
   if (status === 'cancelled') return 'Cancelled'
@@ -38,7 +40,7 @@ function providerProof(build: RecentBuildSummary): { label: string; title: strin
     : { label: 'No CLI calls', title: 'Configured for Real Mode but no provider activity was recorded', live: false }
 }
 
-export function RecentBuilds({ builds, onRecover, onResume, onOpen }: RecentBuildsProps): React.JSX.Element {
+export function RecentBuilds({ builds, onRecover, onResume, onOpen, onReveal, onOpenApp }: RecentBuildsProps): React.JSX.Element {
   return (
     <section className="glass-panel recent-builds" role="region" aria-label="Recent builds">
       <div className="recent-builds-heading">
@@ -64,7 +66,7 @@ export function RecentBuilds({ builds, onRecover, onResume, onOpen }: RecentBuil
               </div>
               <div className="recent-build-title">
                 <strong>{build.appName ?? 'Sealed build'}</strong>
-                <span>{build.status === 'paused' && build.resumable ? 'Battle checkpoint preserved' : build.recoverable ? 'Workspace preserved · safe to recover' : build.sealed ? 'Idea remains private' : 'Reveal unlocked'}</span>
+                <span>{build.status === 'paused' && build.pauseReason === 'quality-repair' ? 'Partial artifact sealed · repair can resume' : build.status === 'paused' && build.resumable ? 'Battle checkpoint preserved' : build.recoverable ? 'Workspace preserved · safe to recover' : build.sealed ? 'Idea remains private' : 'Reveal unlocked'}</span>
               </div>
               <div className="recent-proof-row" aria-label="Recorded build proof">
                 <span title={provider.title}>
@@ -81,8 +83,12 @@ export function RecentBuilds({ builds, onRecover, onResume, onOpen }: RecentBuil
               </div>
               {build.status === 'paused' && build.resumable && onResume ? (
                 <button className="recent-recover recent-resume" type="button" aria-label={`Resume battle for ${buildName}`} onClick={() => onResume(build)}><Play size={13} /> Resume battle</button>
-              ) : build.status === 'complete' && onOpen ? (
-                <button className="recent-recover" type="button" aria-label={`Open workspace for ${buildName}`} onClick={() => onOpen(build)}><FolderClock size={13} /> Open workspace</button>
+              ) : build.status === 'complete' && (onReveal || onOpenApp || onOpen) ? (
+                <div className="recent-build-actions">
+                  {onReveal && <button className="recent-recover recent-reveal" type="button" aria-label={`View reveal for ${buildName}`} onClick={() => onReveal(build)}><Eye size={13} /> View reveal</button>}
+                  {onOpenApp && <button className="recent-recover recent-open-app" type="button" aria-label={`Open app for ${buildName}`} onClick={() => onOpenApp(build)}><Play size={13} /> Open app</button>}
+                  {onOpen && <button className="recent-folder-action" type="button" title="Open workspace" aria-label={`Open workspace for ${buildName}`} onClick={() => onOpen(build)}><FolderOpen size={13} /></button>}
+                </div>
               ) : build.recoverable && (
                 <button className="recent-recover" type="button" aria-label={`Use prompt again for ${buildName}`} onClick={() => onRecover(build)}><RotateCcw size={13} /> Use prompt again</button>
               )}

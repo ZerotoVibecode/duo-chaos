@@ -214,6 +214,31 @@ describe('provider failure classifier', () => {
   })
 
   it.each([
+    'provider quota',
+    'provider unavailable',
+    'model unavailable',
+    'authentication error'
+  ])('ignores successful-process tool output echoing historical %s prose', (historicalFailureText) => {
+    expect(classifyProviderFailure({
+      agent: 'codex',
+      result: result({ exitCode: 0 }),
+      text: `.duo\\private\\dispatches.jsonl:8:{"privateText":"The earlier run mentioned ${historicalFailureText}, but this command succeeded."}`
+    })).toBeUndefined()
+  })
+
+  it('still trusts a canonical rejected quota record when the process exits zero', () => {
+    expect(classifyProviderFailure({
+      agent: 'claude',
+      result: result({ exitCode: 0 }),
+      records: [{
+        type: 'rate_limit_event',
+        rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' }
+      }],
+      text: '.duo\\private\\notes.jsonl:1:{"publicText":"ordinary successful output"}'
+    })).toMatchObject({ kind: 'quota', source: 'record', agent: 'claude' })
+  })
+
+  it.each([
     ['quota', "You've hit your usage limit. Try again at 7:01 AM."],
     ['auth', 'Authentication error: login required before Claude can continue.']
   ] as const)('recognizes a pretty-printed Claude error result as %s even when the process exits zero', (kind, message) => {

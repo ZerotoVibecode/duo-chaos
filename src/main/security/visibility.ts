@@ -23,6 +23,8 @@ function stripPrivateTaskStructure(task: DuoTask): DuoTask {
   delete safe.privateTitle
   delete safe.privateDescription
   delete safe.privateFiles
+  delete safe.privateExpectedOutcome
+  delete safe.privateAcceptanceChecks
   return safe
 }
 
@@ -76,11 +78,20 @@ function stripPrivateStructure(event: DuoEvent): DuoEvent {
   delete safe.metadata
   delete safe.revealPacket
   delete safe.privateTopic
+  if (
+    safe.agent !== 'director' ||
+    event.metadata?.protocolOrigin === 'workspace-public-protocol' ||
+    !['contribution-receipt', 'review-receipt', 'quality-evidence-state'].includes(safe.topic ?? '')
+  ) {
+    delete safe.proof
+  }
   if (safe.task) {
     safe.task = { ...safe.task }
     delete safe.task.privateTitle
     delete safe.task.privateDescription
     delete safe.task.privateFiles
+    delete safe.task.privateExpectedOutcome
+    delete safe.task.privateAcceptanceChecks
   }
   return safe
 }

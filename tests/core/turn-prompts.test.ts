@@ -45,7 +45,30 @@ describe('turn stage prompts', () => {
     const prompt = composeTurnStagePrompt({ ...base, stage: 'dialogue', missionProfile: 'surprise' } as never)
     expect(prompt).toMatch(/mission profile[^\n]*surprise build/i)
     expect(prompt).toMatch(/invent|choose the product/i)
+    expect(prompt).toMatch(/explicit.*(?:domain|audience|platform|usefulness).*binding/is)
     expect(prompt).not.toMatch(/human brief is a binding product brief/i)
+  })
+
+  it('uses full brief context for dialogue and an immutable compact baton after consensus', () => {
+    const dialoguePrompt = composeTurnStagePrompt({
+      ...base,
+      stage: 'dialogue',
+      qualityContract: 'QUALITY CONTRACT (private; binding)\n- Must serve content creators\n- Keyboard journey passes'
+    })
+    const sourcePrompt = composeTurnStagePrompt({
+      ...base,
+      stage: 'work',
+      briefReference: 'Binding brief sealed at .duo/sealed/spec.md under fingerprint quality-123.',
+      qualityBaton: 'SEALED QUALITY BATON\nFingerprint: quality-123\nconstraint-1 [REQUIRE] Must serve content creators'
+    })
+
+    expect(dialoguePrompt).toContain('HUMAN BRIEF')
+    expect(dialoguePrompt).toContain(base.humanBrief)
+    expect(dialoguePrompt).toContain('QUALITY CONTRACT (private; binding)')
+    expect(sourcePrompt).toContain('SEALED BRIEF REFERENCE')
+    expect(sourcePrompt).toContain('SEALED QUALITY BATON')
+    expect(sourcePrompt).not.toContain(base.humanBrief)
+    expect(sourcePrompt).not.toContain('QUALITY CONTRACT (private; binding)')
   })
 
   it('requires real public speech before a long source-writing lease begins', () => {
@@ -82,6 +105,9 @@ describe('turn stage prompts', () => {
     expect(prompt).toMatch(/\.duo\/sealed\/idea\.md/i)
     expect(prompt).toMatch(/\.duo\/sealed\/spec\.md/i)
     expect(prompt).toMatch(/\.duo\/board\.json/i)
+    expect(prompt).toMatch(/mark.*task.*done|explicitly blocked/i)
+    expect(prompt).toMatch(/verification evidence/i)
+    expect(prompt).toMatch(/reply-linked handoff/i)
     expect(prompt).toMatch(/cohesive contribution/i)
     expect(prompt).toMatch(/do not run git commands/i)
     expect(prompt).not.toMatch(/reveal_packet\.json/i)
@@ -95,7 +121,7 @@ describe('turn stage prompts', () => {
       leanContribution: true
     })
 
-    expect(prompt).toMatch(/human brief and sealed acceptance checks are binding/i)
+    expect(prompt).toMatch(/sealed brief and acceptance checks are binding/i)
     expect(prompt).toMatch(/improve the solution without substituting a different product/i)
     expect(prompt).toMatch(/distinctive.*polished/i)
     expect(prompt).toMatch(/signature interaction/i)

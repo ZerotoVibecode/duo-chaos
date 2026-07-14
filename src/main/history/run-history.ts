@@ -2,12 +2,18 @@ import { lstat, readFile, readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 import type {
   AgentContributionSummary,
+  AgentId,
+  DuoEvent,
+  DuoTask,
   ExecutionMode,
   MissionProfile,
   RecentBuildProof,
   RecentBuildStatus,
   RecentBuildSummary,
+  RevealPacket,
   RunPhase,
+  RunPauseSnapshot,
+  RunSnapshot,
   VisibilityMode
 } from '@shared/types'
 import { releaseVerificationPassCount } from '@shared/verification-evidence'
@@ -37,6 +43,12 @@ function comparablePath(path: string): string {
   return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized
 }
 
+function isInside(candidate: string, root: string): boolean {
+  const path = comparablePath(candidate)
+  const parent = comparablePath(root)
+  return path === parent || path.startsWith(`${parent}${sep}`)
+}
+
 async function safeRecordedWorkspacePath(value: unknown, runId: string): Promise<string | undefined> {
   const stored = stringOf(value)
   if (!stored || !isAbsolute(stored) || basename(stored) !== runId) return undefined
@@ -49,6 +61,128 @@ async function safeRecordedWorkspacePath(value: unknown, runId: string): Promise
   } catch {
     return undefined
   }
+}
+
+function boundedText(value: unknown, maximum = 2_000): string | undefined {
+  const text = stringOf(value)
+  return text ? text.slice(0, maximum) : undefined
+}
+
+function boundedStrings(value: unknown, maximumItems = 64, maximumLength = 1_200): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry) => {
+        const text = boundedText(entry, maximumLength)
+        return text ? [text] : []
+      }).slice(0, maximumItems)
+    : []
+}
+
+function archivedRevealPacket(value: JsonRecord | undefined): RevealPacket | undefined {
+  if (!value) return undefined
+  const appName = boundedText(value.appName, 160)
+  const idea = boundedText(value.idea, 4_000)
+  const summary = boundedText(value.summary, 4_000)
+  const runCommand = boundedText(value.runCommand, 2_000)
+  const appPath = boundedText(value.appPath, 2_000)
+  if (!appName || !idea || !summary || !runCommand || !appPath) return undefined
+  const quotes = recordOf(value.agentQuotes)
+  const status = value.status === 'ready' || value.status === 'failed' ? value.status : 'partial'
+  let devUrl: string | undefined
+  const requestedDevUrl = boundedText(value.devUrl, 2_000)
+  if (requestedDevUrl) {
+    try {
+      const parsed = new URL(requestedDevUrl)
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') devUrl = parsed.toString()
+    } catch {
+      devUrl = undefined
+    }
+  }
+  return {
+    appName,
+    idea,
+    summary,
+    features: boundedStrings(value.features),
+    runCommand,
+    appPath,
+    ...(devUrl ? { devUrl } : {}),
+    status,
+    whatWorked: boundedStrings(value.whatWorked),
+    knownIssues: boundedStrings(value.knownIssues),
+    agentDramaSummary: boundedStrings(value.agentDramaSummary),
+    gitCheckpoints: boundedStrings(value.gitCheckpoints, 64, 160),
+    agentQuotes: {
+      claude: boundedText(quotes.claude, 2_000) ?? 'No final Claude quote was recorded.',
+      codex: boundedText(quotes.codex, 2_000) ?? 'No final Codex quote was recorded.'
+    }
+  }
+}
+
+const TASK_STATUSES = new Set<DuoTask['status']>(['open', 'claimed', 'in-progress', 'review', 'done', 'blocked'])
+const TASK_RISKS = new Set<DuoTask['risk']>(['low', 'medium', 'high'])
+const TASK_CLAIMANTS = new Set<NonNullable<DuoTask['claimedBy']>>(['claude', 'codex', 'director', 'system', 'both', 'none'])
+
+function archivedTask(value: unknown): DuoTask | undefined {
+  const input = recordOf(value)
+  const id = boundedText(input.id, 160)
+  const publicTitle = boundedText(input.publicTitle, 400)
+  if (!id || !publicTitle) return undefined
+  const status = TASK_STATUSES.has(input.status as DuoTask['status']) ? input.status as DuoTask['status'] : 'open'
+  const risk = TASK_RISKS.has(input.risk as DuoTask['risk']) ? input.risk as DuoTask['risk'] : 'medium'
+  const claimedBy = TASK_CLAIMANTS.has(input.claimedBy as NonNullable<DuoTask['claimedBy']>)
+    ? input.claimedBy as NonNullable<DuoTask['claimedBy']>
+    : undefined
+  return {
+    id,
+    publicTitle,
+    ...(boundedText(input.publicDescription, 2_000) ? { publicDescription: boundedText(input.publicDescription, 2_000) } : {}),
+    status,
+    ...(claimedBy ? { claimedBy } : {}),
+    risk,
+    files: boundedStrings(input.files, 128, 500)
+  }
+}
+
+const EVENT_AGENTS = new Set<AgentId>(['claude', 'codex', 'director', 'system'])
+
+function archivedPublicEvent(value: JsonRecord, runId: string): DuoEvent | undefined {
+  const id = boundedText(value.id, 200)
+  const type = boundedText(value.type, 80)
+  const timestamp = boundedText(value.timestamp, 80)
+  const publicText = boundedText(value.publicText, 8_000)
+  if (!id || !type || !timestamp || !publicText || value.runId !== runId) return undefined
+  const agent = EVENT_AGENTS.has(value.agent as AgentId) ? value.agent as AgentId : 'system'
+  const severity = value.severity === 'medium' || value.severity === 'high' || value.severity === 'critical'
+    ? value.severity
+    : 'low'
+  const event: DuoEvent = {
+    id,
+    type: type as DuoEvent['type'],
+    runId,
+    round: Number.isFinite(value.round) ? Math.max(0, Math.trunc(value.round as number)) : 0,
+    timestamp,
+    agent,
+    publicText,
+    spoilerRisk: Number.isFinite(value.spoilerRisk) ? Math.min(1, Math.max(0, value.spoilerRisk as number)) : 0,
+    severity
+  }
+  const publicStringFields = [
+    'topic', 'tone', 'dispatchKind', 'claimKey', 'replyTo', 'publicTopic', 'claudePosition',
+    'codexPosition', 'winner', 'resolution', 'impact', 'status', 'stream', 'category'
+  ] as const
+  for (const field of publicStringFields) {
+    const text = boundedText(value[field], 2_000)
+    if (text) Object.assign(event, { [field]: text })
+  }
+  if (EVENT_AGENTS.has(value.targetAgent as AgentId)) event.targetAgent = value.targetAgent as AgentId
+  if (EVENT_AGENTS.has(value.source as AgentId)) event.source = value.source as AgentId
+  if (Number.isFinite(value.heat)) event.heat = value.heat as number
+  if (Number.isFinite(value.confidence)) event.confidence = value.confidence as number
+  if (typeof value.rawAvailable === 'boolean') event.rawAvailable = value.rawAvailable
+  event.evidenceFiles = boundedStrings(value.evidenceFiles, 128, 500)
+  event.relatedTaskIds = boundedStrings(value.relatedTaskIds, 128, 160)
+  const task = archivedTask(value.task)
+  if (task) event.task = task
+  return event
 }
 
 function executionModeOf(value: unknown): ExecutionMode {
@@ -192,6 +326,14 @@ async function summaryFromPaths(
   const releaseStatus = supervisorReleaseStatus ?? (
     reveal?.status === 'partial' || reveal?.status === 'failed' ? reveal.status : undefined
   )
+  const pause = recordOf(run.pause)
+  const pauseReason = typeof pause?.reason === 'string' && [
+    'provider-quota', 'usage-pressure', 'provider-auth', 'provider-unavailable', 'model-unavailable',
+    'cli-incompatible', 'provider-protocol', 'session-lost', 'stage-timeout',
+    'host-interrupted', 'workspace-drift', 'verification-failed', 'quality-repair', 'unknown'
+  ].includes(pause.reason)
+    ? pause.reason as RunPauseSnapshot['reason']
+    : undefined
   const proof = buildProof(board, events, supervisorReleaseStatus)
   const finishedAt = status === 'complete' || status === 'cancelled' || status === 'failed'
     ? stringOf(run.updatedAt)
@@ -211,6 +353,7 @@ async function summaryFromPaths(
     workspaceRoot: root,
     appName,
     ...(releaseStatus ? { releaseStatus } : {}),
+    ...(pauseReason ? { pauseReason } : {}),
     sealed: status !== 'complete',
     recoverable: status === 'paused' || status === 'interrupted' || status === 'cancelled' || status === 'failed',
     resumable: false,
@@ -281,4 +424,119 @@ export async function scanRecentBuilds(
   return [...summaries.values()]
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
     .slice(0, Math.max(0, Math.min(50, Math.trunc(limit))))
+}
+
+async function readArchivedRuntime(
+  runtimeRoot: string | undefined,
+  runId: string,
+  expectedWorkspacePath: string
+): Promise<{ run?: JsonRecord; events: JsonRecord[] }> {
+  if (!runtimeRoot?.trim()) return { events: [] }
+  const root = resolve(runtimeRoot)
+  const runtimePath = resolve(root, runId)
+  if (!isInside(runtimePath, root)) return { events: [] }
+  try {
+    const info = await lstat(runtimePath)
+    if (!info.isDirectory() || info.isSymbolicLink()) return { events: [] }
+    if (comparablePath(await realpath(runtimePath)) !== comparablePath(runtimePath)) return { events: [] }
+  } catch {
+    return { events: [] }
+  }
+  const run = await readBoundedJson(resolve(runtimePath, 'run.json'))
+  const recordedWorkspace = await safeRecordedWorkspacePath(run?.workspacePath, runId)
+  if (
+    !run ||
+    run.runId !== runId ||
+    run.status !== 'complete' ||
+    !recordedWorkspace ||
+    comparablePath(recordedWorkspace) !== comparablePath(expectedWorkspacePath)
+  ) {
+    return { events: [] }
+  }
+  return {
+    run,
+    events: await readPublicTimeline(resolve(runtimePath, 'public', 'timeline.jsonl'), runtimePath)
+  }
+}
+
+function positiveInteger(value: unknown, fallback: number): number {
+  return Number.isFinite(value) && Number(value) >= 0 ? Math.trunc(Number(value)) : fallback
+}
+
+/**
+ * Reconstructs a reveal-only snapshot from a validated completed archive. It
+ * never creates an orchestration session and never reads private transcript or
+ * raw-log files. The renderer supplies only a run id; all host paths are
+ * resolved and checked here in the main process.
+ */
+export async function loadArchivedCompleteRunSnapshot(
+  workspaceRoot: string,
+  runId: string,
+  options: RecentBuildScanOptions = {}
+): Promise<RunSnapshot | undefined> {
+  if (!RUN_ID.test(runId)) return undefined
+  const root = resolve(workspaceRoot)
+  const summary = (await scanRecentBuilds(root, 50, options))
+    .find((candidate) => candidate.runId === runId && candidate.status === 'complete')
+  if (!summary) return undefined
+
+  const runtime = await readArchivedRuntime(
+    options.runtimeRoot,
+    runId,
+    summary.workspacePath
+  )
+  // A workspace outside the current default root remains portable only when a
+  // supervisor-owned runtime record binds this exact canonical directory to
+  // the requested run id. Legacy workspace-only archives stay root-scoped.
+  if (!isInside(summary.workspacePath, root) && !runtime.run) return undefined
+
+  const reveal = archivedRevealPacket(await readWorkspaceJson(
+    summary.workspacePath,
+    resolve(summary.workspacePath, '.duo', 'sealed', 'reveal_packet.json')
+  ))
+  if (!reveal) return undefined
+
+  const board = await readWorkspaceJson(
+    summary.workspacePath,
+    resolve(summary.workspacePath, '.duo', 'board.json')
+  )
+  const tasks = (Array.isArray(board?.tasks) ? board.tasks : [])
+    .flatMap((candidate) => {
+      const task = archivedTask(candidate)
+      return task ? [task] : []
+    })
+  const fallbackEvents = runtime.events.length === 0
+    ? await readPublicTimeline(
+        resolve(summary.workspacePath, '.duo', 'public', 'timeline.jsonl'),
+        resolve(summary.workspacePath, '.duo')
+      )
+    : []
+  const events = (runtime.events.length > 0 ? runtime.events : fallbackEvents)
+    .flatMap((candidate) => {
+      const event = archivedPublicEvent(candidate, runId)
+      return event ? [event] : []
+    })
+  const run = runtime.run ?? {}
+  const finishedAt = boundedText(run.finishedAt, 80) ?? summary.finishedAt
+
+  return {
+    runId,
+    prompt: summary.prompt,
+    executionMode: summary.executionMode,
+    visibilityMode: summary.visibilityMode,
+    missionProfile: summary.missionProfile ?? 'surprise',
+    phase: 'complete',
+    status: 'complete',
+    round: positiveInteger(run.round, Math.max(1, events.reduce((highest, event) => Math.max(highest, event.round), 0))),
+    totalTurns: positiveInteger(run.totalTurns, Math.max(1, events.filter((event) => event.type === 'agent.started').length)),
+    startedAt: summary.startedAt,
+    ...(finishedAt ? { finishedAt } : {}),
+    ...(Number.isFinite(run.activeTimeMs) ? { activeTimeMs: positiveInteger(run.activeTimeMs, 0) } : {}),
+    workspacePath: summary.workspacePath,
+    appPath: resolve(summary.workspacePath, 'app'),
+    releaseStatus: summary.releaseStatus ?? reveal.status,
+    revealPacket: reveal,
+    tasks,
+    events
+  }
 }

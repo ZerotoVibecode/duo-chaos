@@ -120,7 +120,13 @@ describe('structured dialogue recovery', () => {
     ])
     expect(snapshot?.events.some((event) => event.topic === 'dialogue-contract-rejected')).toBe(true)
     expect(snapshot?.events.some((event) => event.type === 'run.failed')).toBe(false)
-    expect(snapshot?.status).toBe('reveal-ready')
+    // This fixture intentionally stops after two dialogue turns. The rejected
+    // capsule is recovered without failing the run, but no implementation or
+    // release evidence exists, so the durable quality gate must remain paused.
+    expect(snapshot).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: true }
+    })
     const publicDispatches = await readFile(join(started.workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8')
     expect(publicDispatches).not.toContain('Orbit Garden')
   })

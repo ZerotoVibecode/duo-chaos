@@ -16,6 +16,18 @@ export interface RealTurnPlanOptions {
   maxRepairLoops: number
 }
 
+export interface QualityRepairDecisionInput {
+  completedAttempts: number
+  maximumAttempts: number
+  previousMissingEvidence: readonly string[]
+  currentMissingEvidence: readonly string[]
+}
+
+export interface QualityRepairDecision {
+  reservePair: boolean
+  reason: 'available' | 'attempt-limit' | 'no-evidence-progress'
+}
+
 export type RealTurnPlanVersion = 'balanced-hybrid-v1' | 'lean-collaboration-v2'
 
 export function contributionNeedsFreshSource(
@@ -103,4 +115,74 @@ export function buildRealTurnPlan(runId: string, options?: RealTurnPlanOptions):
     }
   }
   return turns.map((turn, index) => ({ ...turn, id: `turn-${String(index + 1).padStart(2, '0')}-${turn.agent}-${turn.kind}` }))
+}
+
+/**
+ * Appends a new, explicitly user-authorized quality-repair capsule after the
+ * normal plan has finished. IDs are stable across restart so a durable cursor
+ * can resume the reserved pair without replaying an earlier expensive turn.
+ */
+export function buildQualityRepairTurns(
+  runId: string,
+  attempt: number,
+  missingEvidence: readonly string[]
+): RealTurn[] {
+  const { first: defaultFirst } = actors(runId)
+  const missingClaude = missingEvidence.some((item) => /^Claude\b/i.test(item))
+  const missingCodex = missingEvidence.some((item) => /^Codex\b/i.test(item))
+  const first: RealTurn['agent'] = missingClaude && !missingCodex
+    ? 'claude'
+    : missingCodex && !missingClaude
+      ? 'codex'
+      : defaultFirst
+  const second: RealTurn['agent'] = first === 'claude' ? 'codex' : 'claude'
+  const name = (agent: RealTurn['agent']): string => agent === 'claude' ? 'Claude' : 'Codex'
+  const index = Math.max(1, Math.trunc(attempt))
+  const evidence = missingEvidence.length > 0
+    ? missingEvidence.join('; ')
+    : 'final independent release proof'
+  const prefix = `quality-repair-${String(index).padStart(2, '0')}`
+  return [
+    {
+      id: `${prefix}-${first}-repair`,
+      agent: first,
+      kind: 'repair',
+      phase: 'round.repair',
+      goal: `Reserved quality repair ${String(index)}. Close only these missing evidence categories: ${evidence}. Inspect the preserved workspace and opponent handoff, make a bounded substantive correction when source proof is missing, verify it directly, and do not replay completed work.`
+    },
+    {
+      id: `${prefix}-${second}-review`,
+      agent: second,
+      kind: 'review',
+      phase: 'round.verify',
+      goal: `Review ${name(first)}'s reserved repair against the sealed quality brief and the current preserved revision. Close the remaining evidence categories, repair only a concrete release blocker, run direct verification, and write a ready reveal packet only when the proof is complete.`,
+      revealCandidate: true
+    }
+  ]
+}
+
+function evidenceKey(values: readonly string[]): string {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right))
+    .join('\n')
+}
+
+/**
+ * A full repair pair gives both agents one chance to repair and re-review.
+ * Replaying the same paid pair after no evidence changed is not recovery; it
+ * is a quota loop. Changing evidence may continue only to the configured cap.
+ */
+export function decideQualityRepair(input: QualityRepairDecisionInput): QualityRepairDecision {
+  const completedAttempts = Math.max(0, Math.trunc(input.completedAttempts))
+  const maximumAttempts = Math.max(1, Math.trunc(input.maximumAttempts))
+  if (completedAttempts >= maximumAttempts) {
+    return { reservePair: false, reason: 'attempt-limit' }
+  }
+  if (
+    completedAttempts > 0 &&
+    evidenceKey(input.previousMissingEvidence) === evidenceKey(input.currentMissingEvidence)
+  ) {
+    return { reservePair: false, reason: 'no-evidence-progress' }
+  }
+  return { reservePair: true, reason: 'available' }
 }

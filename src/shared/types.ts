@@ -69,6 +69,30 @@ export interface AgentUsageTotals {
 
 export type AgentUsageSnapshot = Record<Extract<AgentId, 'claude' | 'codex'>, AgentUsageTotals>
 
+export interface ProviderUsageGuardSnapshot {
+  status: 'pending' | 'acknowledged'
+  agent: Extract<AgentId, 'claude' | 'codex'>
+  callId: string
+  trigger: 'provider-warning' | 'completed-call-usage'
+  reasons: Array<'provider-pressure' | 'processed-input' | 'output' | 'reasoning'>
+  triggeredAt: string
+  acknowledgedAt?: string
+  utilization?: number
+  resetAt?: string
+  totals?: {
+    processedInputTokens: number
+    cachedInputTokens: number
+    outputTokens: number
+    reasoningTokens: number
+    calls: number
+  }
+  limits?: {
+    processedInputTokens: number
+    outputTokens: number
+    reasoningTokens: number
+  }
+}
+
 export type ExecutionMode = 'simulation' | 'safe' | 'chaos' | 'yolo-sandbox'
 export type VisibilityMode = 'blind' | 'spoiler-shield' | 'full-chaos'
 export type MissionProfile = 'surprise' | 'serious'
@@ -248,6 +272,11 @@ export interface DuoTask {
   privateTitle?: string
   publicDescription?: string
   privateDescription?: string
+  /** Materiality contract; dialogue-created tasks are always core or substantial. */
+  impact?: 'core' | 'substantial'
+  /** Sealed until reveal; renderer projections must strip these fields. */
+  privateExpectedOutcome?: string
+  privateAcceptanceChecks?: string[]
   status: TaskStatus
   claimedBy?: AgentId | 'both' | 'none'
   risk: 'low' | 'medium' | 'high'
@@ -328,6 +357,21 @@ export interface DuoEvent {
   status?: string
   task?: DuoTask
   revealPacket?: RevealPacket
+  /** Bounded, spoiler-safe supervisor evidence intentionally allowed across IPC. */
+  proof?: {
+    kind: 'contribution' | 'review' | 'quality-state'
+    agent?: Extract<AgentId, 'claude' | 'codex'>
+    status?: string
+    accepted?: boolean
+    sourceChanged?: boolean
+    verification?: 'passed' | 'failed' | 'unknown'
+    handoffRecorded?: boolean
+    fileCount?: number
+    disposition?: string
+    revision?: number
+    acceptedContributionAgents?: Array<Extract<AgentId, 'claude' | 'codex'>>
+    acceptedReviewAgents?: Array<Extract<AgentId, 'claude' | 'codex'>>
+  }
   metadata?: Record<string, unknown>
 }
 
@@ -362,6 +406,7 @@ export interface RunSnapshot {
   turnStage?: TurnStageSnapshot
   agentRuntimes?: Partial<Record<Extract<AgentId, 'claude' | 'codex'>, AgentRuntimeProfile>>
   agentUsage?: AgentUsageSnapshot
+  usageGuard?: ProviderUsageGuardSnapshot
   pause?: RunPauseSnapshot
   releaseStatus?: RevealPacket['status']
   revealPacket?: RevealPacket
@@ -372,6 +417,7 @@ export interface RunSnapshot {
 
 export type RunPauseReason =
   | 'provider-quota'
+  | 'usage-pressure'
   | 'provider-auth'
   | 'provider-unavailable'
   | 'model-unavailable'
@@ -382,6 +428,7 @@ export type RunPauseReason =
   | 'host-interrupted'
   | 'workspace-drift'
   | 'verification-failed'
+  | 'quality-repair'
   | 'unknown'
 
 export interface RunPauseSnapshot {
@@ -395,6 +442,8 @@ export interface RunPauseSnapshot {
   stage?: TurnStageName
   checkpoint?: string
   action?: string
+  /** Spoiler-safe supervisor evidence categories still required for a ready release. */
+  missingEvidence?: string[]
 }
 
 export type RecentBuildStatus = 'complete' | 'paused' | 'reveal-ready' | 'interrupted' | 'cancelled' | 'failed'
@@ -429,6 +478,7 @@ export interface RecentBuildSummary {
   workspaceRoot: string
   appName?: string
   releaseStatus?: RevealPacket['status']
+  pauseReason?: RunPauseReason
   sealed: boolean
   recoverable: boolean
   /** True only when the supervisor reconstructed this exact paused run in the current process. */
@@ -452,7 +502,10 @@ export interface AppSettings {
   claudeCustomizationProfile: CustomizationProfile
   trustedLocalCapabilitiesConfirmed: boolean
   qualityRoutingProfile: QualityRoutingProfile
-  claudeWorkInferenceLimit: number
+  /** Provider-neutral soft idle/finalization boundary for one owned work call. */
+  workInferenceLimit: number
+  /** @deprecated Read-only compatibility for callers that have not migrated yet. */
+  claudeWorkInferenceLimit?: number
   defaultWorkspaceRoot: string
   defaultExecutionMode: ExecutionMode
   defaultVisibilityMode: VisibilityMode
@@ -482,6 +535,8 @@ export interface StartRunRequest {
   claudeCustomizationProfile?: CustomizationProfile
   trustedLocalCapabilitiesConfirmed?: boolean
   qualityRoutingProfile?: QualityRoutingProfile
+  workInferenceLimit?: number
+  /** @deprecated Legacy saved request key; normalized to workInferenceLimit. */
   claudeWorkInferenceLimit?: number
   codexModel?: string
   codexEffort?: CodexEffort

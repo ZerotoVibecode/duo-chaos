@@ -9,6 +9,29 @@ import {
 } from '../../src/main/workspace/safe-protocol-files'
 
 describe('safe generated-workspace protocol files', () => {
+  it('preserves every record when supervisor events append concurrently', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'duo-safe-protocol-concurrent-'))
+    const duoPath = join(workspace, '.duo')
+    const publicPath = join(duoPath, 'public')
+    const timelinePath = join(publicPath, 'timeline.jsonl')
+    await mkdir(publicPath, { recursive: true })
+    await writeFile(timelinePath, '', 'utf8')
+
+    const expectedIds = Array.from({ length: 96 }, (_, index) => `event-${String(index).padStart(3, '0')}`)
+    await Promise.all(expectedIds.map((id) =>
+      safeAppendProtocolText(duoPath, timelinePath, `${JSON.stringify({ id })}\n`)
+    ))
+
+    const content = await safeReadProtocolText(duoPath, timelinePath)
+    const actualIds = (content ?? '')
+      .trim()
+      .split(/\r?\n/u)
+      .filter(Boolean)
+      .map((line) => (JSON.parse(line) as { id: string }).id)
+      .sort()
+    expect(actualIds).toEqual(expectedIds)
+  })
+
   it('does not read or overwrite a host directory through a planted protocol junction', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'duo-safe-protocol-workspace-'))
     const outside = await mkdtemp(join(tmpdir(), 'duo-safe-protocol-outside-'))

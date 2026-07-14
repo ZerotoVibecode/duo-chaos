@@ -7,7 +7,26 @@ type Momentum = {
     claude: { challenges: number; acceptedCalls: number; edits: number; tasksDone: number; repairSaves: number; latestMove?: string }
     codex: { challenges: number; acceptedCalls: number; edits: number; tasksDone: number; repairSaves: number; latestMove?: string }
   }
-  shared: { tasksDone: number; tasksTotal: number; buildPasses: number; buildFailures: number; checkpoints: number }
+  shared: {
+    tasksDone: number
+    tasksTotal: number
+    buildPasses: number
+    buildFailures: number
+    checkpoints: number
+    acceptedContributions: number
+    acceptedContributionGoal: number
+    acceptedReviews: number
+    acceptedReviewGoal: number
+    browser: {
+      available: boolean
+      smokePassed: boolean
+      compactScreenshot: boolean
+      fullscreenScreenshot: boolean
+      consoleHealthy: boolean
+      interactionPassed: boolean
+      passed: boolean
+    }
+  }
 }
 
 const deriveEvidenceMomentum = (contributions as unknown as {
@@ -71,7 +90,32 @@ describe('evidence momentum derivation', () => {
 
     expect(result.agents.claude).toMatchObject({ challenges: 1, acceptedCalls: 1, edits: 1, tasksDone: 2, repairSaves: 0 })
     expect(result.agents.codex).toMatchObject({ challenges: 1, acceptedCalls: 0, edits: 1, tasksDone: 2, repairSaves: 1 })
-    expect(result.shared).toEqual({ tasksDone: 3, tasksTotal: 4, buildPasses: 0, buildFailures: 1, checkpoints: 1 })
+    expect(result.shared).toEqual({
+      tasksDone: 3,
+      tasksTotal: 4,
+      buildPasses: 0,
+      buildFailures: 1,
+      checkpoints: 1,
+      acceptedContributions: 0,
+      acceptedContributionGoal: 2,
+      acceptedReviews: 0,
+      acceptedReviewGoal: 2,
+      brief: {
+        available: false,
+        passed: false,
+        passedChecks: 0,
+        totalChecks: 0
+      },
+      browser: {
+        available: false,
+        smokePassed: false,
+        compactScreenshot: false,
+        fullscreenScreenshot: false,
+        consoleHealthy: false,
+        interactionPassed: false,
+        passed: false
+      }
+    })
   })
 
   it('uses only public recorded moves and never infers a winner from activity volume', () => {

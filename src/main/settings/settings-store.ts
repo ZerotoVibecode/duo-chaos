@@ -19,7 +19,7 @@ const settingsSchema = z.object({
   claudeCustomizationProfile: z.enum(['core', 'smart', 'full-local']),
   trustedLocalCapabilitiesConfirmed: z.boolean(),
   qualityRoutingProfile: z.enum(['balanced', 'force-selected']),
-  claudeWorkInferenceLimit: z.number().int().min(3).max(20),
+  workInferenceLimit: z.number().int().min(3).max(20),
   defaultWorkspaceRoot: z.string().min(1),
   defaultExecutionMode: z.enum(['simulation', 'safe', 'chaos', 'yolo-sandbox']),
   defaultVisibilityMode: z.enum(['blind', 'spoiler-shield', 'full-chaos']),
@@ -48,7 +48,7 @@ export function defaultSettings(defaultWorkspaceRoot: string): AppSettings {
     claudeCustomizationProfile: 'smart',
     trustedLocalCapabilitiesConfirmed: false,
     qualityRoutingProfile: 'balanced',
-    claudeWorkInferenceLimit: 8,
+    workInferenceLimit: 8,
     defaultWorkspaceRoot,
     defaultExecutionMode: 'simulation',
     defaultVisibilityMode: 'spoiler-shield',
@@ -74,12 +74,16 @@ export class SettingsStore {
       const saved = typeof raw === 'object' && raw ? raw as Record<string, unknown> : {}
       const legacyTurnBudget = typeof saved.maxTurns === 'number' &&
         Number.isInteger(saved.maxTurns) && saved.maxTurns >= 2 && saved.maxTurns < 7
+      const legacyWorkInferenceLimit = typeof saved.claudeWorkInferenceLimit === 'number' &&
+        Number.isInteger(saved.claudeWorkInferenceLimit) && saved.claudeWorkInferenceLimit >= 3 &&
+        saved.claudeWorkInferenceLimit <= 20 && saved.workInferenceLimit === undefined
       const validated = settingsSchema.parse({
         ...defaults,
         ...saved,
+        ...(legacyWorkInferenceLimit ? { workInferenceLimit: saved.claudeWorkInferenceLimit } : {}),
         ...(legacyTurnBudget ? { maxTurns: 7 } : {})
       })
-      if (legacyTurnBudget) await this.writeValidated(validated).catch(() => undefined)
+      if (legacyTurnBudget || legacyWorkInferenceLimit) await this.writeValidated(validated).catch(() => undefined)
       return validated
     } catch (error) {
       if (error instanceof SyntaxError) {
@@ -90,7 +94,11 @@ export class SettingsStore {
   }
 
   async save(settings: AppSettings): Promise<AppSettings> {
-    const validated = settingsSchema.parse(settings)
+    const legacy = settings as AppSettings & { claudeWorkInferenceLimit?: number }
+    const validated = settingsSchema.parse({
+      ...settings,
+      workInferenceLimit: settings.workInferenceLimit ?? legacy.claudeWorkInferenceLimit ?? 8
+    })
     await this.writeValidated(validated)
     return validated
   }

@@ -22,42 +22,34 @@ function event(type: DuoEvent['type'], additions: Partial<DuoEvent> = {}): DuoEv
 }
 
 describe('turn acceptance', () => {
-  it('accepts a streamed verification pass even when the queued UI event has not flushed yet', () => {
+  it('accepts only explicit verification evidence when the queued UI event has not flushed yet', () => {
     expect(hasDurableWorkEvidence({
       durableSourceChanged: false,
       preservedOpeningSource: false,
       queuedVerification: undefined,
-      streamedVerification: 'passed',
-      successfulWorkspaceCommand: false,
-      protocolBuildFailed: false
+      streamedVerification: 'passed'
     })).toBe(true)
 
     expect(hasDurableWorkEvidence({
       durableSourceChanged: false,
       preservedOpeningSource: false,
       queuedVerification: 'passed',
-      streamedVerification: 'passed',
-      successfulWorkspaceCommand: false,
-      protocolBuildFailed: true
+      streamedVerification: 'passed'
     })).toBe(true)
 
     expect(hasDurableWorkEvidence({
       durableSourceChanged: false,
       preservedOpeningSource: false,
       queuedVerification: 'failed',
-      streamedVerification: 'failed',
-      successfulWorkspaceCommand: false,
-      protocolBuildFailed: true
+      streamedVerification: 'failed'
     })).toBe(false)
 
     expect(hasDurableWorkEvidence({
       durableSourceChanged: false,
       preservedOpeningSource: false,
       queuedVerification: undefined,
-      streamedVerification: undefined,
-      successfulWorkspaceCommand: true,
-      protocolBuildFailed: false
-    })).toBe(true)
+      streamedVerification: undefined
+    })).toBe(false)
   })
 
   it('reuses a preserved receipt only for the same unchanged stage revision', () => {

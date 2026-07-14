@@ -1,4 +1,4 @@
-import { CheckCircle2, GitCommitHorizontal, Hammer, MessageSquareReply, ShieldCheck, Wrench } from 'lucide-react'
+import { CheckCircle2, GitCommitHorizontal, Hammer, MessageSquareReply, MonitorCheck, PackageCheck, ShieldCheck, Wrench } from 'lucide-react'
 import type { RunSnapshot } from '@shared/types'
 import { deriveEvidenceMomentum, type AgentEvidenceMomentum } from '@renderer/lib/contributions'
 import './EvidenceMomentum.css'
@@ -18,6 +18,10 @@ function AgentLane({ agent, evidence }: { agent: 'claude' | 'codex'; evidence: A
     <article className={`momentum-agent momentum-${agent}`} data-testid={`momentum-${agent}`}>
       <div className="momentum-agent-head"><i aria-hidden="true" /><strong>{name}</strong><span>Recorded</span></div>
       <div className="momentum-metrics" aria-label={`${name} recorded evidence`}>
+        {evidence.acceptedContributions > 0 && <span className="proof-accepted"><PackageCheck size={12} />{quantity(evidence.acceptedContributions, 'accepted contribution')}</span>}
+        {evidence.acceptedReviews > 0 && <span className="proof-accepted"><ShieldCheck size={12} />{quantity(evidence.acceptedReviews, 'current review')}</span>}
+        {evidence.acceptedContributions === 0 && evidence.continuingContributions > 0 && <span className="proof-continuing"><PackageCheck size={12} />{quantity(evidence.continuingContributions, 'contribution continuing', 'contributions continuing')}</span>}
+        {evidence.blockedContributions > 0 && <span className="proof-blocked"><PackageCheck size={12} />{quantity(evidence.blockedContributions, 'blocked contribution')}</span>}
         <span><MessageSquareReply size={12} />{quantity(evidence.challenges, 'challenge')}</span>
         <span aria-label={quantity(evidence.acceptedCalls, 'accepted call')}><ShieldCheck size={12} />{evidence.acceptedCalls} <span className="metric-label-full">accepted {evidence.acceptedCalls === 1 ? 'call' : 'calls'}</span><span className="metric-label-compact">calls</span></span>
         <span><Hammer size={12} />{quantity(evidence.edits, 'edit')}</span>
@@ -47,10 +51,22 @@ export function EvidenceMomentum({ run, variant = 'live' }: EvidenceMomentumProp
       </div>
 
       <div className="shared-proof" aria-label="Shared workspace proof">
+        <span className={evidence.shared.acceptedContributions >= evidence.shared.acceptedContributionGoal ? 'shared-proof-complete' : 'shared-proof-pending'}><b>{evidence.shared.acceptedContributions}/{evidence.shared.acceptedContributionGoal}</b> accepted contributions</span>
+        <span className={evidence.shared.acceptedReviews >= evidence.shared.acceptedReviewGoal ? 'shared-proof-complete' : 'shared-proof-pending'}><b>{evidence.shared.acceptedReviews}/{evidence.shared.acceptedReviewGoal}</b> current reviews</span>
+        {evidence.shared.brief.available && (
+          <span className={evidence.shared.brief.passed ? 'shared-proof-complete' : 'shared-proof-pending'}>
+            <ShieldCheck size={12} /><b>{evidence.shared.brief.passed ? 'Brief proved' : `${String(evidence.shared.brief.passedChecks)}/${String(evidence.shared.brief.totalChecks)} brief checks`}</b>
+          </span>
+        )}
         <span><b>{evidence.shared.tasksDone}/{evidence.shared.tasksTotal}</b> tasks</span>
         <span><b>{evidence.shared.buildPasses}</b> passed</span>
         <span><b>{evidence.shared.buildFailures}</b> failed</span>
         <span><b>{evidence.shared.checkpoints}</b> {evidence.shared.checkpoints === 1 ? 'checkpoint' : 'checkpoints'}</span>
+        {evidence.shared.browser.available && (
+          <span className={evidence.shared.browser.passed ? 'shared-proof-complete' : 'shared-proof-pending'}>
+            <MonitorCheck size={12} /><b>{evidence.shared.browser.passed ? 'Browser QA passed' : 'Browser QA incomplete'}</b>
+          </span>
+        )}
       </div>
     </section>
   )

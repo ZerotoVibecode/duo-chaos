@@ -202,6 +202,34 @@ describe('DurableRunStateStore', () => {
     await expect(store.readManifest()).resolves.toEqual(paused)
   })
 
+  test('round-trips a spoiler-safe quality-repair cursor and its missing evidence categories', async () => {
+    const root = await temporaryRoot()
+    const store = new DurableRunStateStore(root, {
+      runId: 'duo-run-fixture-a1b2',
+      workspaceId: 'workspace-fixture-a1b2'
+    })
+    const repair = manifest({
+      status: 'paused',
+      qualityRepair: {
+        attempts: 2,
+        missingEvidence: ['Independent verification', 'Codex reply-linked cross-review']
+      },
+      pause: {
+        reason: 'other',
+        pausedAt: '2026-07-11T12:05:00.000Z',
+        detailCode: 'quality-repair'
+      }
+    })
+
+    await store.persist(repair)
+
+    await expect(store.reconstruct()).resolves.toMatchObject({
+      status: 'paused',
+      qualityRepair: repair.qualityRepair,
+      pause: { reason: 'other', detailCode: 'quality-repair' }
+    })
+  })
+
   test('reconstructs the newest safe state and ignores a truncated final journal line', async () => {
     const root = await temporaryRoot()
     const store = new DurableRunStateStore(root, {

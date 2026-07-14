@@ -65,12 +65,14 @@ description: Focused acceptance-driven implementation and evidence review for a 
 
 # Duo quality turn
 
-- Start from the supervisor FOCUS BATON and owned task. Broaden inspection only when evidence requires it.
-- Preserve accepted teammate work and make one distinct, complete contribution.
-- Use an existing skill, plugin, or MCP tool only when it reduces uncertainty or provides stronger evidence. Do not inventory the toolbelt and do not spawn subagents.
-- For UI work, choose a deliberate visual direction, readable type, responsive layout, accessible controls, and one memorable interaction instead of generic decoration.
-- Batch independent reads. Prefer the smallest useful verification command after the edit.
-- Finish with truthful board state and a concise teammate handoff. Never reveal hidden nouns in public files.
+- Treat the frozen hard constraints and acceptance checks as binding. Do not trade them away for novelty or speed.
+- Start from the supervisor FOCUS BATON and owned task. Do not inventory the repository; broaden inspection only when evidence requires it.
+- Preserve accepted teammate work and land one distinct, complete owned contribution. Do not spawn subagents.
+- For UI work, choose one signature interaction, a deliberate visual hierarchy, readable type, responsive compact and full-screen layouts, and accessible controls instead of generic filler.
+- Use only the brokered skill, plugin, or MCP shortlist, and only when it materially reduces uncertainty or strengthens evidence. Do not inventory the toolbelt.
+- Batch independent reads. After editing, run the smallest useful direct, unpiped verification command (no pipes, tail, semicolons, or swallowed failures) so the supervisor can trust the real exit status.
+- Before stopping, mark the owned task done or explicitly blocked, record verification evidence, and write a concise reply-linked handoff to the teammate. Proof beats prose.
+- Never reveal hidden nouns in public files.
 `
 
 const GENERATED_GITIGNORE = `# All Duo coordination is runtime state. Agents can write it, so no .duo file
@@ -211,7 +213,10 @@ export async function restoreSupervisorWorkspacePolicy(
     resolve(workspace.workspacePath, 'AGENTS.md'),
     resolve(workspace.workspacePath, 'AGENTS.override.md'),
     resolve(workspace.workspacePath, 'CLAUDE.md'),
-    resolve(workspace.duoPath, 'private', 'skills', 'duo-quality')
+    // The complete directory is supervisor-owned. Removing it from its
+    // canonical `.duo/private` parent supports pre-skill runs where it is
+    // absent and safely unlinks an agent-created junction before rebuilding.
+    resolve(workspace.duoPath, 'private', 'skills')
   ]
   await Promise.all([
     ...removablePaths.map((path) => safelyRemoveWorkspaceEntry(workspace.workspacePath, path)),

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { RunUsageTracker, parseProviderUsageLine } from '../../src/main/orchestrator/usage-telemetry'
+import {
+  DEFAULT_COMPLETED_CALL_USAGE_LIMITS,
+  RunUsageTracker,
+  evaluateCompletedCallUsage,
+  parseProviderUsageLine
+} from '../../src/main/orchestrator/usage-telemetry'
 
 describe('provider-reported usage telemetry', () => {
   it('parses Codex terminal usage without inventing a price', () => {
@@ -104,5 +109,153 @@ describe('provider-reported usage telemetry', () => {
       reasoningTokens: 0,
       calls: 1
     })
+  })
+
+  it('retains deduplicated provisional Claude usage when a call is cancelled before its result record', () => {
+    const tracker = new RunUsageTracker()
+    tracker.beginCall('claude', 'claude-work-1')
+    const partial = JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg-1',
+        usage: {
+          input_tokens: 2,
+          cache_creation_input_tokens: 5_000,
+          cache_read_input_tokens: 10_000,
+          output_tokens: 120
+        }
+      }
+    })
+    tracker.ingest('claude', partial, true, 'claude-work-1')
+    tracker.ingest('claude', partial, true, 'claude-work-1')
+    tracker.finishCall('claude', 'claude-work-1', 'cancelled')
+
+    expect(tracker.snapshot().claude).toMatchObject({
+      processedInputTokens: 15_002,
+      cachedInputTokens: 10_000,
+      outputTokens: 120,
+      calls: 1
+    })
+    const [receipt] = tracker.evidenceSnapshot().calls
+    expect(receipt).toMatchObject({
+      id: 'claude-work-1',
+      agent: 'claude',
+      status: 'cancelled',
+      complete: false,
+      source: 'provisional'
+    })
+    expect(receipt?.totals).toMatchObject({ processedInputTokens: 15_002, outputTokens: 120, calls: 1 })
+  })
+
+  it('reconciles provisional Claude messages to terminal aggregate usage without double counting', () => {
+    const tracker = new RunUsageTracker()
+    tracker.beginCall('claude', 'claude-work-2')
+    tracker.ingest('claude', JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg-2',
+        usage: {
+          input_tokens: 2,
+          cache_creation_input_tokens: 5_000,
+          cache_read_input_tokens: 0,
+          output_tokens: 400
+        }
+      }
+    }), true, 'claude-work-2')
+    tracker.ingest('claude', JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      total_cost_usd: 0.42,
+      usage: {
+        input_tokens: 3,
+        cache_creation_input_tokens: 5_000,
+        cache_read_input_tokens: 8_000,
+        output_tokens: 900
+      }
+    }), true, 'claude-work-2')
+    tracker.finishCall('claude', 'claude-work-2', 'complete')
+
+    const claudeUsage = tracker.snapshot().claude
+    expect(claudeUsage.largestRawLineBytes).toBeGreaterThan(0)
+    expect(claudeUsage).toEqual({
+      processedInputTokens: 13_003,
+      cachedInputTokens: 8_000,
+      outputTokens: 900,
+      reasoningTokens: 0,
+      calls: 1,
+      largestRawLineBytes: claudeUsage.largestRawLineBytes,
+      reportedCostUsd: 0.42
+    })
+    expect(tracker.evidenceSnapshot().calls[0]).toMatchObject({
+      status: 'complete',
+      complete: true,
+      source: 'terminal'
+    })
+  })
+
+  it('records a successful process without terminal usage as explicitly incomplete', () => {
+    const tracker = new RunUsageTracker()
+    tracker.beginCall('claude', 'claude-work-3')
+    tracker.finishCall('claude', 'claude-work-3', 'complete')
+
+    expect(tracker.evidenceSnapshot().calls[0]).toMatchObject({
+      status: 'incomplete',
+      complete: false,
+      source: 'none'
+    })
+  })
+
+  it('requests a between-call checkpoint from exact excessive terminal usage', () => {
+    const tracker = new RunUsageTracker()
+    tracker.beginCall('codex', 'codex-work-heavy')
+    tracker.ingest('codex', JSON.stringify({
+      type: 'turn.completed',
+      usage: {
+        input_tokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.processedInputTokens + 1,
+        cached_input_tokens: 300_000,
+        output_tokens: 8_000,
+        reasoning_output_tokens: 2_000
+      }
+    }), true, 'codex-work-heavy')
+    tracker.finishCall('codex', 'codex-work-heavy', 'complete')
+
+    const [receipt] = tracker.evidenceSnapshot().calls
+    expect(evaluateCompletedCallUsage(receipt!)).toEqual({
+      shouldPauseBeforeNextCall: true,
+      reasons: ['processed-input'],
+      callId: 'codex-work-heavy',
+      agent: 'codex',
+      totals: {
+        processedInputTokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.processedInputTokens + 1,
+        cachedInputTokens: 300_000,
+        outputTokens: 8_000,
+        reasoningTokens: 2_000,
+        calls: 1
+      },
+      limits: DEFAULT_COMPLETED_CALL_USAGE_LIMITS
+    })
+  })
+
+  it('never guards incomplete or ordinary completed receipts', () => {
+    const tracker = new RunUsageTracker()
+    tracker.beginCall('claude', 'claude-incomplete')
+    tracker.finishCall('claude', 'claude-incomplete', 'cancelled')
+    const [incomplete] = tracker.evidenceSnapshot().calls
+    expect(evaluateCompletedCallUsage(incomplete!)).toBeUndefined()
+
+    tracker.beginCall('claude', 'claude-normal')
+    tracker.ingest('claude', JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      usage: {
+        input_tokens: 20,
+        cache_creation_input_tokens: 10_000,
+        cache_read_input_tokens: 50_000,
+        output_tokens: 4_000
+      }
+    }), true, 'claude-normal')
+    tracker.finishCall('claude', 'claude-normal', 'complete')
+    const normal = tracker.evidenceSnapshot().calls.find((receipt) => receipt.id === 'claude-normal')
+    expect(evaluateCompletedCallUsage(normal!)).toBeUndefined()
   })
 })

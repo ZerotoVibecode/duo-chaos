@@ -82,20 +82,31 @@ function dialogueCapsule(round: number): Record<string, unknown> {
             privateTitle: 'Build Claude synthetic source',
             publicDescription: 'Implement one bounded source slice.',
             privateDescription: 'Implement Claude synthetic source.',
-            kind: 'implementation', risk: 'low', claimedBy: 'claude', files: []
+            kind: 'implementation', impact: 'substantial',
+            expectedOutcome: 'Claude completes and verifies an independently attributable synthetic source slice.',
+            acceptanceChecks: ['The Claude synthetic source boundary exists and verifies without a provider retry.'],
+            risk: 'low', claimedBy: 'claude', files: ['app/claude-*.js']
           },
           {
             id: 'codex-source', publicTitle: 'Build the other half of the [FEATURE]',
             privateTitle: 'Build Codex synthetic source',
             publicDescription: 'Implement the paired source slice.',
             privateDescription: 'Implement Codex synthetic source.',
-            kind: 'implementation', risk: 'low', claimedBy: 'codex', files: []
+            kind: 'implementation', impact: 'substantial',
+            expectedOutcome: 'Codex completes and verifies an independently attributable synthetic source slice.',
+            acceptanceChecks: ['The Codex synthetic source boundary exists and verifies without a provider retry.'],
+            risk: 'low', claimedBy: 'codex', files: ['app/codex-*.js']
           }
         ]
       : [],
     pitches: pitch
       ? [
-          { title: `Synthetic Pitch ${String(round)}A`, idea: 'Synthetic fixture A.', appeal: 'Focused.', risk: 'None.' },
+          {
+            title: 'Synthetic Fixture App',
+            idea: 'A bounded synthetic provider-boundary fixture with equal source work.',
+            appeal: 'Focused and directly testable.',
+            risk: 'None.'
+          },
           { title: `Synthetic Pitch ${String(round)}B`, idea: 'Synthetic fixture B.', appeal: 'Clear.', risk: 'None.' }
         ]
       : [],
@@ -112,7 +123,7 @@ function dialogueCapsule(round: number): Record<string, unknown> {
       { value: 'synthetic feature', label: 'FEATURE' },
       ...(pitch
         ? [
-            { value: `Synthetic Pitch ${String(round)}A`, label: 'APP_NAME' },
+            { value: 'Synthetic Fixture App', label: 'APP_NAME' },
             { value: `Synthetic Pitch ${String(round)}B`, label: 'APP_NAME' }
           ]
         : []),
@@ -352,7 +363,7 @@ describe('provider fault matrix', () => {
     await orchestrator.waitForSettled(started.runId)
     const snapshot = orchestrator.getSnapshot(started.runId)
 
-    expect(snapshot?.status).toBe('reveal-ready')
+    expect(snapshot).toMatchObject({ status: 'paused', pause: { reason: 'quality-repair' } })
     expect(snapshot?.events.filter((event) => event.topic === 'turn-timeboxed')).toHaveLength(2)
     expect(snapshot?.events.some((event) => event.type === 'run.failed')).toBe(false)
     expect(new Set(calls)).toEqual(new Set(['claude', 'codex']))
@@ -648,7 +659,8 @@ describe('release recovery hardening', () => {
     const snapshot = orchestrator.getSnapshot(started.runId)
     expect(snapshot?.tasks.map((task) => task.claimedBy)).toEqual(['claude', 'codex'])
     expect(snapshot?.events.some((event) => event.topic === 'task-ownership-balanced')).toBe(true)
-    expect(snapshot?.events.some((event) => event.type === 'run.paused')).toBe(false)
+    expect(snapshot).toMatchObject({ status: 'paused', pause: { reason: 'quality-repair' } })
+    expect(snapshot?.events.some((event) => event.type === 'run.paused' && event.topic !== 'quality-repair')).toBe(false)
   })
 
   it('accepts a pretty-printed multiline allowed quota envelope without a false pause', async () => {
@@ -665,7 +677,7 @@ describe('release recovery hardening', () => {
     const started = await orchestrator.start(request(root, 2))
     await within(orchestrator.waitForSettled(started.runId), 'accepting multiline allowed quota')
 
-    expect(orchestrator.getSnapshot(started.runId)?.status).toBe('reveal-ready')
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({ status: 'paused', pause: { reason: 'quality-repair' } })
     expect(orchestrator.getSnapshot(started.runId)?.events.some((event) =>
       event.type === 'run.paused' && event.topic === 'provider-quota'
     )).toBe(false)
@@ -686,8 +698,10 @@ describe('release recovery hardening', () => {
     await within(orchestrator.waitForSettled(started.runId), 'recovering an invalid provider contract')
 
     expect(runner.stages.filter((stage) => stage === 'recovery')).toHaveLength(1)
-    expect(orchestrator.getSnapshot(started.runId)?.status).toBe('reveal-ready')
-    expect(orchestrator.getSnapshot(started.runId)?.events.some((event) => event.type === 'run.paused')).toBe(false)
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({ status: 'paused', pause: { reason: 'quality-repair' } })
+    expect(orchestrator.getSnapshot(started.runId)?.events.some((event) =>
+      event.type === 'run.paused' && event.topic !== 'quality-repair'
+    )).toBe(false)
   })
 
   it.each([
@@ -746,7 +760,7 @@ describe('release recovery hardening', () => {
     expect(runner.calls[beforeResume]).toMatchObject({ round: 5, stage: 'recovery' })
     expect(runner.calls.filter((call) => call.round === 5 && call.stage === 'work')).toHaveLength(1)
     await expect(readFile(join(started.workspacePath, 'app', `${workAgent}-5.js`), 'utf8')).resolves.toContain('recovered')
-    expect(orchestrator.getSnapshot(started.runId)?.status).toBe('reveal-ready')
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({ status: 'paused', pause: { reason: 'quality-repair' } })
   })
 
   it('leaves an unexpected recovery source edit visible and blocks automatic resume', async () => {
@@ -794,7 +808,7 @@ describe('release recovery hardening', () => {
 
     const recovery = runner.calls.find((call) => call.round === 5 && call.stage === 'recovery')
     expect(recovery).toMatchObject({ toolFree: true })
-    expect(orchestrator.getSnapshot(started.runId)?.status).toBe('reveal-ready')
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({ status: 'paused', pause: { reason: 'quality-repair' } })
     expect(runner.calls.filter((call) => call.round === 5 && call.stage === 'work')).toHaveLength(1)
   })
 
@@ -893,6 +907,6 @@ describe('restart and exact-stage continuation', () => {
     expect(resumedRunner.calls[0]).toMatchObject({ round: 6, stage: 'work' })
     expect(resumedRunner.calls.some((call) => call.round < 6)).toBe(false)
     expect(bootstrapRunner.calls).toHaveLength(1)
-    expect(restored.getSnapshot(started.runId)?.status).toBe('reveal-ready')
+    expect(restored.getSnapshot(started.runId)).toMatchObject({ status: 'paused', pause: { reason: 'quality-repair' } })
   })
 })

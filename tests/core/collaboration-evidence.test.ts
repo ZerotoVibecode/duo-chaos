@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildReviewReceipt,
   hasCompletedOwnedTask,
-  hasReciprocalReviewEvidence
+  hasReciprocalReviewEvidence,
+  parseReviewReceiptsJsonl,
+  reviewAcceptsCurrentRevision
 } from '../../src/main/orchestrator/collaboration-evidence'
+import { buildContributionReceipt } from '../../src/main/orchestrator/contribution-receipt'
 import type { DuoEvent, DuoTask } from '../../src/shared/types'
 
 function dispatch(
@@ -46,5 +50,45 @@ describe('collaboration evidence', () => {
 
     expect(hasCompletedOwnedTask(tasks, 'claude')).toBe(true)
     expect(hasCompletedOwnedTask(tasks, 'codex')).toBe(false)
+  })
+
+  it('binds an accepted review to one opponent contribution and the exact reviewed revision', () => {
+    const target = buildContributionReceipt({
+      runId: 'run-collaboration-evidence', round: 5, turnId: 'turn-5', agent: 'codex', kind: 'code',
+      tasks: [{
+        id: 'codex-slice', publicTitle: 'Slice', status: 'done', claimedBy: 'codex', risk: 'medium',
+        impact: 'core', privateExpectedOutcome: 'The exact implementation slice works and is verified.',
+        privateAcceptanceChecks: ['The implementation verification passes.'],
+        files: ['[WORKSPACE_FILE]'], privateFiles: ['app/**']
+      }],
+      events: [dispatch('codex-handoff', 'codex', 5, { replyTo: 'claude-source' })],
+      diff: { changed: true, files: ['app/codex.ts'], fileCount: 1, insertions: 20, deletions: 0, truncated: false },
+      verification: 'passed', accepted: true,
+      baseRevision: 0, resultRevision: 1,
+      baseFingerprint: 'sha256:base', resultFingerprint: 'sha256:codex'
+    })
+    const reviewEvent = dispatch('claude-review', 'claude', 6, { replyTo: 'codex-handoff' })
+    const review = buildReviewReceipt({
+      runId: 'run-collaboration-evidence', round: 6, turnId: 'turn-6', reviewer: 'claude',
+      targetContribution: target, reviewedRevision: 1, reviewedFingerprint: 'sha256:codex',
+      events: [dispatch('codex-handoff', 'codex', 5, { replyTo: 'claude-source' }), reviewEvent], verification: 'passed',
+      accepted: true, sourceChanged: false
+    })
+
+    expect(review).toBeDefined()
+    if (!review) throw new Error('Expected revision-bound review receipt.')
+    const supervisorEvents = [dispatch('codex-handoff', 'codex', 5, { replyTo: 'claude-source' }), reviewEvent]
+    expect(reviewAcceptsCurrentRevision(review, [target], 1, 'sha256:codex', supervisorEvents)).toBe(true)
+    expect(reviewAcceptsCurrentRevision(review, [target], 2, 'sha256:later-edit', supervisorEvents)).toBe(false)
+    expect(reviewAcceptsCurrentRevision(review, [target], 1, 'sha256:codex', supervisorEvents.filter((event) => event.id !== reviewEvent.id))).toBe(false)
+  })
+
+  it('rejects a generic handoff and legacy review record as final review proof', () => {
+    expect(buildReviewReceipt({
+      runId: 'run-collaboration-evidence', round: 6, turnId: 'turn-6', reviewer: 'claude',
+      reviewedRevision: 1, reviewedFingerprint: 'sha256:codex', events: [],
+      verification: 'passed', accepted: true, sourceChanged: false
+    })).toBeUndefined()
+    expect(parseReviewReceiptsJsonl(JSON.stringify({ id: 'legacy', runId: 'run-collaboration-evidence' }), 'run-collaboration-evidence')).toEqual([])
   })
 })

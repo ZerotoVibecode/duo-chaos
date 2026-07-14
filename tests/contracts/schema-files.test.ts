@@ -39,6 +39,7 @@ describe('public JSON schema contracts', () => {
     expect(value.properties).toHaveProperty('claudeCustomizationProfile')
     expect(value.properties).toHaveProperty('trustedLocalCapabilitiesConfirmed')
     expect(value.properties).toHaveProperty('qualityRoutingProfile')
+    expect(value.properties).toHaveProperty('workInferenceLimit')
     expect(value.properties).toHaveProperty('claudeWorkInferenceLimit')
     const properties = value.properties as Record<string, { enum?: string[]; default?: number; maximum?: number }>
     expect(properties.codexEffort?.enum).toContain('ultra')

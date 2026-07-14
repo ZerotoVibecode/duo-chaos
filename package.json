@@ -86,6 +86,12 @@
     "directories": {
       "output": "release"
     },
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      }
+    ],
     "files": [
       "out/**/*",
       "schemas/**/*",

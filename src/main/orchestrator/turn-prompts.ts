@@ -17,6 +17,10 @@ export interface ComposeTurnStagePromptInput {
   quotaHandoffFrom?: 'claude' | 'codex'
   leanContribution?: boolean
   contextBaton?: string
+  capabilityShortlist?: string
+  qualityContract?: string
+  qualityBaton?: string
+  briefReference?: string
   customizationProfile?: CustomizationProfile
 }
 
@@ -31,16 +35,17 @@ function capabilityContract(profile: CustomizationProfile = 'core'): string {
 }
 
 function missionContract(input: ComposeTurnStagePromptInput): string {
+  const briefLabel = input.briefReference ? 'SEALED BRIEF' : 'HUMAN BRIEF'
   if (input.missionProfile === 'serious') {
     return `MISSION PROFILE — SERIOUS BUILD
-The HUMAN BRIEF is a binding product brief. Preserve its requested product, outcomes, constraints, and stated requirements.
+The ${briefLabel} is a binding product brief. Preserve its requested product, outcomes, constraints, and stated requirements.
 - Do not replace the requested product with a different idea, even if another idea seems more entertaining.
 - Debate architecture, UX, implementation strategy, scope, and tradeoffs; the product itself is not up for replacement.
 - At consensus, put concrete acceptance checks for every stated requirement inside the sealed specification.
 - During source work and review, use those acceptance checks to decide what is complete.`
   }
   return `MISSION PROFILE — SURPRISE BUILD
-The HUMAN BRIEF is creative direction. Secretly invent and choose the product, then keep the winning scope compact, buildable, and surprising.`
+Secretly invent and choose the product identity, then keep the winning scope compact, buildable, and surprising. Explicit domain, audience, platform, usefulness, and restriction signals in the ${briefLabel} remain binding.`
 }
 
 function dispatchContract(input: ComposeTurnStagePromptInput, kind: 'opening' | 'verdict' | 'closing'): string {
@@ -63,6 +68,10 @@ Use status ready only when the runnable artifact and checks support it; otherwis
 
 function common(input: ComposeTurnStagePromptInput): string {
   const other = input.turn.agent === 'claude' ? 'Codex' : 'Claude Code'
+  const brief = input.briefReference
+    ? `SEALED BRIEF REFERENCE\n${input.briefReference}`
+    : `HUMAN BRIEF\n${input.humanBrief}`
+  const quality = input.qualityBaton ?? input.qualityContract
   return `# Duo Chaos — broadcast turn
 Run: ${input.runId}
 Round: ${String(input.round)}
@@ -70,10 +79,10 @@ Turn: ${input.turn.kind}
 Stage: ${input.stage}
 Agent: ${input.turn.agent}
 
-HUMAN BRIEF
-${input.humanBrief}
+${brief}
 
 ${missionContract(input)}
+${quality ? `\n${quality}\n` : ''}
 
 GOAL
 ${input.turn.goal}
@@ -85,6 +94,7 @@ Reply to the latest statement directly when it exists. Do not merely summarize i
 BOARD
 ${input.board}
 ${input.contextBaton ? `\n${input.contextBaton}` : ''}
+${input.capabilityShortlist ? `\n${input.capabilityShortlist}` : ''}
 ${input.quotaHandoffFrom
     ? `\nQUOTA HANDOFF\n${input.quotaHandoffFrom === 'claude' ? 'Claude' : 'Codex'} is provider-limited. Claim any released task needed to finish the shared build; preserve completed work and do not wait for that agent.`
     : ''}
@@ -106,7 +116,7 @@ function dialogueCapsuleContract(input: ComposeTurnStagePromptInput): string {
       : 'Include `pitches` with exactly two compact private product candidates. Each needs title, idea, appeal, and risk.'
     : 'Set `pitches` to an empty array unless presenting a genuinely new candidate.'
   const consensusContract = input.turn.phase === 'round.consensus'
-    ? `Include \`consensus\` with appName, idea, summary, an implementation-ready spec, and redaction terms.${serious ? ' The spec must be at least 120 characters, reuse the brief’s important product terms, and end with an "Acceptance checks" section containing at least two specific bullet checks that cover the stated requirements.' : ''} Include exactly two similarly weighted source-changing tasks: one claimed by claude and one by codex; every task includes \`files\` (use [] only when undecided).`
+    ? `Include \`consensus\` with appName, idea, summary, an implementation-ready spec, and redaction terms.${serious ? ' The spec must be at least 120 characters, reuse the brief’s important product terms, and end with an "Acceptance checks" section containing at least two specific bullet checks that cover the stated requirements.' : ''} Include exactly two similarly weighted source-changing tasks: one claimed by claude and one by codex. Every task needs impact (core or substantial), a concrete expectedOutcome, 1-4 concise acceptanceChecks, risk, and 1-12 expected source file boundaries in \`files\`. No copy-only, docs-only, or verification-only consolation task.`
     : 'Set `consensus` to null. Keep `tasks` empty until the direction is sealed.'
   return `DIALOGUE CAPSULE CONTRACT
 Return exactly one schema-valid JSON object. The orchestrator will persist it; you have no workspace tools in this stage.
@@ -163,9 +173,11 @@ This is one fresh, self-contained source contribution. Do not expect a later pai
 - Git metadata is supervisor-private and intentionally absent here. Do not run Git commands; inspect and verify the workspace files directly.
 - Preserve accepted teammate work. For an integration turn, review that work before adding your distinct slice.
 - Claim or update your matching task in .duo/board.json, implement the goal, and run the smallest useful verification set.
+- Keep source changes inside the task's expected file boundaries; satisfy its concise acceptance checks and preserve the expectedOutcome as the definition of done.
+- Before stopping, mark your owned task done or explicitly blocked and record verification evidence in the board/protocol.
 - Finish by appending one concise, reply-linked handoff that says what you accepted, challenged, changed, verified, and what remains.
 ${dispatchContract(input, input.latestStatementId ? 'verdict' : 'opening')}
-${input.missionProfile === 'serious' ? 'The human brief and sealed acceptance checks are binding. Improve the solution without substituting a different product. Apply the same premium quality floor: a distinctive, polished result, one signature interaction where appropriate, deliberate visual direction, accessible controls, and a runnable finish.' : 'Elevate a vague brief into a distinctive, polished product: one signature interaction, deliberate visual direction, accessible controls, and a runnable finish.'}
+${input.missionProfile === 'serious' ? 'The sealed brief and acceptance checks are binding. Improve the solution without substituting a different product. Apply the same premium quality floor: a distinctive, polished result, one signature interaction where appropriate, deliberate visual direction, accessible controls, and a runnable finish.' : 'Elevate a vague brief into a distinctive, polished product: one signature interaction, deliberate visual direction, accessible controls, and a runnable finish.'}
 The supervisor builds the reveal packet from verified evidence. Do not spend time authoring presentation metadata or replaying work in a separate verdict.`
     }
     return `${header}
@@ -203,7 +215,7 @@ ${dialogueCapsuleContract(input)}`
 
 CONTRACT-ONLY RECOVERY
 The completed stage was missing: ${(input.recoveryReasons ?? []).join(', ') || 'required coordination records'}.
-Do not inspect or edit the app, do not run tests, and do not repeat implementation. Use only the human brief and teammate context already supplied above.
+Do not inspect or edit the app, do not run tests, and do not repeat implementation. Use only the ${input.briefReference ? 'sealed brief reference, immutable quality baton,' : 'human brief'} and teammate context already supplied above.
 ${stagedRecoveryCapsuleContract(input)}`
   }
 

@@ -18,11 +18,20 @@ describe('deterministic context baton', () => {
       mission: 'Implement the accessible interaction.',
       tasks: [{ id: 'task-1', title: 'Accessible interaction', status: 'claimed', claimedBy: 'claude', files: ['app/src/main.ts'] }],
       verificationDigest: 'npm test failed: expected keyboard activation',
+      hardConstraints: ['Must remain local-only', 'Must support keyboard activation'],
+      acceptanceChecks: ['Primary interaction works by keyboard', 'Compact viewport remains readable'],
+      decisionDelta: ['Keep the existing state machine; replace only the input layer.'],
+      opponentPosition: 'Codex requests proof that focus is restored after activation.',
+      contributionReceipt: 'Previous slice changed 2 files; verification failed on keyboard activation.',
       maxCharacters: 2_000
     })
 
     expect(baton).toContain('app/src/main.ts')
     expect(baton).toContain('expected keyboard activation')
+    expect(baton).toContain('Must remain local-only')
+    expect(baton).toContain('Keep the existing state machine')
+    expect(baton).toContain('Codex requests proof')
+    expect(baton).toContain('Previous slice changed 2 files')
     expect(baton).not.toContain(root)
     expect(baton).not.toContain('super-secret')
     expect(baton.length).toBeLessThanOrEqual(2_000)

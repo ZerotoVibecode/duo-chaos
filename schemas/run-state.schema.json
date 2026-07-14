@@ -39,6 +39,7 @@
       "required": ["claude", "codex"],
       "additionalProperties": false
     },
+    "usageGuard": { "$ref": "#/$defs/usageGuard" },
     "releaseStatus": { "enum": ["ready", "partial", "failed"] },
     "tasks": { "type": "array" },
     "events": { "type": "array" }
@@ -86,7 +87,7 @@
       "type": "object",
       "required": ["reason", "message", "pausedAt", "resumable", "round"],
       "properties": {
-        "reason": { "enum": ["provider-quota", "provider-auth", "provider-unavailable", "model-unavailable", "cli-incompatible", "provider-protocol", "session-lost", "stage-timeout", "host-interrupted", "workspace-drift", "verification-failed", "unknown"] },
+        "reason": { "enum": ["provider-quota", "usage-pressure", "provider-auth", "provider-unavailable", "model-unavailable", "cli-incompatible", "provider-protocol", "session-lost", "stage-timeout", "host-interrupted", "workspace-drift", "verification-failed", "quality-repair", "unknown"] },
         "provider": { "enum": ["claude", "codex"] },
         "message": { "type": "string", "minLength": 1 },
         "pausedAt": { "type": "string", "format": "date-time" },
@@ -95,7 +96,50 @@
         "round": { "type": "integer", "minimum": 0 },
         "stage": { "enum": ["dialogue", "opening", "work", "verdict", "recovery"] },
         "checkpoint": { "type": "string" },
-        "action": { "type": "string" }
+        "action": { "type": "string" },
+        "missingEvidence": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "usageGuard": {
+      "type": "object",
+      "required": ["status", "agent", "callId", "trigger", "reasons", "triggeredAt"],
+      "properties": {
+        "status": { "enum": ["pending", "acknowledged"] },
+        "agent": { "enum": ["claude", "codex"] },
+        "callId": { "type": "string", "minLength": 1 },
+        "trigger": { "enum": ["provider-warning", "completed-call-usage"] },
+        "reasons": { "type": "array", "items": { "enum": ["provider-pressure", "processed-input", "output", "reasoning"] } },
+        "triggeredAt": { "type": "string", "format": "date-time" },
+        "acknowledgedAt": { "type": "string", "format": "date-time" },
+        "utilization": { "type": "number", "minimum": 0, "maximum": 1 },
+        "resetAt": { "type": "string", "format": "date-time" },
+        "totals": {
+          "type": "object",
+          "required": ["processedInputTokens", "cachedInputTokens", "outputTokens", "reasoningTokens", "calls"],
+          "properties": {
+            "processedInputTokens": { "type": "integer", "minimum": 0 },
+            "cachedInputTokens": { "type": "integer", "minimum": 0 },
+            "outputTokens": { "type": "integer", "minimum": 0 },
+            "reasoningTokens": { "type": "integer", "minimum": 0 },
+            "calls": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "limits": {
+          "type": "object",
+          "required": ["processedInputTokens", "outputTokens", "reasoningTokens"],
+          "properties": {
+            "processedInputTokens": { "type": "integer", "minimum": 1 },
+            "outputTokens": { "type": "integer", "minimum": 1 },
+            "reasoningTokens": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

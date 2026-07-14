@@ -12,6 +12,7 @@ export interface ProcessRunOptions {
   timeoutMs: number
   stdoutPath: string
   stderrPath: string
+  abortSignal?: AbortSignal
   onLine: (stream: 'stdout' | 'stderr', line: string) => void
 }
 
@@ -54,15 +55,18 @@ const POSIX_TERMINATION_GRACE_MS = 1_000
 export const MAX_PENDING_LINE_BYTES = 8 * 1024 * 1024
 export const MAX_RAW_LOG_BYTES = 64 * 1024 * 1024
 
-export function buildChildEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const inherited = Object.fromEntries(
+export function buildBaseChildEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
     Object.entries(source).filter(([name, value]) => {
       const normalized = name.toUpperCase()
       return value !== undefined && (ALLOWED_ENVIRONMENT_NAMES.has(normalized) || normalized.startsWith('LC_'))
     })
   )
+}
+
+export function buildChildEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
-    ...inherited,
+    ...buildBaseChildEnvironment(source),
     // Keep supervised Claude turns compact and deterministic even when user
     // capabilities are enabled. These controls do not disable user-scoped
     // skills, plugins, apps, or MCP servers selected by the CLI.
@@ -238,12 +242,23 @@ export class ProcessRunner {
 
   async run(options: ProcessRunOptions): Promise<ProcessRunResult> {
     if (this.active.has(options.id)) throw new Error(`Process ${options.id} is already running.`)
+    const startedAt = new Date().toISOString()
+    const cancelledBeforeStart = (): ProcessRunResult => ({
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      cancelled: true,
+      cancelReason: 'user',
+      startedAt,
+      finishedAt: new Date().toISOString()
+    })
+    if (options.abortSignal?.aborted) return cancelledBeforeStart()
     await Promise.all([
       mkdir(dirname(options.stdoutPath), { recursive: true }),
       mkdir(dirname(options.stderrPath), { recursive: true })
     ])
+    if (options.abortSignal?.aborted) return cancelledBeforeStart()
 
-    const startedAt = new Date().toISOString()
     const stdoutFile = createWriteStream(options.stdoutPath, { flags: 'a' })
     const stderrFile = createWriteStream(options.stderrPath, { flags: 'a' })
     const child = crossSpawn(options.command.bin, options.command.args, {
@@ -258,6 +273,13 @@ export class ProcessRunner {
     child.stdin?.end(options.command.stdin)
     const active: ActiveProcess = { child, cancelRequested: false }
     this.active.set(options.id, active)
+    const abortProcess = (): void => {
+      void this.cancel(options.id, 'user')
+    }
+    options.abortSignal?.addEventListener('abort', abortProcess, { once: true })
+    // Close the narrow race between the pre-spawn check and listener
+    // registration. An already-aborted signal terminates the new process tree.
+    if (options.abortSignal?.aborted) abortProcess()
 
     let timedOut = false
     let outputLimitExceeded: ProcessRunResult['outputLimitExceeded']
@@ -286,11 +308,13 @@ export class ProcessRunner {
     return await new Promise<ProcessRunResult>((resolve, reject) => {
       child.once('error', (error) => {
         clearTimeout(timeout)
+        options.abortSignal?.removeEventListener('abort', abortProcess)
         this.active.delete(options.id)
         void Promise.all([finishRawLog(stdoutFile), finishRawLog(stderrFile)]).finally(() => reject(error))
       })
       child.once('close', (exitCode, signal) => {
         clearTimeout(timeout)
+        options.abortSignal?.removeEventListener('abort', abortProcess)
         flushStdout()
         flushStderr()
         this.active.delete(options.id)

@@ -1,6 +1,6 @@
 import { Bot, BrainCircuit, Code2, Gauge, Sparkles } from 'lucide-react'
 import type { AgentId, CustomizationProfile, RunSnapshot } from '@shared/types'
-import { deriveAgentContribution } from '@renderer/lib/contributions'
+import { deriveAgentContribution, deriveUsageCompleteness } from '@renderer/lib/contributions'
 import { formatModelLabel, formatRuntimeProfile } from '@renderer/lib/runtime-label'
 
 interface AgentCardProps {
@@ -66,11 +66,14 @@ export function AgentCard({ agent, run }: AgentCardProps): React.JSX.Element {
     ? effortLabel(turnStage.qualityCeiling ?? runtime?.qualityCeiling)
     : undefined
   const runtimeText = currentEffort
-    ? `${formatModelLabel(runtime?.model ?? '')} · ${currentEffort} now${qualityCeiling ? ` · ${qualityCeiling} ceiling` : ''}`
-    : formatRuntimeProfile(runtime)
+    ? `${formatModelLabel(runtime?.model ?? '')} · Actual ${currentEffort}${qualityCeiling ? ` · ${qualityCeiling} ceiling` : ''}`
+    : runtime?.effort
+      ? `${formatModelLabel(runtime.model ?? '')} · Selected ${effortLabel(runtime.effort) ?? runtime.effort}`
+      : formatRuntimeProfile(runtime)
   const customizationProfile = activeRuntime
     ? turnStage.customizationProfile ?? runtime?.customizationProfile
     : runtime?.customizationProfile
+  const usageCompleteness = deriveUsageCompleteness(run, agent)
 
   return (
     <article className={`glass-panel agent-card agent-${agent} ${isActive ? 'active' : ''}`} aria-label={`${name} agent`}>
@@ -115,6 +118,13 @@ export function AgentCard({ agent, run }: AgentCardProps): React.JSX.Element {
             {usage.reportedCostUsd !== undefined && <><i>·</i><b>${usage.reportedCostUsd.toFixed(2)}</b> reported</>}
           </p>
         ) : <p>Awaiting the first provider report.</p>}
+        {usageCompleteness && (
+          <p className="agent-usage-evidence">
+            <b>{usageCompleteness.completeCalls}</b> {usageCompleteness.completeCalls === 1 ? 'complete call' : 'complete calls'}
+            <i>·</i><b>{usageCompleteness.incompleteCalls}</b> {usageCompleteness.incompleteCalls === 1 ? 'incomplete call retained' : 'incomplete calls retained'}
+            <i>·</i>{usageCompleteness.evidence.replace('-', ' ')}
+          </p>
+        )}
       </div>
     </article>
   )

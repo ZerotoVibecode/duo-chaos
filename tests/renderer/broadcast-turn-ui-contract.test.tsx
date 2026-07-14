@@ -124,9 +124,12 @@ describe('broadcast turn UI contract', () => {
     expect(pulse).not.toHaveTextContent(/convergence/i)
 
     const claudeCard = screen.getByRole('article', { name: /claude/i })
-    expect(claudeCard).toHaveTextContent(/high now/i)
+    expect(claudeCard).toHaveTextContent(/actual high/i)
     expect(claudeCard).toHaveTextContent(/max ceiling/i)
     expect(claudeCard).toHaveTextContent(/smart · duo \+ connected tools/i)
+    const codexCard = screen.getByRole('article', { name: /codex/i })
+    expect(codexCard).toHaveTextContent(/selected low/i)
+    expect(codexCard).not.toHaveTextContent(/actual low/i)
   })
 
   it('surfaces typed verification failures as decisive live evidence', () => {
@@ -213,7 +216,7 @@ describe('broadcast turn UI contract', () => {
 
     render(<CompletionTakeover run={ready} busy={false} onReveal={vi.fn()} />)
 
-    const takeover = screen.getByRole('region', { name: /the build survived/i })
+    const takeover = screen.getByRole('dialog', { name: /the build survived/i })
     expect(within(takeover).getByText(/^BUILD SURVIVED$/i)).toBeVisible()
     expect(within(takeover).getByRole('heading', { name: /^the build survived$/i })).toBeVisible()
     expect(takeover).toHaveTextContent(/sealed result is ready/i)

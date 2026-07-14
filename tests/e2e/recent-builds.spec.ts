@@ -16,7 +16,11 @@ const ARCHIVE_CARD = (index: number): string => `
       <span><b>Claude</b> 6 turns · 4 edit events · 8 messages</span>
       <span><b>Codex</b> 6 turns · 5 edit events · 9 messages</span>
     </div>
-    <button class="recent-recover" type="button">Open workspace</button>
+    <div class="recent-build-actions">
+      <button class="recent-recover recent-reveal" type="button">View reveal</button>
+      <button class="recent-recover recent-open-app" type="button">Open app</button>
+      <button class="recent-folder-action" type="button" aria-label="Open workspace">W</button>
+    </div>
   </article>`
 
 async function installArchiveProbe(page: Page): Promise<void> {

@@ -5,7 +5,7 @@ Thanks for helping improve Duo Chaos.
 ## Setup
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 

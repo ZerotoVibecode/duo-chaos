@@ -125,6 +125,19 @@
   white-space: normal;
 }
 
+.momentum-metrics > .proof-accepted {
+  border: 1px solid rgba(117, 237, 193, .14);
+  background: rgba(117, 237, 193, .065);
+  color: #d7f8ec;
+}
+
+.momentum-metrics > .proof-continuing,
+.momentum-metrics > .proof-blocked {
+  border: 1px solid rgba(255, 191, 94, .13);
+  background: rgba(255, 191, 94, .05);
+  color: #f3d59f;
+}
+
 .metric-label-compact { display: none; }
 
 .momentum-claude .momentum-metrics svg { color: var(--claude); }
@@ -162,6 +175,15 @@
   color: var(--success);
   font: 650 var(--type-micro) 'JetBrains Mono Variable';
 }
+
+.shared-proof .shared-proof-pending,
+.shared-proof .shared-proof-pending b {
+  border-color: rgba(255, 191, 94, .12);
+  background: rgba(255, 191, 94, .035);
+  color: var(--warning);
+}
+
+.shared-proof svg { flex: 0 0 auto; }
 
 .evidence-receipt {
   width: min(980px, 100%);

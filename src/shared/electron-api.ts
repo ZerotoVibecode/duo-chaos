@@ -25,6 +25,9 @@ export interface DuoElectronApi {
   stopRun: (runId: string) => Promise<RunSnapshot>
   resumeRun: (runId: string) => Promise<RunSnapshot>
   revealRun: (runId: string) => Promise<RunSnapshot>
+  /** Explicitly accepts and reveals a supervisor-preserved partial artifact. */
+  revealPartialRun?: (runId: string) => Promise<RunSnapshot>
+  openArchivedRun: (runId: string) => Promise<RunSnapshot>
   openRunFolder: (runId: string) => Promise<void>
   openGeneratedApp: (runId: string) => Promise<void>
   getArtifactPreview: (runId: string) => Promise<ArtifactPreviewResult>
@@ -45,6 +48,8 @@ export const IPC = {
   runStop: 'run:stop',
   runResume: 'run:resume',
   runReveal: 'run:reveal',
+  runRevealPartial: 'run:reveal-partial',
+  runOpenArchive: 'run:open-archive',
   runOpenFolder: 'run:open-folder',
   runOpenApp: 'run:open-app',
   runArtifactPreview: 'run:artifact-preview',

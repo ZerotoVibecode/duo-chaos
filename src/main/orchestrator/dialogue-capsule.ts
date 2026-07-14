@@ -13,6 +13,17 @@ import {
   safeWriteProtocolText,
   UnsafeProtocolPathError
 } from '@main/workspace/safe-protocol-files'
+import {
+  assessConsensusAgainstQualityBrief,
+  compileQualityBrief,
+  type CompiledQualityBrief
+} from './quality-brief'
+import {
+  createPitchProvenanceId,
+  resolveConsensusProvenance,
+  type ConsensusProvenanceRecord,
+  type PitchProvenanceRecord
+} from './consensus-provenance'
 
 const PUBLIC_TEXT_PRESENTATION_LIMIT = 180
 const PROVIDER_PUBLIC_TEXT_LIMIT = 1_200
@@ -45,9 +56,12 @@ const taskSchema = z.object({
   publicDescription: z.string().trim().min(1).max(320),
   privateDescription: z.string().trim().min(1).max(1_200),
   kind: z.enum(['implementation', 'design', 'verification', 'repair']),
+  impact: z.enum(['core', 'substantial']),
+  expectedOutcome: z.string().trim().min(24).max(600),
+  acceptanceChecks: z.array(z.string().trim().min(12).max(240)).min(1).max(4),
   risk: z.enum(['low', 'medium', 'high']),
   claimedBy: z.enum(['claude', 'codex', 'both', 'none']),
-  files: z.array(z.string().trim().min(1).max(260)).max(24)
+  files: z.array(z.string().trim().min(1).max(260)).min(1).max(12)
 }).strict()
 
 const pitchSchema = z.object({
@@ -108,7 +122,10 @@ export const DIALOGUE_CAPSULE_JSON_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['id', 'publicTitle', 'privateTitle', 'publicDescription', 'privateDescription', 'kind', 'risk', 'claimedBy', 'files'],
+        required: [
+          'id', 'publicTitle', 'privateTitle', 'publicDescription', 'privateDescription', 'kind',
+          'impact', 'expectedOutcome', 'acceptanceChecks', 'risk', 'claimedBy', 'files'
+        ],
         properties: {
           id: { type: 'string', minLength: 1, maxLength: 100, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]*$' },
           publicTitle: { type: 'string', minLength: 1, maxLength: 120 },
@@ -116,9 +133,15 @@ export const DIALOGUE_CAPSULE_JSON_SCHEMA = {
           publicDescription: { type: 'string', minLength: 1, maxLength: 320 },
           privateDescription: { type: 'string', minLength: 1, maxLength: 1_200 },
           kind: { type: 'string', enum: ['implementation', 'design', 'verification', 'repair'] },
+          impact: { type: 'string', enum: ['core', 'substantial'] },
+          expectedOutcome: { type: 'string', minLength: 24, maxLength: 600 },
+          acceptanceChecks: {
+            type: 'array', minItems: 1, maxItems: 4,
+            items: { type: 'string', minLength: 12, maxLength: 240 }
+          },
           risk: { type: 'string', enum: ['low', 'medium', 'high'] },
           claimedBy: { type: 'string', enum: ['claude', 'codex', 'both', 'none'] },
-          files: { type: 'array', maxItems: 24, items: { type: 'string', minLength: 1, maxLength: 260 } }
+          files: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string', minLength: 1, maxLength: 260 } }
         }
       }
     },
@@ -444,6 +467,46 @@ function balancedConsensusTasks(tasks: DialogueCapsule['tasks']): DialogueCapsul
   return tasks.map((task, index) => ({ ...task, claimedBy: owners[index] as SoleOwner }))
 }
 
+const TRIVIAL_TASK_LANGUAGE = /\b(?:copy[- ]?only|docs?[- ]?only|readme[- ]?only|tiny tweak|minor polish|optional label|just verify|only verify)\b/iu
+
+function isSourceBoundary(value: string): boolean {
+  const path = value.trim().replaceAll('\\', '/').replace(/^\.\//u, '').toLowerCase()
+  if (!path || path.startsWith('.duo/') || path.startsWith('docs/')) return false
+  if (/^(?:readme|license|changelog)(?:\.|$)/iu.test(path)) return false
+  return !/\.md(?:$|[/*])/iu.test(path)
+}
+
+function materialTaskScore(task: DialogueCapsule['tasks'][number]): number {
+  return (task.impact === 'core' ? 3 : 2) +
+    (task.kind === 'implementation' || task.kind === 'repair' ? 2 : 1) +
+    ({ low: 0, medium: 1, high: 2 } as const)[task.risk] +
+    (task.acceptanceChecks.length >= 2 ? 2 : 1) +
+    (task.files.length >= 2 ? 1 : 0)
+}
+
+function assertMaterialConsensusTasks(tasks: DialogueCapsule['tasks']): void {
+  const scores = tasks.map((task) => {
+    const privateContract = [
+      task.privateTitle,
+      task.privateDescription,
+      task.expectedOutcome,
+      ...task.acceptanceChecks
+    ].join(' ')
+    if (TRIVIAL_TASK_LANGUAGE.test(privateContract)) {
+      throw new DialogueCapsuleError('Consensus tasks must be substantive source contributions, not trivial or copy-only work.')
+    }
+    if (!task.files.some(isSourceBoundary)) {
+      throw new DialogueCapsuleError('Every consensus task needs at least one expected app-source file boundary.')
+    }
+    return materialTaskScore(task)
+  })
+  const lowest = Math.min(...scores)
+  const highest = Math.max(...scores)
+  if (lowest < 4 || highest - lowest > 3) {
+    throw new DialogueCapsuleError('Consensus task impact is materially imbalanced; both agents need substantive source-changing work.')
+  }
+}
+
 export function validateDialogueCapsuleForTurn(
   capsule: DialogueCapsule,
   contract: DialogueTurnContract
@@ -480,6 +543,7 @@ export function validateDialogueCapsuleForTurn(
       throw new DialogueCapsuleError('Consensus task identifiers must be unique.')
     }
     const tasks = balancedConsensusTasks(safeCapsule.tasks)
+    assertMaterialConsensusTasks(tasks)
     return tasks === safeCapsule.tasks ? safeCapsule : { ...safeCapsule, tasks }
   }
 
@@ -723,8 +787,16 @@ async function persistPrivateProductContext(input: DialogueCapsuleProtocolInput)
   const root = join(input.workspacePath, '.duo')
   if (input.capsule.pitches.length > 0) {
     const pitchPath = join(root, 'private', 'pitches.jsonl')
-    for (const pitch of input.capsule.pitches) {
+    for (const [index, pitch] of input.capsule.pitches.entries()) {
       await safeAppendProtocolText(root, pitchPath, `${JSON.stringify({
+        pitchId: createPitchProvenanceId({
+          runId: input.runId,
+          round: input.round,
+          agent: input.agent,
+          index,
+          title: pitch.title,
+          idea: pitch.idea
+        }),
         runId: input.runId,
         round: input.round,
         agent: input.agent,
@@ -762,6 +834,104 @@ async function persistPrivateProductContext(input: DialogueCapsuleProtocolInput)
     )
 }
 
+function pitchRecord(value: unknown, fallbackIndex: number): PitchProvenanceRecord | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const input = value as Record<string, unknown>
+  if (
+    typeof input.runId !== 'string' ||
+    typeof input.round !== 'number' ||
+    (input.agent !== 'claude' && input.agent !== 'codex') ||
+    typeof input.title !== 'string' ||
+    typeof input.idea !== 'string' ||
+    typeof input.appeal !== 'string' ||
+    typeof input.risk !== 'string'
+  ) return undefined
+  return {
+    pitchId: typeof input.pitchId === 'string' && /^pitch-[a-f0-9]{24}$/u.test(input.pitchId)
+      ? input.pitchId
+      : createPitchProvenanceId({
+          runId: input.runId,
+          round: input.round,
+          agent: input.agent,
+          index: fallbackIndex,
+          title: input.title,
+          idea: input.idea
+        }),
+    runId: input.runId,
+    round: input.round,
+    agent: input.agent,
+    title: input.title,
+    idea: input.idea,
+    appeal: input.appeal,
+    risk: input.risk
+  }
+}
+
+async function readPitchProvenanceRecords(input: DialogueCapsuleProtocolInput): Promise<PitchProvenanceRecord[]> {
+  const root = join(input.workspacePath, '.duo')
+  const content = await safeReadProtocolText(root, join(root, 'private', 'pitches.jsonl'), 2_000_000)
+  if (!content) return []
+  return content.split(/\r?\n/u).flatMap((line, index) => {
+    if (!line.trim()) return []
+    try {
+      const parsed = pitchRecord(JSON.parse(line) as unknown, index)
+      return parsed ? [parsed] : []
+    } catch {
+      return []
+    }
+  })
+}
+
+async function preparePrivateQualityContract(input: DialogueCapsuleProtocolInput): Promise<{
+  brief: CompiledQualityBrief
+  provenance?: ConsensusProvenanceRecord
+} | undefined> {
+  if (!input.humanBrief?.trim()) return undefined
+  const brief = compileQualityBrief({
+    humanBrief: input.humanBrief,
+    missionProfile: input.missionProfile ?? 'surprise'
+  })
+  const consensus = input.capsule.consensus
+  if (!consensus) return { brief }
+
+  const quality = assessConsensusAgainstQualityBrief(brief, consensus)
+  if (!quality.valid) {
+    throw new DialogueCapsuleError(
+      `The consensus violates the binding quality brief: ${quality.violations.join(' ')}`
+    )
+  }
+  const pitches = await readPitchProvenanceRecords(input)
+  const provenance = resolveConsensusProvenance({
+    runId: input.runId,
+    appName: consensus.appName,
+    qualityBriefFingerprint: brief.fingerprint,
+    pitches
+  })
+  if (!provenance) {
+    throw new DialogueCapsuleError(
+      'The consensus must select a previously pitched candidate; no matching private pitch provenance was found.'
+    )
+  }
+  return { brief, provenance }
+}
+
+async function persistPrivateQualityContract(
+  input: DialogueCapsuleProtocolInput,
+  prepared: { brief: CompiledQualityBrief; provenance?: ConsensusProvenanceRecord } | undefined
+): Promise<void> {
+  if (!prepared) return
+  const root = join(input.workspacePath, '.duo')
+  const sealed = join(root, 'sealed')
+  await safeWriteProtocolText(root, join(sealed, 'quality_brief.json'), `${JSON.stringify(prepared.brief, null, 2)}\n`)
+  if (prepared.provenance) {
+    await safeWriteProtocolText(
+      root,
+      join(sealed, 'consensus_provenance.json'),
+      `${JSON.stringify(prepared.provenance, null, 2)}\n`
+    )
+  }
+}
+
 export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtocolInput): Promise<void> {
   const providerCapsule = parseDialogueCapsule(input.capsule)
   if (input.missionProfile === 'serious' && providerCapsule.consensus) {
@@ -771,6 +941,7 @@ export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtoco
       )
     }
   }
+  const preparedQuality = await preparePrivateQualityContract({ ...input, capsule: providerCapsule })
   const accumulatedRedactions = await readAccumulatedRedactions(input.workspacePath)
   // Validate the complete provider statement before presentation clipping so a
   // sealed term near the end cannot be hidden beyond the broadcast boundary.
@@ -797,4 +968,5 @@ export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtoco
   )
   await mergeBoard(validated)
   await persistPrivateProductContext(validated)
+  await persistPrivateQualityContract(validated, preparedQuality)
 }

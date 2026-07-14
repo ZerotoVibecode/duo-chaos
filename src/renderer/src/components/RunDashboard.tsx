@@ -1,10 +1,11 @@
-import { ArrowLeft, CircleAlert, FolderOpen, LockKeyhole, OctagonX, PauseCircle, Play, Radio, SquareTerminal, TimerReset } from 'lucide-react'
+import { ArrowLeft, CircleAlert, Eye, FolderOpen, LockKeyhole, OctagonX, PauseCircle, Play, Radio, SquareTerminal, TimerReset } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { RunSnapshot, TurnStageSnapshot } from '@shared/types'
 import { useStudioStore } from '@renderer/store/studio-store'
 import { deriveArenaEvent } from '@renderer/lib/spectator-state'
 import { isCueEvent, playEventCue } from '@renderer/lib/sound-cues'
 import { AgentCard } from './AgentCard'
+import { AccessibleModal } from './AccessibleModal'
 import { BroadcastStage } from './BroadcastStage'
 import { CompletionTakeover } from './CompletionTakeover'
 import { CriticismFeed } from './CriticismFeed'
@@ -31,20 +32,31 @@ function turnStageLabel(stage: TurnStageSnapshot): string {
   return stage.stage.charAt(0).toUpperCase() + stage.stage.slice(1)
 }
 
+function isExhaustedWorkCapsule(run: RunSnapshot): boolean {
+  const stage = run.turnStage
+  return run.pause?.reason === 'stage-timeout' && run.pause.provider === stage?.agent &&
+    stage?.stage === 'work' && stage.inferenceLimit !== undefined &&
+    (stage.inferenceSteps ?? 0) >= stage.inferenceLimit
+}
+
 function pauseReasonLabel(run: RunSnapshot): string {
   const provider = run.pause?.provider === 'claude' ? 'Claude' : run.pause?.provider === 'codex' ? 'Codex' : 'Provider'
   switch (run.pause?.reason) {
     case 'provider-quota': return `${provider} quota reached`
+    case 'usage-pressure': return `${provider} usage checkpoint reached`
     case 'provider-auth': return `${provider} sign-in required`
     case 'provider-unavailable': return `${provider} is unavailable`
     case 'model-unavailable': return 'Selected model is unavailable'
     case 'cli-incompatible': return 'Local CLI needs attention'
     case 'provider-protocol': return 'Provider response needs recovery'
     case 'session-lost': return 'Agent session needs recovery'
-    case 'stage-timeout': return 'The current work lease expired'
+    case 'stage-timeout': return isExhaustedWorkCapsule(run)
+      ? 'Work paused at a safe model-step boundary'
+      : 'The current agent stage reached its time boundary'
     case 'host-interrupted': return 'The app was interrupted'
     case 'workspace-drift': return 'Workspace changed outside the battle'
     case 'verification-failed': return 'Verification needs another pass'
+    case 'quality-repair': return 'Quality repair is ready'
     default: return 'Execution paused safely'
   }
 }
@@ -60,9 +72,10 @@ function resetCountdown(resetAt: string, now: number): string {
 }
 
 export function RunDashboard({ run }: { run: RunSnapshot }): React.JSX.Element {
-  const { busy, logsOpen, error, soundEnabled, stopRun, resumeRun, revealRun, openRunFolder, setLogsOpen, returnToLaunch } = useStudioStore()
+  const { busy, logsOpen, error, soundEnabled, stopRun, resumeRun, revealRun, revealPartialRun, openRunFolder, setLogsOpen, returnToLaunch } = useStudioStore()
   const [now, setNow] = useState(() => Date.now())
   const [stopConfirmationOpen, setStopConfirmationOpen] = useState(false)
+  const [partialRevealConfirmationOpen, setPartialRevealConfirmationOpen] = useState(false)
   const lastCueId = useRef<string | undefined>(undefined)
   useEffect(() => {
     const update = (): void => setNow(Date.now())
@@ -104,9 +117,13 @@ export function RunDashboard({ run }: { run: RunSnapshot }): React.JSX.Element {
   const remaining = turnStage ? Math.max(0, new Date(turnStage.deadlineAt).getTime() - now) : 0
   const totalTurns = Math.max(1, run.totalTurns ?? 9)
   const ended = run.status === 'cancelled' || run.status === 'failed'
+  const canRevealPartial = run.status === 'paused'
+    && run.releaseStatus === 'partial'
+    && run.pause?.reason !== 'workspace-drift'
+    && Boolean(run.pause?.missingEvidence?.length)
 
   return (
-    <main className={`run-shell mission-${run.missionProfile ?? 'surprise'}`}>
+    <main className={`run-shell mission-${run.missionProfile ?? 'surprise'} ${run.status === 'paused' ? 'run-shell-paused' : ''}`}>
       <section
         className={`run-pulse glass-panel run-${run.status} ${turnStage?.status === 'timeboxed' ? 'turn-timeboxed' : ''}`}
         role="region"
@@ -126,6 +143,12 @@ export function RunDashboard({ run }: { run: RunSnapshot }): React.JSX.Element {
               </span>
             )}
           </div>
+          <div className="pulse-compact-metrics" aria-label="Current run configuration">
+            <span title={`Mission: ${run.missionProfile ?? 'surprise'}`}>{run.missionProfile ?? 'surprise'}</span>
+            <span title={`Mode: ${run.executionMode}`}>{run.executionMode}</span>
+            <span title={`Shield: ${run.visibilityMode}`}>{run.visibilityMode}</span>
+            <span title={`Elapsed: ${elapsedText}`}>{elapsedText}</span>
+          </div>
           <i><b style={{ width: `${progress}%` }} /></i>
         </div>
         <div className="pulse-metrics"><span><small>Elapsed</small><strong>{elapsedText}</strong></span><span><small>Mission</small><strong>{run.missionProfile ?? 'surprise'}</strong></span><span><small>Mode</small><strong>{run.executionMode}</strong></span><span><small>Shield</small><strong>{run.visibilityMode}</strong></span></div>
@@ -139,8 +162,14 @@ export function RunDashboard({ run }: { run: RunSnapshot }): React.JSX.Element {
       </section>
 
       {stopConfirmationOpen && (
-        <div className="stop-confirmation-layer">
-          <section className="stop-confirmation" role="alertdialog" aria-modal="true" aria-labelledby="stop-confirmation-title" aria-describedby="stop-confirmation-copy">
+        <AccessibleModal
+          layerClassName="stop-confirmation-layer"
+          dialogClassName="stop-confirmation"
+          role="alertdialog"
+          labelledBy="stop-confirmation-title"
+          describedBy="stop-confirmation-copy"
+          onDismiss={() => setStopConfirmationOpen(false)}
+        >
             <span className="stop-confirmation-glyph" aria-hidden="true"><OctagonX size={22} /></span>
             <div>
               <span className="eyebrow">Permanent cancellation</span>
@@ -148,11 +177,32 @@ export function RunDashboard({ run }: { run: RunSnapshot }): React.JSX.Element {
               <p id="stop-confirmation-copy">The workspace and logs stay on disk, but this battle cannot be resumed. Use Stop only when you want to abandon the current agent session.</p>
             </div>
             <div className="stop-confirmation-actions">
-              <button className="secondary-button" type="button" autoFocus onClick={() => setStopConfirmationOpen(false)}>Keep battle running</button>
+              <button className="secondary-button" type="button" data-modal-initial-focus onClick={() => setStopConfirmationOpen(false)}>Keep battle running</button>
               <button className="stop-button confirm-stop" type="button" disabled={busy} onClick={() => { setStopConfirmationOpen(false); void stopRun() }}><OctagonX size={15} /> Cancel battle permanently</button>
             </div>
-          </section>
-        </div>
+        </AccessibleModal>
+      )}
+
+      {partialRevealConfirmationOpen && (
+        <AccessibleModal
+          layerClassName="stop-confirmation-layer"
+          dialogClassName="stop-confirmation partial-reveal-confirmation"
+          role="alertdialog"
+          labelledBy="partial-reveal-title"
+          describedBy="partial-reveal-copy"
+          onDismiss={() => setPartialRevealConfirmationOpen(false)}
+        >
+            <span className="stop-confirmation-glyph" aria-hidden="true"><Eye size={22} /></span>
+            <div>
+              <span className="eyebrow">Explicit partial release</span>
+              <h2 id="partial-reveal-title">Reveal this partial build?</h2>
+              <p id="partial-reveal-copy">This ends the repairable battle and reveals the preserved artifact with its caveats. Resume battle if you want the agents to finish the missing proof instead.</p>
+            </div>
+            <div className="stop-confirmation-actions">
+              <button className="secondary-button" type="button" data-modal-initial-focus onClick={() => setPartialRevealConfirmationOpen(false)}>Keep it sealed</button>
+              <button className="partial-reveal-button" type="button" disabled={busy} onClick={() => { setPartialRevealConfirmationOpen(false); void revealPartialRun() }}><Eye size={15} /> Reveal preserved partial</button>
+            </div>
+        </AccessibleModal>
       )}
 
       {error && <div className="inline-error dashboard-error" role="alert">{error}</div>}
@@ -167,12 +217,21 @@ export function RunDashboard({ run }: { run: RunSnapshot }): React.JSX.Element {
             <span className="suspended-code"><small>Support code</small><code>{run.pause.reason}</code></span>
             <p>{run.pause.message}</p>
             {run.pause.action && <p className="suspended-action">{run.pause.action}</p>}
+            {run.pause.missingEvidence && run.pause.missingEvidence.length > 0 && (
+              <div className="quality-repair-evidence" aria-label="Missing release evidence">
+                <small>Still needed for a ready release</small>
+                <ul>{run.pause.missingEvidence.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+            )}
           </div>
           {run.pause.resetAt && (
             <time className="suspended-reset" dateTime={run.pause.resetAt}><TimerReset size={15} />{resetCountdown(run.pause.resetAt, now)}</time>
           )}
           <div className="suspended-actions">
             <button className="secondary-button" type="button" onClick={() => void openRunFolder(run.runId)} disabled={busy}><FolderOpen size={15} /> Open workspace</button>
+            {canRevealPartial && (
+              <button className="partial-reveal-button" type="button" onClick={() => setPartialRevealConfirmationOpen(true)} disabled={busy}><Eye size={15} /> Reveal partial anyway</button>
+            )}
             <button className="primary-button resume-battle" type="button" onClick={() => void resumeRun(run.runId)} disabled={busy || !run.pause.resumable}><Play size={15} /> Resume battle</button>
           </div>
         </section>

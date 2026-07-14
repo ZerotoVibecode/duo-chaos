@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildRealTurnPlan, contributionNeedsFreshSource } from '../../src/main/orchestrator/real-turn-plan'
+import {
+  buildQualityRepairTurns,
+  buildRealTurnPlan,
+  contributionNeedsFreshSource,
+  decideQualityRepair
+} from '../../src/main/orchestrator/real-turn-plan'
 
 describe('real-mode turn plan', () => {
   it('gives both agents product debate and substantive source responsibility', () => {
@@ -85,5 +90,51 @@ describe('real-mode turn plan', () => {
     // correct. Work evidence is still mandatory, but a performative source
     // edit is not.
     expect(contributionNeedsFreshSource('repair', true)).toBe(false)
+  })
+
+  it('reserves a fresh balanced repair and review pair without replaying prior turns', () => {
+    const turns = buildQualityRepairTurns('duo-run-quality', 2, [
+      'Claude accepted contribution',
+      'Codex reply-linked cross-review'
+    ])
+
+    expect(turns).toHaveLength(2)
+    expect(turns[0]).toMatchObject({
+      id: 'quality-repair-02-claude-repair',
+      agent: 'claude',
+      kind: 'repair',
+      phase: 'round.repair'
+    })
+    expect(turns[1]).toMatchObject({
+      id: 'quality-repair-02-codex-review',
+      agent: 'codex',
+      kind: 'review',
+      revealCandidate: true
+    })
+    expect(turns[0]?.goal).toContain('Claude accepted contribution')
+    expect(turns[1]?.goal).toMatch(/current preserved revision/i)
+  })
+
+  it('bounds paid quality repair and stops when a full pair produces no new evidence', () => {
+    expect(decideQualityRepair({
+      completedAttempts: 0,
+      maximumAttempts: 4,
+      previousMissingEvidence: [],
+      currentMissingEvidence: ['Browser interaction proof', 'Codex current review']
+    })).toEqual({ reservePair: true, reason: 'available' })
+
+    expect(decideQualityRepair({
+      completedAttempts: 1,
+      maximumAttempts: 4,
+      previousMissingEvidence: ['Codex current review', 'Browser interaction proof'],
+      currentMissingEvidence: ['Browser interaction proof', 'Codex current review']
+    })).toEqual({ reservePair: false, reason: 'no-evidence-progress' })
+
+    expect(decideQualityRepair({
+      completedAttempts: 4,
+      maximumAttempts: 4,
+      previousMissingEvidence: ['Browser interaction proof'],
+      currentMissingEvidence: ['Fresh verification failure']
+    })).toEqual({ reservePair: false, reason: 'attempt-limit' })
   })
 })

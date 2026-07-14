@@ -175,7 +175,16 @@ export function classifyProviderFailure(
   evidence: ProviderFailureEvidence
 ): ProviderFailureClassification | undefined {
   const records = recordSignal(evidence.records)
-  const text = textSignal(evidence.text)
+  const processCompletedSuccessfully = evidence.result.exitCode === 0 &&
+    evidence.result.signal === null &&
+    !evidence.result.timedOut &&
+    !evidence.result.cancelled &&
+    !evidence.result.outputLimitExceeded &&
+    !evidence.result.rawLogWriteFailed
+  // Successful CLI output can contain grep/search results, tool echoes, and
+  // historical protocol records. Those strings are not provider diagnostics.
+  // Canonical structured records remain authoritative even when a CLI exits 0.
+  const text = processCompletedSuccessfully ? '' : textSignal(evidence.text)
   const critical = explicitSignal(records, text, new Set(['safety-violation', 'workspace-drift']))
   if (critical) return classification(critical.kind, critical.source, evidence.agent)
 

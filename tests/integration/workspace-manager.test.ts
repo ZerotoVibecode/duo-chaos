@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -48,6 +48,10 @@ describe('workspace manager', () => {
       expect(skill).toMatch(/^---\nname: duo-quality\ndescription: .+\n---/u)
       expect(skill).toMatch(/acceptance|evidence/iu)
       expect(skill).toMatch(/do not inventory|do not spawn subagents/iu)
+      expect(skill).toMatch(/direct.*unpiped.*verification/iu)
+      expect(skill).toMatch(/hard constraints.*acceptance checks/isu)
+      expect(skill).toMatch(/mark the owned task (?:done|complete).*reply-linked handoff/isu)
+      expect(skill).toMatch(/signature interaction.*responsive/isu)
       expect(skill.length).toBeLessThan(2_500)
     }
     const gitignore = await readFile(join(result.workspacePath, '.gitignore'), 'utf8')
@@ -119,6 +123,51 @@ describe('workspace manager', () => {
     await expect(readFile(join(result.appPath, '.claude', 'settings.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(join(result.appPath, 'AGENTS.override.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(join(result.appPath, 'CLAUDE.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('restores the app-owned skill when a legacy workspace has no private skills directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-workspace-legacy-skill-'))
+    const result = await createRunWorkspace({
+      root,
+      runId: 'duo-run-legacy-skill',
+      prompt: 'Resume a preserved battle.',
+      executionMode: 'chaos',
+      visibilityMode: 'spoiler-shield'
+    })
+    await rm(join(result.duoPath, 'private', 'skills'), { recursive: true, force: true })
+
+    await restoreSupervisorWorkspacePolicy(result, 'surprise')
+
+    await expect(
+      readFile(join(result.duoPath, 'private', 'skills', 'duo-quality', 'SKILL.md'), 'utf8')
+    ).resolves.toContain('name: duo-quality')
+  })
+
+  it('replaces an external private-skills link without touching its target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-workspace-linked-skill-'))
+    const outside = await mkdtemp(join(tmpdir(), 'duo-workspace-linked-skill-target-'))
+    const result = await createRunWorkspace({
+      root,
+      runId: 'duo-run-linked-skill',
+      prompt: 'Resume a preserved battle safely.',
+      executionMode: 'chaos',
+      visibilityMode: 'spoiler-shield'
+    })
+    const skillsPath = join(result.duoPath, 'private', 'skills')
+    const markerPath = join(outside, 'external-marker.txt')
+    await writeFile(markerPath, 'EXTERNAL SKILL TARGET MUST SURVIVE\n', 'utf8')
+    await rm(skillsPath, { recursive: true, force: true })
+    await symlink(outside, skillsPath, process.platform === 'win32' ? 'junction' : 'dir')
+
+    await restoreSupervisorWorkspacePolicy(result, 'surprise')
+
+    await expect(readFile(markerPath, 'utf8')).resolves.toBe('EXTERNAL SKILL TARGET MUST SURVIVE\n')
+    await expect(
+      readFile(join(skillsPath, 'duo-quality', 'SKILL.md'), 'utf8')
+    ).resolves.toContain('name: duo-quality')
+    const restoredSkills = await lstat(skillsPath)
+    expect(restoredSkills.isDirectory()).toBe(true)
+    expect(restoredSkills.isSymbolicLink()).toBe(false)
   })
 
   it('rejects an agent-replaced app directory link without touching its external target', async () => {

@@ -9,14 +9,52 @@ import {
 import { ProcessRunner, type ProcessRunOptions, type ProcessRunResult } from '../../src/main/process/process-runner'
 import type { AgentCommand } from '../../src/main/process/command-builder'
 import { GitManager } from '../../src/main/git/git-manager'
+import {
+  SupervisorVerifier,
+  type SupervisorBrowserEvidencePort
+} from '../../src/main/orchestrator/supervisor-verifier'
 import { defaultSettings } from '../../src/main/settings/settings-store'
 import { sealSeriousMissionSpecification } from '../../src/main/workspace/serious-mission-contract'
 import type { StartRunRequest, ToolHealth } from '../../src/shared/types'
 
 class RunOrchestrator extends BaseRunOrchestrator {
   constructor(options: ConstructorParameters<typeof BaseRunOrchestrator>[0]) {
-    super({ ...options, testOnlyMinimumTurns: 2 })
+    super({ supervisorVerifier: deterministicSupervisorVerifier(), ...options, testOnlyMinimumTurns: 2 })
   }
+}
+
+const deterministicBrowserEvidence: SupervisorBrowserEvidencePort = {
+  capture: async ({ entryPath }) => {
+    const html = await readFile(entryPath, 'utf8')
+    const interactiveElementCount = (html.match(/<(?:button|input|select|textarea|a\b[^>]*\bhref)/giu) ?? []).length
+    const observableInteraction = /\bonclick\s*=\s*"[^"]*(?:setAttribute|textContent|\.hidden\s*=)/iu.test(html) ||
+      /\bonclick\s*=\s*'[^']*(?:setAttribute|textContent|\.hidden\s*=)/iu.test(html)
+    const accessibleInteractiveElementCount = interactiveElementCount
+    return {
+      viewports: ([
+        { id: 'compact' as const, width: 900, height: 640 },
+        { id: 'full' as const, width: 1600, height: 900 }
+      ]).map((viewport) => ({
+        ...viewport,
+        screenshotCaptured: true,
+        imageDataUrl: 'data:image/png;base64,YQ==',
+        visibleTextCharacters: html.replace(/<[^>]+>/gu, ' ').replace(/\s+/gu, ' ').trim().length,
+        mainLandmark: /<main\b/iu.test(html),
+        horizontalOverflow: false,
+        interactiveElementCount,
+        accessibleInteractiveElementCount,
+        interactionAttempted: interactiveElementCount > 0,
+        interactionSucceeded: interactiveElementCount > 0 && observableInteraction,
+        interactionObservedChanges: observableInteraction ? ['aria', 'dom'] : [],
+        consoleErrors: [],
+        pageErrors: []
+      }))
+    }
+  }
+}
+
+function deterministicSupervisorVerifier(): SupervisorVerifier {
+  return new SupervisorVerifier(new ProcessRunner(), deterministicBrowserEvidence)
 }
 
 const availableAgents: ToolHealth[] = [
@@ -185,24 +223,29 @@ describe('next Real Mode orchestration contracts', () => {
     const packet = revealed.revealPacket
 
     expect(packet).toMatchObject({
-      appName: 'Ready',
+      appName: 'Sealed Product',
       status: 'ready',
       runCommand: 'Open app/index.html directly in a browser.',
       appPath: 'app/index.html',
       knownIssues: []
     })
     expect(packet?.whatWorked).toEqual(expect.arrayContaining([
-      'First build slice',
-      'Second build slice'
+      'Build the first source-changing slice.',
+      'Build the second source-changing slice.'
     ]))
     expect(packet?.agentQuotes.claude).toMatch(/Claude records a concrete, spoiler-safe contribution/i)
     expect(packet?.agentQuotes.codex).toMatch(/Codex records a concrete, spoiler-safe contribution/i)
     expect(packet?.agentDramaSummary.join(' ')).toMatch(/Claude|Codex/i)
+    const supervisorEvent = orchestrator.getSnapshot(started.runId)?.events.find((event) =>
+      event.topic === 'supervisor-verification'
+    )
+    expect(supervisorEvent).toMatchObject({ type: 'build.passed', topic: 'supervisor-verification' })
+    expect(JSON.stringify(supervisorEvent)).not.toContain(request(root, 8).prompt)
     await expect(readFile(join(started.workspacePath, '.duo', 'sealed', 'reveal_packet.json'), 'utf8'))
       .resolves.toContain('"status": "ready"')
   })
 
-  it('preserves the partial reveal fallback when an objective release gate is missing', async () => {
+  it('pauses the owning agent instead of revealing when an objective contribution gate is missing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-supervisor-partial-reveal-'))
     const runner = new EvidenceCompleteRunner({ omitRevealPacket: true, missingCodexTask: true })
     const orchestrator = new RunOrchestrator({
@@ -215,13 +258,45 @@ describe('next Real Mode orchestration contracts', () => {
 
     const started = await orchestrator.start(request(root, 8))
     await orchestrator.waitForSettled(started.runId)
-    const revealed = await orchestrator.reveal(started.runId)
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'provider-protocol', resumable: true, stage: 'work' }
+    })
+    await expect(orchestrator.reveal(started.runId)).rejects.toThrow(/not ready/i)
+  })
 
-    expect(revealed.revealPacket?.status).toBe('partial')
-    expect(revealed.revealPacket?.knownIssues).toContain('No valid reveal packet was produced before the turn limit.')
-    expect(revealed.revealPacket?.agentDramaSummary).toContain(
-      'The orchestrator preserved the partial workspace rather than inventing a successful result.'
-    )
+  it('preserves sealed product metadata while an incomplete collaboration remains resumable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-supervisor-sealed-metadata-'))
+    const runner = new EvidenceCompleteRunner({
+      omitRevealPacket: true,
+      missingCodexTask: true,
+      sealedMarkdown: true
+    })
+    const supervisorVerifier = {
+      verify: vi.fn().mockResolvedValue({
+        outcome: 'passed' as const,
+        summary: 'The generated artifact passed its independent build gate.',
+        checks: [{ id: 'script:build', label: 'npm run build', outcome: 'passed' as const }]
+      })
+    }
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      supervisorVerifier,
+      protocolPollMs: 5,
+      healthProvider: () => Promise.resolve(availableAgents)
+    })
+
+    const started = await orchestrator.start(request(root, 8))
+    await orchestrator.waitForSettled(started.runId)
+    expect(supervisorVerifier.verify).not.toHaveBeenCalled()
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'provider-protocol', resumable: true }
+    })
+    await expect(readFile(join(started.workspacePath, '.duo', 'sealed', 'idea.md'), 'utf8'))
+      .resolves.toMatch(/Sealed Product|private, surprising, runnable local interaction|AlibiReel|browser-only noir-cinematic excuse builder/i)
   })
 
   it('uses one fresh provider call for every source contribution without replaying session history', async () => {
@@ -316,7 +391,10 @@ describe('next Real Mode orchestration contracts', () => {
         healthProvider: () => Promise.resolve(availableAgents)
       })
 
-      const started = await orchestrator.start(request(root, 6))
+      // Leave the normal review pair available after the checkpoint retry. The
+      // contract under test is that provider work is not replayed; readiness
+      // still requires the same cross-review proof as every other real run.
+      const started = await orchestrator.start(request(root, 8))
       await orchestrator.waitForSettled(started.runId)
       expect(orchestrator.getSnapshot(started.runId)?.status).toBe('reveal-ready')
       const roundFiveWorkBefore = runner.commands.filter((command) =>
@@ -355,7 +433,7 @@ describe('next Real Mode orchestration contracts', () => {
     expect(specification).toMatch(/Acceptance checks/iu)
     expect(snapshot?.releaseStatus).toBe(expectedStatus)
     if (tamper) {
-      expect((await orchestrator.reveal(started.runId)).revealPacket?.knownIssues.join(' '))
+      expect((await orchestrator.revealPartial(started.runId)).revealPacket?.knownIssues.join(' '))
         .toMatch(/serious mission|binding chain/i)
     }
   })
@@ -373,7 +451,8 @@ describe('next Real Mode orchestration contracts', () => {
       runtimeRoot
     })
 
-    const started = await orchestrator.start(request(root, 8))
+    // A resumed source turn still needs room for both agents' review evidence.
+    const started = await orchestrator.start(request(root, 10))
     await orchestrator.waitForSettled(started.runId)
     const snapshot = orchestrator.getSnapshot(started.runId)
 
@@ -396,7 +475,7 @@ describe('next Real Mode orchestration contracts', () => {
     expect(restored.getSnapshot(started.runId)?.status).toBe('reveal-ready')
   })
 
-  it('downgrades a ready artifact when one assigned agent task never completes', async () => {
+  it('keeps an assigned incomplete task resumable instead of publishing a one-agent artifact', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-incomplete-owned-task-'))
     const runner = new EvidenceCompleteRunner({ missingCodexTask: true })
     const orchestrator = new RunOrchestrator({
@@ -409,10 +488,11 @@ describe('next Real Mode orchestration contracts', () => {
 
     const started = await orchestrator.start(request(root, 8))
     await orchestrator.waitForSettled(started.runId)
-    const revealed = await orchestrator.reveal(started.runId)
-
-    expect(revealed.revealPacket?.status).toBe('partial')
-    expect(revealed.revealPacket?.knownIssues.join(' ')).toMatch(/completed owned task/i)
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'provider-protocol', resumable: true, stage: 'work' }
+    })
+    await expect(orchestrator.reveal(started.runId)).rejects.toThrow(/not ready/i)
   })
 
   it('continues into reserved repair capacity when independent supervisor verification fails', async () => {
@@ -514,7 +594,7 @@ describe('next Real Mode orchestration contracts', () => {
     )
 
     expect(executedRounds).toContain(8)
-    expect(executedRounds).not.toContain(9)
+    expect(executedRounds).toContain(9)
     expect(orchestrator.getSnapshot(started.runId)?.status).toBe('reveal-ready')
   })
 
@@ -535,7 +615,8 @@ describe('next Real Mode orchestration contracts', () => {
       Number(promptOf(command).match(/^Round:\s*(\d+)/mi)?.[1] ?? 0)
     )
 
-    expect(executedRounds.some((round) => round > 7)).toBe(false)
+    expect(executedRounds).toContain(8)
+    expect(executedRounds).not.toContain(9)
     expect(orchestrator.getSnapshot(started.runId)?.status).toBe('reveal-ready')
   })
 
@@ -578,8 +659,7 @@ describe('next Real Mode orchestration contracts', () => {
     const replyPrompt = promptOf(runner.commands[1]!)
     const openingAgent = runner.commands[0]?.bin.includes('claude') ? 'claude' : 'codex'
 
-    expect(replyPrompt).toContain(`${openingAgent}-r1-opening`)
-    expect(replyPrompt).toContain(EvidenceCompleteRunner.openingPosition)
+    expect(replyPrompt).toContain(`${openingAgent} private opening from round 1.`)
     expect(replyPrompt).toMatch(/reply|respond|answer/i)
   })
 
@@ -643,6 +723,7 @@ class EvidenceCompleteRunner implements ProcessRunnerPort {
     protocolFinalFailure?: boolean
     missingCodexTask?: boolean
     omitRevealPacket?: boolean
+    sealedMarkdown?: boolean
   } = {}) {}
 
   async run(options: ProcessRunOptions): Promise<ProcessRunResult> {
@@ -653,6 +734,13 @@ class EvidenceCompleteRunner implements ProcessRunnerPort {
     const latestStatementId = prompt.match(/^LATEST .+ STATEMENT\r?\n([^:\r\n]+):/mi)?.[1]?.trim()
     const agent = options.command.bin === 'claude' ? 'claude' : 'codex'
     const opponent = agent === 'claude' ? 'codex' : 'claude'
+    if (stage === 'dialogue') {
+      const capsule = structuredCapsule(turn, agent)
+      options.onLine('stdout', agent === 'claude'
+        ? JSON.stringify({ type: 'result', subtype: 'success', structured_output: capsule })
+        : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(capsule) } }))
+      return completed()
+    }
     const dispatchLabel = turn === 1 && stage === 'dialogue' ? 'opening' : stage ?? 'reply'
     const id = `${agent}-r${String(turn)}-${dispatchLabel}`
     const publicText = turn === 1
@@ -690,16 +778,28 @@ class EvidenceCompleteRunner implements ProcessRunnerPort {
         type: 'item.completed',
         item: { type: 'file_change', changes: [{ path: `app/${agent}-slice.txt`, kind: 'update' }] }
       }))
+      const boardPath = join(options.command.cwd, '.duo', 'board.json')
+      const board = JSON.parse(await readFile(boardPath, 'utf8')) as {
+        tasks?: Array<{ id?: string; claimedBy?: string; status?: string }>
+      }
+      board.tasks = (board.tasks ?? []).map((task) => task.claimedBy === agent
+        ? {
+            ...task,
+            status: this.options.missingCodexTask && agent === 'codex' ? 'review' : 'done'
+          }
+        : task)
+      await writeFile(boardPath, `${JSON.stringify(board, null, 2)}\n`, 'utf8')
+      options.onLine('stdout', JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'npm test', exit_code: 0 }
+      }))
     }
 
     if (codexCodeQuota) {
       this.quotaTriggered = true
-      await mkdir(join(options.command.cwd, 'app'), { recursive: true })
-      await writeFile(join(options.command.cwd, 'app', 'codex-preserved-before-quota.txt'), 'durable source before quota\n', 'utf8')
-      options.onLine('stdout', JSON.stringify({
-        type: 'item.completed',
-        item: { type: 'file_change', changes: [{ path: 'app/codex-preserved-before-quota.txt', kind: 'update' }] }
-      }))
+      // Fail before source evidence lands so resume retries the same owned task.
+      // A fake out-of-boundary edit would be preserved as durable work but could
+      // not truthfully satisfy the material contribution contract.
       options.onLine('stdout', JSON.stringify({
         type: 'rate_limit_event',
         rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', overageStatus: 'rejected' }
@@ -783,16 +883,42 @@ class EvidenceCompleteRunner implements ProcessRunnerPort {
     const writesRevealFixture = this.options.quotaCodexCode ? codeWork && agent === 'claude' : turn === 6
     if (writesRevealFixture && stage === 'work') {
       await mkdir(join(options.command.cwd, '.duo', 'sealed'), { recursive: true })
-      await writeFile(join(options.command.cwd, 'app', 'index.html'), '<!doctype html><title>Ready</title>', 'utf8')
+      await writeFile(
+        join(options.command.cwd, 'app', 'index.html'),
+        /invoice dashboard/iu.test(prompt)
+          ? '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Invoice dashboard</title></head><body><main><h1>Accessible invoice dashboard</h1><label for="csv">Offline CSV import</label><input id="csv" type="file"><button type="button" aria-expanded="false" aria-controls="queue" onclick="this.setAttribute(\'aria-expanded\',\'true\');document.getElementById(\'queue\').hidden=false">Open keyboard-first review queue</button><section id="queue" hidden><h2>Review queue ready</h2><p>Keyboard review is available offline.</p></section></main></body></html>'
+          : '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ready</title></head><body><main><h1>Private surprise</h1><p>A surprising, runnable local interaction built together.</p><button type="button" aria-label="Run interaction" aria-pressed="false" onclick="this.setAttribute(\'aria-pressed\',\'true\');document.getElementById(\'result\').textContent=\'Interaction complete\'">Run interaction</button><p id="result" aria-live="polite">Ready to run</p></main></body></html>',
+        'utf8'
+      )
+      if (this.options.sealedMarkdown) {
+        await writeFile(
+          join(options.command.cwd, '.duo', 'sealed', 'idea.md'),
+          '# AlibiReel\n\nA browser-only noir-cinematic excuse builder with one deterministic contradiction cascade.\n\nThis deliberately longer implementation discussion must not become the reveal headline or hero copy.\n',
+          'utf8'
+        )
+        await writeFile(
+          join(options.command.cwd, '.duo', 'sealed', 'spec.md'),
+          '# Sealed product specification\n\nPRODUCT\nAlibiReel — a cinematic local tool.\n',
+          'utf8'
+        )
+      }
       await writeFile(
         join(options.command.cwd, '.duo', 'board.json'),
         `${JSON.stringify({
           tasks: [
-            { id: 'claude-slice', publicTitle: 'First build slice', status: 'done', claimedBy: 'claude', risk: 'low', files: ['[WORKSPACE_FILE]'] },
+            {
+              id: 'claude-slice', publicTitle: 'First build slice', status: 'done', claimedBy: 'claude',
+              impact: 'core', expectedOutcome: 'Claude delivers the first runnable source slice with verification.',
+              acceptanceChecks: ['The Claude source slice exists and passes fixture verification.'],
+              risk: 'medium', files: ['app/claude-slice.txt', 'app/index.html']
+            },
             {
               id: 'codex-slice', publicTitle: 'Second build slice',
               status: this.options.missingCodexTask ? 'review' : 'done',
-              claimedBy: 'codex', risk: 'low', files: ['[WORKSPACE_FILE]']
+              claimedBy: 'codex', impact: 'core',
+              expectedOutcome: 'Codex delivers the second runnable source slice with verification.',
+              acceptanceChecks: ['The Codex source slice exists and passes fixture verification.'],
+              risk: 'medium', files: ['app/codex-slice.txt', 'app/index.html']
             }
           ]
         }, null, 2)}\n`,
@@ -852,7 +978,7 @@ function seriousStructuredCapsule(round: number, agent: 'claude' | 'codex') {
     opinion: { ...speech('product judgment'), tone: 'collaborative' },
     pitches: pitch
       ? [
-          { title: `${agent} Ledger Queue`, idea: 'A queue-first architecture for invoice review.', appeal: 'Fast review.', risk: 'Dense tables.' },
+          { title: 'Ledger Lantern', idea: 'An accessible local invoice dashboard with offline CSV import and keyboard review.', appeal: 'Fast review.', risk: 'Dense tables.' },
           { title: `${agent} Ledger Canvas`, idea: 'A document-first architecture with a review rail.', appeal: 'Clear context.', risk: 'Responsive layout.' }
         ]
       : [],
@@ -870,12 +996,24 @@ function seriousStructuredCapsule(round: number, agent: 'claude' | 'codex') {
           {
             id: 'claude-slice', publicTitle: 'Build the first [FEATURE] slice', privateTitle: 'Claude builds offline CSV and persistence',
             publicDescription: 'Implement one substantive requested-product slice.', privateDescription: 'Implement offline invoice CSV parsing and durable state.',
-            kind: 'implementation', risk: 'medium', claimedBy: 'claude', files: []
+            kind: 'implementation', impact: 'core',
+            expectedOutcome: 'Offline invoice CSV parsing and durable local review state work together as one verified source slice.',
+            acceptanceChecks: [
+              'A representative invoice CSV imports while offline.',
+              'Imported invoice state survives a full app restart.'
+            ],
+            risk: 'medium', claimedBy: 'claude', files: ['app/claude-slice.txt', 'app/index.html']
           },
           {
             id: 'codex-slice', publicTitle: 'Build the second [FEATURE] slice', privateTitle: 'Codex builds accessible review interactions',
             publicDescription: 'Implement the paired requested-product slice.', privateDescription: 'Implement the keyboard-first invoice review queue.',
-            kind: 'implementation', risk: 'medium', claimedBy: 'codex', files: []
+            kind: 'implementation', impact: 'core',
+            expectedOutcome: 'The complete invoice review queue remains operable and verifiable with keyboard-only input.',
+            acceptanceChecks: [
+              'Every review action is reachable using only the keyboard.',
+              'Keyboard review transitions pass the fixture verification.'
+            ],
+            risk: 'medium', claimedBy: 'codex', files: ['app/codex-slice.txt', 'app/index.html']
           }
         ]
       : [],
@@ -883,6 +1021,7 @@ function seriousStructuredCapsule(round: number, agent: 'claude' | 'codex') {
       ...(pitch
         ? [
             { value: `${agent} Ledger Queue`, label: 'APP_NAME' },
+            { value: 'Ledger Lantern', label: 'APP_NAME' },
             { value: `${agent} Ledger Canvas`, label: 'APP_NAME' }
           ]
         : []),
@@ -926,7 +1065,7 @@ class SeriousEvidenceRunner extends EvidenceCompleteRunner {
 }
 
 function structuredCapsule(round: number, agent: 'claude' | 'codex') {
-  const names = [`${agent}-idea-${String(round)}-a`, `${agent}-idea-${String(round)}-b`]
+  const names = ['Sealed Product', `${agent}-idea-${String(round)}-b`]
   const speech = (label: string) => ({
     publicText: `I think the shared [FEATURE] needs ${label} because the build must stay testable.`,
     privateText: round === 4 && agent === 'codex' && label === 'verdict'
@@ -939,9 +1078,9 @@ function structuredCapsule(round: number, agent: 'claude' | 'codex') {
   const consensus = round === 4
     ? {
         appName: 'Sealed Product',
-        idea: 'A sealed local interaction.',
-        summary: 'Two agents will implement separate slices.',
-        spec: 'Build one runnable local interaction with two source-changing slices and verification.',
+        idea: 'A private, surprising, runnable local interaction built together by two agents.',
+        summary: 'Both agents work together on separate source-changing slices for one private surprise.',
+        spec: 'Build one private, surprising, runnable local interaction together with two source-changing slices and verification.',
         redactions: [{ value: 'Sealed Product', label: 'APP_NAME' }]
       }
     : null
@@ -950,12 +1089,18 @@ function structuredCapsule(round: number, agent: 'claude' | 'codex') {
         {
           id: 'claude-slice', publicTitle: 'First [FEATURE] slice', privateTitle: 'Claude source slice',
           publicDescription: 'Build the first source-changing slice.', privateDescription: 'Build the first private slice.',
-          kind: 'implementation', risk: 'medium', claimedBy: 'claude', files: []
+          kind: 'implementation', impact: 'core',
+          expectedOutcome: 'Claude delivers the first runnable source slice and verifies its complete interaction path.',
+          acceptanceChecks: ['The Claude source slice exists and passes fixture verification.'],
+          risk: 'medium', claimedBy: 'claude', files: ['app/claude-slice.txt', 'app/index.html']
         },
         {
           id: 'codex-slice', publicTitle: 'Second [FEATURE] slice', privateTitle: 'Codex source slice',
           publicDescription: 'Build the second source-changing slice.', privateDescription: 'Build the second private slice.',
-          kind: 'implementation', risk: 'medium', claimedBy: 'codex', files: []
+          kind: 'implementation', impact: 'core',
+          expectedOutcome: 'Codex delivers the second runnable source slice and verifies its complete interaction path.',
+          acceptanceChecks: ['The Codex source slice exists and passes fixture verification.'],
+          risk: 'medium', claimedBy: 'codex', files: ['app/codex-slice.txt', 'app/index.html']
         }
       ]
     : []
@@ -1031,9 +1176,20 @@ class FreshHandoffRunner implements ProcessRunnerPort {
     }
 
     if (stage === 'work' && /Turn:\s*code/i.test(prompt)) {
-      await writeFile(join(options.command.cwd, 'app', `${agent}-handoff-slice.txt`), `${agent} source contribution\n`, 'utf8')
+      await writeFile(join(options.command.cwd, 'app', `${agent}-slice.txt`), `${agent} source contribution\n`, 'utf8')
       options.onLine('stdout', JSON.stringify({
-        type: 'item.completed', item: { type: 'file_change', changes: [{ path: `app/${agent}-handoff-slice.txt`, kind: 'update' }] }
+        type: 'item.completed', item: { type: 'file_change', changes: [{ path: `app/${agent}-slice.txt`, kind: 'update' }] }
+      }))
+      const boardPath = join(options.command.cwd, '.duo', 'board.json')
+      const board = JSON.parse(await readFile(boardPath, 'utf8')) as {
+        tasks?: Array<{ claimedBy?: string; status?: string }>
+      }
+      board.tasks = (board.tasks ?? []).map((task) => task.claimedBy === agent
+        ? { ...task, status: 'done' }
+        : task)
+      await writeFile(boardPath, `${JSON.stringify(board, null, 2)}\n`, 'utf8')
+      options.onLine('stdout', JSON.stringify({
+        type: 'item.completed', item: { type: 'command_execution', command: 'npm test', exit_code: 0 }
       }))
     } else if (stage === 'work') {
       options.onLine('stdout', JSON.stringify({

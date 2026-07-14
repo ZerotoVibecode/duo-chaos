@@ -105,6 +105,113 @@ describe('Evidence Momentum', () => {
     expect(momentum).not.toHaveTextContent(/winner|leader|score/i)
   })
 
+  it('distinguishes accepted contribution receipts from raw activity and reports usage completeness', () => {
+    const run = evidenceRun()
+    run.agentUsage = {
+      claude: { processedInputTokens: 90_000, cachedInputTokens: 70_000, outputTokens: 9_000, reasoningTokens: 2_000, calls: 2, largestRawLineBytes: 512 },
+      codex: { processedInputTokens: 40_000, cachedInputTokens: 10_000, outputTokens: 4_000, reasoningTokens: 500, calls: 1, largestRawLineBytes: 256 }
+    }
+    run.events.push(
+      event({
+        id: 'claude-contribution-receipt',
+        type: 'agent.activity',
+        agent: 'director',
+        topic: 'contribution-receipt',
+        publicText: 'Claude completed a verified owned contribution.',
+        metadata: {
+          receiptKind: 'contribution', agent: 'claude', status: 'complete', accepted: true, sourceChanged: true,
+          verification: 'passed', handoffRecorded: true, fileCount: 3, insertions: 84, deletions: 12
+        }
+      }),
+      event({
+        id: 'codex-contribution-receipt',
+        type: 'agent.activity',
+        agent: 'director',
+        topic: 'contribution-receipt',
+        publicText: 'Codex contribution still needs verification.',
+        metadata: {
+          receiptKind: 'contribution', agent: 'codex', status: 'continuing', accepted: true, sourceChanged: true,
+          verification: 'unknown', handoffRecorded: false, fileCount: 1, insertions: 20, deletions: 0
+        }
+      }),
+      event({
+        id: 'claude-usage-receipt',
+        type: 'agent.activity',
+        agent: 'director',
+        topic: 'usage-receipt',
+        publicText: 'Claude usage evidence was reconciled.',
+        metadata: { agent: 'claude', completeCalls: 1, incompleteCalls: 1, evidence: 'provider-partial' }
+      }),
+      event({
+        id: 'current-quality-state',
+        type: 'decision',
+        agent: 'director',
+        topic: 'quality-evidence-state',
+        publicText: 'Current-revision quality proof refreshed.',
+        metadata: { acceptedContributionAgents: ['claude'], acceptedReviewAgents: ['claude'], revision: 2 }
+      })
+    )
+
+    render(<RunDashboard run={run} />)
+
+    const momentum = screen.getByRole('region', { name: /evidence momentum/i })
+    expect(within(momentum).getByTestId('momentum-claude')).toHaveTextContent(/1 accepted contribution/i)
+    expect(within(momentum).getByTestId('momentum-claude')).toHaveTextContent(/1 current review/i)
+    expect(within(momentum).getByTestId('momentum-codex')).toHaveTextContent(/1 contribution continuing/i)
+    expect(momentum).toHaveTextContent(/1\/2 accepted contributions/i)
+    expect(momentum).toHaveTextContent(/1\/2 current reviews/i)
+    expect(momentum).not.toHaveTextContent(/balanced duo/i)
+
+    const claudeCard = screen.getByRole('article', { name: /claude agent/i })
+    expect(claudeCard).toHaveTextContent(/1 complete call/i)
+    expect(claudeCard).toHaveTextContent(/1 incomplete call retained/i)
+    expect(claudeCard).toHaveTextContent(/provider partial/i)
+  })
+
+  it('does not claim balanced contribution from edit counts without accepted receipts', () => {
+    const run = evidenceRun('complete')
+
+    render(<RevealPanel run={run} />)
+
+    const premiere = screen.getByRole('region', { name: /artifact premiere/i })
+    expect(premiere).toHaveTextContent(/accepted contribution proof unavailable/i)
+    expect(premiere).not.toHaveTextContent(/balanced duo contribution/i)
+  })
+
+  it('shows two independently accepted contributions and browser proof when receipts exist', () => {
+    const run = evidenceRun('complete')
+    run.events.push(
+      ...(['claude', 'codex'] as const).map((agent) => event({
+        id: `${agent}-accepted-contribution`,
+        type: 'agent.activity',
+        agent: 'director',
+        topic: 'contribution-receipt',
+        publicText: `${agent} completed a verified owned contribution.`,
+        metadata: {
+          receiptKind: 'contribution', agent, status: 'complete', accepted: true, sourceChanged: true,
+          verification: 'passed', handoffRecorded: true, fileCount: 2, insertions: 40, deletions: 4
+        }
+      })),
+      event({
+        id: 'browser-qa-receipt',
+        type: 'agent.activity',
+        agent: 'director',
+        topic: 'browser-qa-receipt',
+        publicText: 'Browser quality evidence passed.',
+        metadata: {
+          smokePassed: true, compactScreenshot: true, fullscreenScreenshot: true,
+          consoleHealthy: true, interactionPassed: true
+        }
+      })
+    )
+
+    render(<RevealPanel run={run} />)
+
+    const premiere = screen.getByRole('region', { name: /artifact premiere/i })
+    expect(premiere).toHaveTextContent(/2\/2 accepted contributions/i)
+    expect(premiere).toHaveTextContent(/browser qa passed/i)
+  })
+
   it('leads with an Artifact Premiere and keeps the detailed Battle Receipt optional', async () => {
     vi.mocked(window.duo.getArtifactPreview).mockResolvedValue({
       status: 'ready',

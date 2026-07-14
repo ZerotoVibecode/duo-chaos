@@ -2,14 +2,19 @@
 
 ## Unreleased
 
+- Stopped supervisor Git subprocesses from inheriting unrelated parent secrets, and bundled Duo Chaos's MIT license with packaged desktop builds.
 - Added explicit Core, Smart, and Broad source-stage toolbelts. Core disables user capabilities. Smart, the default, combines the compact app-owned `duo-quality` skill with configured plugins, apps, and MCPs while suppressing the global user-skill catalog. Broad restores the full user-skill catalog and is explicitly the high-context, high-quota option. Smart/Broad require local-capability trust; generated-workspace project/local settings, hooks, and hidden subagents remain disabled.
 - Hardened that toolbelt boundary by restoring canonical supervisor instructions between turns, quarantining generated project CLI configuration, keeping Safe Mode Core-only, and preventing supervisor scaffolding from entering generated Git checkpoints.
 - Seeded a small app-owned `duo-quality` skill into generated workspaces so both CLIs receive the same quality, evidence, accessibility, and teammate-preservation contract without replaying a large instruction pack.
-- Added balanced quality routing: long Claude implementation is capped at High, routine dialogue and verification remain bounded, and the selected premium effort is retained as the visible quality ceiling for bounded review. A force-selected override remains available.
-- Added a Claude inference-message lease that waits for every in-flight tool result, preserves completed edit boundaries, performs at most one fresh compact no-edit continuation, and pauses safely rather than terminating a run when a second capsule cannot land durable evidence.
+- Added provider-neutral balanced quality routing: both CLIs receive the same semantic effort target by stage, translated to their supported effort vocabularies, while the selected premium effort remains the visible ceiling for bounded review. A force-selected override remains available.
+- Replaced provider-specific inference leases with one outcome-aware work guard for both CLIs. Productive editing, testing, and capability work can finish; genuine no-progress loops pause durably, and explicit Resume grants one fresh compact continuation from the saved baton.
+- Added a private fingerprinted quality brief, pitch provenance, materially balanced source tasks, task-level acceptance evidence, revision-bound contribution receipts, and exact-current reciprocal review receipts.
+- Added a durable Quality repair boundary when contribution, review, brief, or browser proof is missing. A reserved balanced repair/re-review pair can resume without replaying completed work; unchanged evidence stops the paid retry loop, the configured repair cap remains authoritative, and partial reveal remains an explicit user choice.
+- Added isolated compact and full-screen browser release proof with console, layout, accessible-control, and observable interaction checks before a generated artifact can be marked ready. Dead/focus-only controls and missing UI build output fail conservatively.
+- Moved pitch provenance, immutable task contracts, contribution receipts, and review receipts into a supervisor-owned proof store with exact run, revision, and event bindings so agent-writable coordination files cannot certify release.
 - Added explicit crash-drift adoption: preserved uncheckpointed source reappears as a resumable workspace-drift boundary, is checkpointed only after the user resumes, and must be reverified before release.
 - Added supervisor-built focus batons with the owned mission, bounded board, latest verification, and small app inventory to reduce repeated repository discovery without weakening the source or release gates.
-- Pinned model, effort ceiling, toolbelt, quality routing, inference lease, stage receipt, continuation count, and durable evidence across pause, resume, and restart reconstruction.
+- Pinned model, effort ceiling, toolbelt, provider-neutral quality routing, outcome-aware work guard, exact usage checkpoint, stage receipt, continuation count, and durable evidence across pause, resume, and restart reconstruction.
 - Normalize bounded dialogue text locally before spending a contract-recovery call, while retaining strict structured-output and Spoiler Shield validation.
 - Restored the factual, deduplicated Live Pulse ticker, re-keyed broadcast transitions to real evidence beats, and raised the minimum interface type floor to 11px.
 - Added a deterministic `benchmark:quality` architecture-contract benchmark that makes zero provider calls, gates quality before efficiency, and rejects Claude, direct-API, and Sol-Ultra fixture commands.
@@ -25,7 +30,7 @@
 - Added built-in prompt elevation for vague Surprise briefs and binding improvement rules for Serious missions without adding a separate model call.
 - Added proactive provider-utilization pauses, compact fresh source contexts, essential-only Claude tools, no-session persistence, and raw logs off by default to reduce avoidable token and privacy cost.
 - Added an Artifact Premiere reveal with a contained, pixel-only proof-of-life capture, an openability-aware launch action, visible release caveats, retryable bounded previews, an editorial build story, collapsed director's cut, and expandable technical proof.
-- Made mutual cross-review mandatory before any result can be marked ready: both Claude and Codex must contribute source, complete an owned task, and record a reply-linked review of the other's work; trusted verification must be newer than the final accepted app edit.
+- Made mutual cross-review revision-bound before any result can be marked ready: both Claude and Codex must complete a material owned contribution, and each must review the opponent's exact surviving revision; trusted verification and browser proof must cover the final accepted app source.
 - Rotated opening and reveal-closing authority between generated runs so neither provider is permanently cast as proposer, consensus owner, or final arbiter.
 - Replaced synthetic same-agent dialogue chains with one real opening, counter, or verdict per turn, linked to the latest recorded opponent statement.
 - Seeded Simulation Mode with a real runnable HTML artifact so the complete reveal and launch path can be tested without either paid CLI.

@@ -22,7 +22,7 @@ describe('settings store', () => {
       codexCustomizationProfile: 'smart',
       claudeCustomizationProfile: 'smart',
       qualityRoutingProfile: 'balanced',
-      claudeWorkInferenceLimit: 8,
+      workInferenceLimit: 8,
       trustedLocalCapabilitiesConfirmed: false,
       saveRawLogs: false,
       maxTurns: 11,
@@ -58,6 +58,18 @@ describe('settings store', () => {
       runTimeoutSeconds: 86_400,
       defaultMissionProfile: 'surprise'
     })
+  })
+
+  it('migrates the legacy Claude-only inference lease to the provider-neutral work lease', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-settings-work-guard-migration-'))
+    const path = join(root, 'settings.json')
+    await writeFile(path, JSON.stringify({ claudeWorkInferenceLimit: 13 }), 'utf8')
+    const store = new SettingsStore(path, join(root, 'workspaces'))
+
+    await expect(store.load()).resolves.toMatchObject({ workInferenceLimit: 13 })
+    const persisted = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+    expect(persisted).toMatchObject({ workInferenceLimit: 13 })
+    expect(persisted).not.toHaveProperty('claudeWorkInferenceLimit')
   })
 
   it('migrates legacy sub-seven call budgets without discarding unrelated settings', async () => {

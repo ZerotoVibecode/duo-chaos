@@ -78,6 +78,7 @@ export const durableRunManifestSchema = z.object({
     claudeCustomizationProfile: z.enum(['core', 'smart', 'full-local']).optional(),
     trustedLocalCapabilitiesConfirmed: z.boolean().optional(),
     qualityRoutingProfile: z.enum(['balanced', 'force-selected']).optional(),
+    workInferenceLimit: z.number().int().min(3).max(20).optional(),
     claudeWorkInferenceLimit: z.number().int().min(3).max(20).optional()
   }).strict(),
   loadout: z.object({
@@ -139,7 +140,28 @@ export const durableRunManifestSchema = z.object({
     claude: usageSchema,
     codex: usageSchema
   }).strict(),
+  usageGuard: z.object({
+    status: z.enum(['pending', 'acknowledged']),
+    agent: agentSchema,
+    callId: z.string().trim().min(1).max(256),
+    trigger: z.enum(['provider-warning', 'completed-call-usage']),
+    reasons: z.array(z.enum(['provider-pressure', 'processed-input', 'output', 'reasoning'])).min(1).max(4),
+    triggeredAt: timestampSchema,
+    acknowledgedAt: timestampSchema.optional(),
+    utilization: z.number().min(0).max(1).optional(),
+    resetAt: timestampSchema.optional(),
+    totals: usageSchema.omit({ reportedCostUsd: true }).optional(),
+    limits: z.object({
+      processedInputTokens: z.number().int().positive(),
+      outputTokens: z.number().int().positive(),
+      reasoningTokens: z.number().int().positive()
+    }).strict().optional()
+  }).strict().optional(),
   retries: z.array(retrySchema).max(200),
+  qualityRepair: z.object({
+    attempts: z.number().int().nonnegative().max(100),
+    missingEvidence: z.array(z.string().trim().min(1).max(160)).max(20)
+  }).strict().optional(),
   pause: z.object({
     reason: z.enum([
       'provider-quota',

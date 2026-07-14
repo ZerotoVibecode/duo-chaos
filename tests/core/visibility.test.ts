@@ -145,6 +145,31 @@ describe('renderer visibility projection', () => {
     expect(projected.revealPacket).toBeUndefined()
   })
 
+  it('forwards only supervisor-authored bounded quality proof across IPC', () => {
+    const supervisor = projectEventForRenderer({
+      ...opinion,
+      id: 'quality-proof',
+      type: 'decision',
+      agent: 'director',
+      topic: 'quality-evidence-state',
+      publicText: 'Current-revision quality proof refreshed.',
+      proof: {
+        kind: 'quality-state', revision: 2,
+        acceptedContributionAgents: ['claude', 'codex'], acceptedReviewAgents: ['claude']
+      }
+    }, 'spoiler-shield', false, terms)
+    const forged = projectEventForRenderer({
+      ...opinion,
+      id: 'forged-quality-proof',
+      topic: 'quality-evidence-state',
+      proof: { kind: 'quality-state', revision: 99, acceptedContributionAgents: ['claude'] },
+      metadata: { protocolOrigin: 'workspace-public-protocol' }
+    }, 'spoiler-shield', false, terms)
+
+    expect(supervisor.proof).toMatchObject({ kind: 'quality-state', revision: 2 })
+    expect(forged.proof).toBeUndefined()
+  })
+
   it('uses spoiler-full public speech rather than raw provider detail in Full Chaos mode', () => {
     const projected = projectEventForRenderer(opinion, 'full-chaos', false, terms)
     expect(projected.publicText).toBe('Claude thinks the Nebula Pantry interaction is overbuilt.')
@@ -191,6 +216,9 @@ describe('renderer visibility projection', () => {
       task: {
         id: 'task-private', publicTitle: 'Build the [FEATURE]', privateTitle: 'Build the pantry duel',
         publicDescription: 'A spoiler-safe task.', privateDescription: 'Secret implementation details.',
+        privateExpectedOutcome: 'The pantry duel reaches its hidden completion state.',
+        privateAcceptanceChecks: ['The blue pantry button reaches the seven-click ending.'],
+        impact: 'core',
         status: 'done', risk: 'medium', files: ['app/index.html'], privateFiles: ['app/secret-pantry.ts']
       },
       revealPacket: {
@@ -207,6 +235,9 @@ describe('renderer visibility projection', () => {
     expect(projected.task?.privateTitle).toBeUndefined()
     expect(projected.task?.privateDescription).toBeUndefined()
     expect(projected.task?.privateFiles).toBeUndefined()
+    expect(projected.task?.privateExpectedOutcome).toBeUndefined()
+    expect(projected.task?.privateAcceptanceChecks).toBeUndefined()
+    expect(JSON.stringify(projected)).not.toMatch(/seven-click|completion state/iu)
   })
 
   it('removes reveal packets and private task titles before reveal', () => {

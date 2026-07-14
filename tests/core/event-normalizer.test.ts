@@ -270,6 +270,40 @@ describe('event normalizer', () => {
     })
   })
 
+  it('records the guarded PowerShell test-then-build command as trusted verification', () => {
+    const activity = normalizeCliActivity(JSON.stringify({
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: 'npm.cmd test -- --run; if ($LASTEXITCODE -eq 0) { npm.cmd run build }; exit $LASTEXITCODE',
+        exit_code: 0
+      }
+    }), {
+      runId: 'run-guarded-powershell-verification', round: 9, source: 'codex', stream: 'stdout'
+    })
+
+    expect(activity).toMatchObject({
+      publicText: 'Codex finished a verification command.',
+      category: 'command',
+      metadata: { verificationPassed: true, commandCompleted: true }
+    })
+  })
+
+  it('does not trust a guarded PowerShell sequence whose success branch is not a verifier', () => {
+    const activity = normalizeCliActivity(JSON.stringify({
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: 'npm.cmd test -- --run; if ($LASTEXITCODE -eq 0) { Write-Output done }; exit $LASTEXITCODE',
+        exit_code: 0
+      }
+    }), {
+      runId: 'run-unsafe-guarded-powershell-command', round: 9, source: 'codex', stream: 'stdout'
+    })
+
+    expect(activity?.metadata).not.toMatchObject({ verificationPassed: true })
+  })
+
   it('records a successful workspace inspection without pretending it verified the build', () => {
     const activity = normalizeCliActivity(JSON.stringify({
       type: 'item.completed',
@@ -335,6 +369,36 @@ describe('event normalizer', () => {
       category: 'command',
       metadata: { verificationPassed: true }
     })
+  })
+
+  it('does not trust a piped Claude verifier whose pipeline can mask the real exit status', () => {
+    const state = { pendingClaudeVerificationToolUses: new Set<string>() }
+    const context = { runId: 'run-claude-piped-verification', round: 7, source: 'claude' as const, stream: 'stdout' as const }
+    const started = normalizeCliActivity(JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_piped_verifier',
+          name: 'Bash',
+          input: { command: 'cd app && npm test 2>&1 | tail -20' }
+        }]
+      }
+    }), context, state)
+    const completed = normalizeCliActivity(JSON.stringify({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_piped_verifier',
+          content: '36 tests passed.',
+          is_error: false
+        }]
+      }
+    }), context, state)
+
+    expect(started?.metadata).not.toMatchObject({ verificationPassed: true })
+    expect(completed?.metadata).not.toMatchObject({ verificationPassed: true })
   })
 
   it.each([

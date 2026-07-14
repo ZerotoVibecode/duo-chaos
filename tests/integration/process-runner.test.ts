@@ -8,6 +8,7 @@ import {
   MAX_PENDING_LINE_BYTES,
   MAX_RAW_LOG_BYTES,
   ProcessRunner,
+  buildBaseChildEnvironment,
   buildChildEnvironment,
   terminateProcessTree
 } from '../../src/main/process/process-runner'
@@ -86,6 +87,27 @@ describe('process runner', () => {
     expect(environment).not.toHaveProperty('SENTRY_DSN')
     expect(environment).not.toHaveProperty('NODE_OPTIONS')
     expect(environment).not.toHaveProperty('SAFE_FLAG')
+  })
+
+  it('provides a secret-free base environment for non-provider subprocesses', () => {
+    const environment = buildBaseChildEnvironment({
+      PATH: 'C:\\Tools',
+      SYSTEMROOT: 'C:\\Windows',
+      TEMP: 'C:\\Temp',
+      GITHUB_TOKEN: 'ghp_secret',
+      OPENAI_API_KEY: 'sk-secret',
+      NODE_OPTIONS: '--require malicious.js'
+    })
+
+    expect(environment).toEqual({
+      PATH: 'C:\\Tools',
+      SYSTEMROOT: 'C:\\Windows',
+      TEMP: 'C:\\Temp'
+    })
+    expect(environment).not.toHaveProperty('GITHUB_TOKEN')
+    expect(environment).not.toHaveProperty('OPENAI_API_KEY')
+    expect(environment).not.toHaveProperty('NODE_OPTIONS')
+    expect(environment).not.toHaveProperty('CLAUDE_CODE_DISABLE_AUTO_MEMORY')
   })
 
   it('streams stdout and stderr, preserves raw logs, and returns the exit code', async () => {
@@ -177,6 +199,57 @@ describe('process runner', () => {
     await expect(running).resolves.toMatchObject({ cancelled: true, timedOut: false })
     expect(await runner.cancel('missing')).toBe(false)
     expect(runner.isRunning(options.id)).toBe(false)
+  })
+
+  it('does not spawn a process when cancellation lands before active registration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-process-pre-abort-'))
+    const runner = new ProcessRunner()
+    const controller = new AbortController()
+    controller.abort()
+
+    const result = await runner.run({
+      id: 'process-pre-abort',
+      command: { bin: 'definitely-missing-duo-executable', args: [], cwd: root },
+      timeoutMs: 600_000,
+      stdoutPath: join(root, 'stdout.log'),
+      stderrPath: join(root, 'stderr.log'),
+      abortSignal: controller.signal,
+      onLine: () => undefined
+    })
+
+    expect(result).toMatchObject({
+      exitCode: null,
+      cancelled: true,
+      cancelReason: 'user',
+      timedOut: false
+    })
+    expect(runner.isRunning('process-pre-abort')).toBe(false)
+  })
+
+  it('terminates an active process when its abort signal fires', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-process-abort-'))
+    const runner = new ProcessRunner()
+    const controller = new AbortController()
+    const id = 'process-abort'
+    const running = runner.run({
+      id,
+      command: { bin: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: root },
+      timeoutMs: 600_000,
+      stdoutPath: join(root, 'stdout.log'),
+      stderrPath: join(root, 'stderr.log'),
+      abortSignal: controller.signal,
+      onLine: () => undefined
+    })
+    await vi.waitFor(() => expect(runner.isRunning(id)).toBe(true))
+
+    controller.abort()
+
+    await expect(running).resolves.toMatchObject({
+      cancelled: true,
+      cancelReason: 'user',
+      timedOut: false
+    })
+    expect(runner.isRunning(id)).toBe(false)
   })
 
   it('flushes final output without a trailing newline', async () => {

@@ -5,13 +5,14 @@ import type { IpcMainInvokeEvent } from 'electron'
 import { IPC, type BootstrapData } from '@shared/electron-api'
 import type { AppSettings } from '@shared/types'
 import { checkAllTools } from '@main/health/health-check'
-import { scanRecentBuilds } from '@main/history/run-history'
+import { loadArchivedCompleteRunSnapshot, scanRecentBuilds } from '@main/history/run-history'
 import { resolveOpenableRunWorkspace } from '@main/history/openable-run-workspace'
-import { resolveGeneratedAppLaunchTarget } from '@main/generated-app-launch-target'
 import { createArtifactPreview } from '@main/preview/artifact-preview'
 import { ArtifactPreviewCache } from '@main/preview/artifact-preview-cache'
+import { prepareArtifactPreviewTarget } from '@main/preview/artifact-preview-target'
 import { ARTIFACT_PREVIEW_SCHEME } from '@main/preview/artifact-resource'
 import { captureArtifactPixels } from '@main/preview/electron-artifact-capture'
+import { closeArtifactWindows, openArtifactWindow } from '@main/preview/electron-artifact-window'
 import { RunOrchestrator } from '@main/orchestrator/run-orchestrator'
 import { launchInteractiveCli } from '@main/process/terminal-launcher'
 import { SettingsStore } from '@main/settings/settings-store'
@@ -90,6 +91,11 @@ function createWindow(): void {
       event.preventDefault()
     }
   })
+  const createdWindow = mainWindow
+  createdWindow.once('closed', () => {
+    if (mainWindow === createdWindow) mainWindow = null
+    closeArtifactWindows()
+  })
 
   if (developmentRendererUrl) {
     void mainWindow.loadURL(developmentRendererUrl)
@@ -105,6 +111,15 @@ function trustedHandle<TArgs extends unknown[], TResult>(
   ipcMain.handle(channel, (event, ...args) => {
     assertTrustedStudioSender(event, mainWindow)
     return listener(event, ...(args as TArgs))
+  })
+}
+
+async function resolveCompleteRun(runId: string): Promise<BootstrapData['runs'][number] | undefined> {
+  const live = orchestrator.getSnapshot(runId)
+  if (live?.status === 'complete' && live.revealPacket) return live
+  const settings = await settingsStore.load()
+  return await loadArchivedCompleteRunSnapshot(settings.defaultWorkspaceRoot, runId, {
+    runtimeRoot: studioRuntimeRoot
   })
 }
 
@@ -150,6 +165,12 @@ function registerIpc(): void {
   trustedHandle(IPC.runStop, (_event, runId: string) => orchestrator.stop(runId))
   trustedHandle(IPC.runResume, (_event, runId: string) => orchestrator.resume(runId))
   trustedHandle(IPC.runReveal, (_event, runId: string) => orchestrator.reveal(runId))
+  trustedHandle(IPC.runRevealPartial, (_event, runId: string) => orchestrator.revealPartial(runId))
+  trustedHandle(IPC.runOpenArchive, async (_event, runId: string) => {
+    const snapshot = await resolveCompleteRun(runId)
+    if (!snapshot) throw new Error('This completed build could not be reopened from the local archive.')
+    return snapshot
+  })
   trustedHandle(IPC.runOpenFolder, async (_event, runId: string) => {
     const snapshot = orchestrator.getSnapshot(runId)
     const settings = await settingsStore.load()
@@ -164,16 +185,16 @@ function registerIpc(): void {
     if (error) throw new Error(error)
   })
   trustedHandle(IPC.runOpenApp, async (_event, runId: string) => {
-    const snapshot = orchestrator.getSnapshot(runId)
-    if (!snapshot || snapshot.status !== 'complete') throw new Error('Reveal the run before opening the generated app.')
+    const snapshot = await resolveCompleteRun(runId)
+    if (!snapshot) throw new Error('Reveal the run before opening the generated app.')
     const configuredTarget = snapshot.revealPacket?.appPath || snapshot.appPath
-    const target = await resolveGeneratedAppLaunchTarget(snapshot.workspacePath, configuredTarget)
-    const error = await shell.openPath(target)
-    if (error) throw new Error(error)
+    const target = await prepareArtifactPreviewTarget(snapshot.workspacePath, configuredTarget)
+    if (target.status !== 'ready') throw new Error(target.message)
+    await openArtifactWindow(target, mainWindow ?? undefined)
   })
   trustedHandle(IPC.runArtifactPreview, async (_event, runId: string) => {
-    const snapshot = orchestrator.getSnapshot(runId)
-    if (!snapshot || snapshot.status !== 'complete') {
+    const snapshot = await resolveCompleteRun(runId)
+    if (!snapshot) {
       throw new Error('Reveal the run before preparing its artifact preview.')
     }
     return await artifactPreviewCache.getOrCreate(runId, () => {
@@ -233,6 +254,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', (event) => {
+  closeArtifactWindows()
   if (shutdownPrepared) return
   if (!orchestrator) {
     shutdownPrepared = true

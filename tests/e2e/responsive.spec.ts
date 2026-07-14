@@ -197,6 +197,21 @@ test('fits the complete cockpit when windowed and fills a large display', async 
     await expect(page.getByRole('heading', { name: 'Live rivalry' })).toBeVisible({ timeout: 8_000 })
     await expect(page.getByRole('heading', { name: 'Evidence momentum' })).toBeVisible()
     await expect(page.locator('.opinion-card').first()).toBeVisible({ timeout: 10_000 })
+
+    await page.setViewportSize({ width: 900, height: 640 })
+    await expect(page.locator('.pulse-compact-metrics')).toBeVisible()
+    await expect(page.locator('.pulse-compact-metrics')).toContainText(/surprise/i)
+    await expect(page.locator('.pulse-compact-metrics')).toContainText(/simulation/i)
+    await expect(page.locator('.pulse-compact-metrics')).toContainText(/spoiler-shield/i)
+    await expectMinimumFontSize(page, '.pulse-compact-metrics span', 11)
+    const minimumRunFit = await page.evaluate(() => ({
+      viewportWidth: window.innerWidth,
+      pageWidth: document.documentElement.scrollWidth
+    }))
+    expect(minimumRunFit.pageWidth).toBeLessThanOrEqual(minimumRunFit.viewportWidth + 1)
+    await page.screenshot({ path: join(screenshots, '06a-minimum-run.png') })
+
+    await page.setViewportSize({ width: 1000, height: 700 })
     await expectMinimumFontSize(page, '.pulse-progress > div', 11)
     await expectMinimumFontSize(page, '.agent-state', 11)
     await expectMinimumFontSize(page, '.agent-runtime', 11)
@@ -260,6 +275,36 @@ test('fits the complete cockpit when windowed and fills a large display', async 
 
     const reveal = page.getByRole('button', { name: 'Reveal app' })
     await expect(reveal).toBeEnabled({ timeout: 30_000 })
+
+    await page.setViewportSize({ width: 900, height: 640 })
+    const completion = page.getByRole('dialog', { name: /build survived/i })
+    await expect(completion).toBeVisible()
+    await expect(reveal).toBeVisible()
+    await expectMinimumFontSize(page, '.completion-core > p', 12)
+    await expectMinimumFontSize(page, '.completion-proof span', 11)
+    const completionFit = await completion.evaluate((element) => {
+      const rect = element.getBoundingClientRect()
+      const style = getComputedStyle(element)
+      return {
+        top: rect.top,
+        bottom: rect.bottom,
+        right: rect.right,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        overflowY: style.overflowY
+      }
+    })
+    expect(completionFit.top).toBeGreaterThanOrEqual(46)
+    expect(completionFit.bottom).toBeLessThanOrEqual(completionFit.viewportHeight + 1)
+    expect(completionFit.right).toBeLessThanOrEqual(completionFit.viewportWidth + 1)
+    expect(completionFit.scrollWidth).toBeLessThanOrEqual(completionFit.clientWidth + 1)
+    if (completionFit.scrollHeight > completionFit.clientHeight + 1) expect(completionFit.overflowY).toBe('auto')
+    await page.screenshot({ path: join(screenshots, '08a-minimum-completion.png') })
+
     await reveal.click()
 
     await page.setViewportSize({ width: 1000, height: 700 })
@@ -269,16 +314,28 @@ test('fits the complete cockpit when windowed and fills a large display', async 
     const compactReveal = await page.evaluate(() => {
       const stage = document.querySelector('.reveal-stage')?.getBoundingClientRect()
       const premiere = document.querySelector('.artifact-premiere')?.getBoundingClientRect()
+      const preview = document.querySelector<HTMLElement>('.artifact-preview')
+      const previewImage = preview?.querySelector<HTMLImageElement>('img')
+      const previewRect = preview?.getBoundingClientRect()
+      const imageRect = previewImage?.getBoundingClientRect()
       return {
         viewportWidth: window.innerWidth,
         pageWidth: document.documentElement.scrollWidth,
         stageWidth: stage?.width ?? 0,
-        premiereBottom: premiere?.bottom ?? Number.POSITIVE_INFINITY
+        premiereBottom: premiere?.bottom ?? Number.POSITIVE_INFINITY,
+        previewHeight: previewRect?.height ?? 0,
+        imageHeight: imageRect?.height ?? 0,
+        imageContained: Boolean(previewRect && imageRect &&
+          imageRect.top >= previewRect.top - 1 &&
+          imageRect.bottom <= previewRect.bottom + 1)
       }
     })
     expect(compactReveal.pageWidth).toBeLessThanOrEqual(compactReveal.viewportWidth + 1)
     expect(compactReveal.stageWidth).toBeGreaterThan(compactReveal.viewportWidth * 0.93)
     expect(compactReveal.premiereBottom).toBeLessThanOrEqual(700)
+    expect(compactReveal.previewHeight).toBeGreaterThan(200)
+    expect(compactReveal.imageHeight).toBeGreaterThan(200)
+    expect(compactReveal.imageContained).toBe(true)
     await page.screenshot({ path: join(screenshots, '09-windowed-reveal.png') })
 
     await page.setViewportSize({ width: 2048, height: 1152 })

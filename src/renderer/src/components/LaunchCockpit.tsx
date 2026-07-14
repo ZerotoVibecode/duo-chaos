@@ -32,11 +32,13 @@ function formatBudget(seconds: number): string {
 }
 
 function deepWorkEffort(...efforts: Array<string | undefined>): string {
-  if (efforts.includes('ultra')) return 'Ultra effort'
-  if (efforts.includes('max')) return 'Max effort'
-  if (efforts.includes('xhigh')) return 'Extra High effort'
-  if (efforts.includes('high')) return 'High effort'
-  return 'Selected effort'
+  if (efforts.includes('ultra')) return 'Ultra'
+  if (efforts.includes('max')) return 'Max'
+  if (efforts.includes('xhigh')) return 'Extra High'
+  if (efforts.includes('high')) return 'High'
+  if (efforts.includes('medium')) return 'Medium'
+  if (efforts.includes('low')) return 'Low'
+  return 'CLI-selected'
 }
 
 export function LaunchCockpit(): React.JSX.Element {
@@ -53,7 +55,9 @@ export function LaunchCockpit(): React.JSX.Element {
     refreshHealth,
     saveSettings,
     openAgentCli,
+    openArchivedRun,
     openRunFolder,
+    openGeneratedApp,
     recoverRecentBuild,
     resumeRun
   } = useStudioStore()
@@ -86,9 +90,10 @@ export function LaunchCockpit(): React.JSX.Element {
   })
   const workLease = formatBudget(settings?.turnTimeoutSeconds ?? 7_200)
   const runCeiling = formatBudget(settings?.runTimeoutSeconds ?? 86_400)
-  const deepEffort = settings?.qualityRoutingProfile === 'balanced' && ['max', 'xhigh'].includes(claudeEffort ?? '')
-    ? `${deepWorkEffort(claudeEffort)} ceiling`
-    : deepWorkEffort(codexEffort, claudeEffort)
+  const selectedEffort = deepWorkEffort(codexEffort, claudeEffort)
+  const deepEffort = settings?.qualityRoutingProfile === 'balanced'
+    ? `${selectedEffort} ceiling`
+    : `${selectedEffort} source work`
   const scheduledTurns = settings?.maxTurns ?? 11
 
   return (
@@ -119,7 +124,7 @@ export function LaunchCockpit(): React.JSX.Element {
             <div className="briefing-contract">
               <span>4-call debate</span><i aria-hidden="true" />
               <span>2 deep builds <strong>{workLease}</strong></span><i aria-hidden="true" />
-              <span>1 cross-review</span>
+              <span>1 reciprocal review · 2 receipts</span>
               <em>Run ceiling {runCeiling}</em>
             </div>
           </section>
@@ -128,8 +133,8 @@ export function LaunchCockpit(): React.JSX.Element {
           <section className="resilience-rail" role="region" aria-label="Battle resilience">
             <article><Scale size={15} /><span><strong>Reciprocal authority</strong><small>7 core calls · {Math.max(0, scheduledTurns - 7)} adaptive capacity</small></span></article>
             <article><RotateCcw size={15} /><span><strong>Crash-safe resume</strong><small>Durable local checkpoint</small></span></article>
-            <article><TimerReset size={15} /><span><strong>Soft work leases</strong><small>{workLease} handoff · work preserved</small></span></article>
-            <article><Gauge size={15} /><span><strong>{deepEffort}</strong><small>{settings?.qualityRoutingProfile === 'balanced' ? 'Claude implementation High · premium review bounded' : 'Selected effort for source · dialogue stays lean'}</small></span></article>
+            <article><TimerReset size={15} /><span><strong>Soft work guards</strong><small>{workLease} ceiling · active evidence preserved</small></span></article>
+            <article><Gauge size={15} /><span><strong>{deepEffort}</strong><small>{settings?.qualityRoutingProfile === 'balanced' ? 'Efficient source work · premium review bounded' : 'Selected effort for source · dialogue stays lean'}</small></span></article>
           </section>
 
           <div className="prompt-field">
@@ -262,6 +267,8 @@ export function LaunchCockpit(): React.JSX.Element {
             onRecover={recoverRecentBuild}
             onResume={(build) => void resumeRun(build.runId)}
             onOpen={(build) => void openRunFolder(build.runId)}
+            onReveal={(build) => void openArchivedRun(build.runId)}
+            onOpenApp={(build) => void openGeneratedApp(build.runId)}
           />
         </aside>
       </section>

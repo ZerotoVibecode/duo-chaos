@@ -60,6 +60,31 @@ describe('staged turn acceptance outcomes', () => {
     expect(assessment.reasons).toContain('work-lease-expired')
   })
 
+  it('does not report an intentional work-lease cancellation as a provider process failure', () => {
+    const assessment = assessTurnAcceptance({
+      agent: 'claude',
+      round: 5,
+      stage: 'work',
+      result: result({
+        exitCode: null,
+        signal: 'SIGTERM',
+        cancelled: true,
+        cancelReason: 'lease'
+      }),
+      events: [],
+      requiresWorkEvidence: true,
+      durableSourceChanged: false,
+      durableWorkEvidence: false
+    })
+
+    expect(assessment.reasons).toEqual(expect.arrayContaining([
+      'work-lease-expired',
+      'missing-work-evidence'
+    ]))
+    expect(assessment.reasons).not.toContain('process-failed')
+    expect(assessment.reasons).not.toContain('process-cancelled')
+  })
+
   it('rejects source changes made during a coordination-only stage', () => {
     const assessment = assessTurnAcceptance({
       agent: 'claude',

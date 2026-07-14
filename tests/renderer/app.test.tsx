@@ -36,6 +36,7 @@ function createApi(
     stopRun: vi.fn(),
     resumeRun: vi.fn(),
     revealRun: vi.fn(),
+    openArchivedRun: vi.fn(),
     openRunFolder: vi.fn().mockResolvedValue(undefined),
     openGeneratedApp: vi.fn().mockResolvedValue(undefined),
     getArtifactPreview: vi.fn().mockResolvedValue({
@@ -190,7 +191,7 @@ describe('Duo Chaos launch cockpit', () => {
     expect(within(briefing).getByText('VS')).toBeVisible()
     expect(within(briefing).getByText('Codex')).toBeVisible()
     expect(within(briefing).getByText('Sol · Max')).toBeVisible()
-    expect(briefing).toHaveTextContent(/4-call debate.*2 deep builds.*1 cross-review/i)
+    expect(briefing).toHaveTextContent(/4-call debate.*2 deep builds.*1 reciprocal review.*2 receipts/i)
     expect(briefing).toHaveTextContent(/2 deep builds 2h/i)
     expect(briefing).toHaveTextContent(/run ceiling 24h/i)
     expect(screen.getByText(/one prompt\. two rivals\. one surviving build\./i)).toBeVisible()
@@ -202,9 +203,9 @@ describe('Duo Chaos launch cockpit', () => {
     const resilience = await screen.findByRole('region', { name: /battle resilience/i })
     expect(within(resilience).getByText(/reciprocal authority/i)).toBeVisible()
     expect(within(resilience).getByText(/crash-safe resume/i)).toBeVisible()
-    expect(within(resilience).getByText(/soft work leases/i)).toBeVisible()
-    expect(within(resilience).getByText(/max effort/i)).toBeVisible()
-    expect(resilience).toHaveTextContent(/implementation high.*premium review bounded/i)
+    expect(within(resilience).getByText(/soft work guards/i)).toBeVisible()
+    expect(within(resilience).getByText(/max ceiling/i)).toBeVisible()
+    expect(resilience).toHaveTextContent(/efficient source work.*premium review bounded/i)
     expect(resilience).not.toHaveTextContent(/guaranteed|unstoppable|always completes/i)
 
     const launchAction = screen.getByRole('button', { name: /start simulation/i })
@@ -317,6 +318,44 @@ describe('Duo Chaos launch cockpit', () => {
     expect(screen.getByLabelText(/opening prompt/i)).toHaveValue('Build a tiny emoji hello website.')
   })
 
+  it('traps keyboard focus in the stop confirmation and restores the Stop trigger on Escape', async () => {
+    const user = userEvent.setup()
+    const running: RunSnapshot = {
+      runId: 'run-stop-focus',
+      prompt: 'Build a tiny keyboard-safe website.',
+      executionMode: 'simulation',
+      visibilityMode: 'spoiler-shield',
+      phase: 'round.pitch',
+      status: 'running',
+      round: 1,
+      startedAt: '2026-07-09T12:00:00.000Z',
+      workspacePath: 'C:\\DuoChaos\\workspaces\\run-stop-focus',
+      appPath: 'C:\\DuoChaos\\workspaces\\run-stop-focus\\app',
+      tasks: [],
+      events: []
+    }
+    window.duo = createApi([running])
+    render(<App />)
+
+    const stop = await screen.findByRole('button', { name: /^stop$/i })
+    await user.click(stop)
+    const confirmation = screen.getByRole('alertdialog', { name: /cancel this battle permanently/i })
+    const keep = within(confirmation).getByRole('button', { name: /keep battle running/i })
+    const cancel = within(confirmation).getByRole('button', { name: /cancel battle permanently/i })
+    expect(keep).toHaveFocus()
+    expect(document.querySelector('.app-frame')?.parentElement).toHaveAttribute('inert')
+
+    await user.tab({ shift: true })
+    expect(cancel).toHaveFocus()
+    await user.tab()
+    expect(keep).toHaveFocus()
+    await user.keyboard('{Escape}')
+
+    expect(screen.queryByRole('alertdialog', { name: /cancel this battle permanently/i })).not.toBeInTheDocument()
+    expect(stop).toHaveFocus()
+    expect(document.querySelector('.app-frame')?.parentElement).not.toHaveAttribute('inert')
+  })
+
   it('keeps preflight distinct from a confirmed live run', async () => {
     const preflight: RunSnapshot = {
       runId: 'run-preflight',
@@ -386,7 +425,7 @@ describe('Duo Chaos launch cockpit', () => {
     expect(within(settingsDialog).getByLabelText(/codex toolbelt/i)).toHaveValue('smart')
     expect(within(settingsDialog).getByLabelText(/claude toolbelt/i)).toHaveValue('smart')
     expect(within(settingsDialog).getByLabelText(/quality routing/i)).toHaveValue('balanced')
-    const inferenceLease = within(settingsDialog).getByLabelText(/claude work inference lease/i)
+    const inferenceLease = within(settingsDialog).getByLabelText(/agent work inference lease/i)
     await user.clear(inferenceLease)
     await user.type(inferenceLease, '6')
     await user.click(within(settingsDialog).getByLabelText(/trust my local cli capabilities/i))
@@ -411,7 +450,7 @@ describe('Duo Chaos launch cockpit', () => {
       claudeCustomizationProfile: 'smart',
       trustedLocalCapabilitiesConfirmed: true,
       qualityRoutingProfile: 'balanced',
-      claudeWorkInferenceLimit: 6,
+      workInferenceLimit: 6,
       turnTimeoutSeconds: 10_800,
       runTimeoutSeconds: 64_800
     }))
@@ -847,6 +886,72 @@ describe('Duo Chaos launch cockpit', () => {
     expect(await screen.findByText('Direct-open canvas with no dependencies')).toBeVisible()
   })
 
+  it('shows an explicit truthful state when no shipped items were recorded', async () => {
+    const now = '2026-07-10T13:25:00.000Z'
+    const partial: RunSnapshot = {
+      runId: 'run-revealed-without-shipped-items',
+      prompt: 'Preserve incomplete work honestly.',
+      executionMode: 'chaos', visibilityMode: 'spoiler-shield',
+      phase: 'complete', status: 'complete', round: 8, totalTurns: 8,
+      startedAt: now, finishedAt: now,
+      workspacePath: 'C:\\DuoChaos\\workspaces\\run-revealed-without-shipped-items',
+      appPath: 'C:\\DuoChaos\\workspaces\\run-revealed-without-shipped-items\\app',
+      tasks: [], events: [],
+      revealPacket: {
+        appName: 'Preserved Draft', idea: 'An incomplete local experiment.',
+        summary: 'The workspace was preserved without inventing completed work.',
+        features: [], runCommand: 'Open the generated workspace for inspection.', appPath: 'app', status: 'partial',
+        whatWorked: [], knownIssues: ['No runnable release was verified.'],
+        agentDramaSummary: ['The agents stopped before a shippable slice was recorded.'], gitCheckpoints: [],
+        agentQuotes: { claude: 'The work is incomplete.', codex: 'The workspace remains inspectable.' }
+      }
+    }
+    window.duo = createApi([partial])
+
+    render(<App />)
+
+    expect(await screen.findByText('No verified product slice was recorded for this run.')).toBeVisible()
+    expect(screen.getByRole('heading', { name: /usable work they preserved/i })).toBeVisible()
+  })
+
+  it('keeps verbose legacy reveal packets readable without rewriting stored evidence', async () => {
+    const now = '2026-07-10T13:27:00.000Z'
+    const verboseTail = `UNBOUNDED ${'implementation detail '.repeat(40)}`
+    const complete: RunSnapshot = {
+      runId: 'run-revealed-verbose-legacy', prompt: 'Build a polished local experience.',
+      executionMode: 'chaos', visibilityMode: 'spoiler-shield', phase: 'complete', status: 'complete',
+      round: 8, totalTurns: 8, startedAt: now, finishedAt: now,
+      workspacePath: 'C:\\DuoChaos\\workspaces\\run-revealed-verbose-legacy',
+      appPath: 'C:\\DuoChaos\\workspaces\\run-revealed-verbose-legacy\\app',
+      tasks: [{
+        id: 'story-engine', publicTitle: 'Deterministic story engine',
+        publicDescription: `Implementation notes ${verboseTail}`, status: 'done', claimedBy: 'claude', risk: 'medium', files: ['app/index.html']
+      }],
+      events: [],
+      revealPacket: {
+        appName: 'Orbit Garden — complete technical implementation and release notes',
+        idea: `A calm spatial garden for collecting small thoughts. ${verboseTail}`,
+        summary: `The agents shipped a direct-open interactive artifact. ${verboseTail}`,
+        features: [`Keyboard-accessible constellation controls. ${verboseTail}`],
+        runCommand: 'Open app/index.html', appPath: 'app/index.html', status: 'ready',
+        whatWorked: [], knownIssues: ['No valid reveal packet was produced before the turn limit.'], agentDramaSummary: [], gitCheckpoints: [],
+        agentQuotes: { claude: '', codex: '' }
+      }
+    }
+    window.duo = createApi([complete])
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Orbit Garden' })).toBeVisible()
+    expect(document.querySelector('.reveal-idea')?.textContent?.length ?? 0).toBeLessThanOrEqual(321)
+    expect(document.querySelector('.reveal-summary')?.textContent?.length ?? 0).toBeLessThanOrEqual(421)
+    expect(document.querySelector('.survivor-list li')?.textContent?.length ?? 0).toBeLessThanOrEqual(181)
+    expect(screen.getByText('Deterministic story engine')).toBeVisible()
+    expect(screen.getByText('Final release metadata was incomplete; the preserved artifact remains available.')).toBeVisible()
+    expect(screen.queryByText(/no valid reveal packet was produced/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/complete technical implementation and release notes/i)).not.toBeInTheDocument()
+  })
+
   it('presents a partial package result as preserved work instead of a shipped app', async () => {
     const user = userEvent.setup()
     const now = '2026-07-10T13:30:00.000Z'
@@ -940,6 +1045,9 @@ describe('Duo Chaos launch cockpit', () => {
         ...createBroadcastRun().events,
         { id: 'passed', type: 'build.passed', runId: 'run-broadcast-contract', round: 12, timestamp: '2026-07-10T10:10:00.000Z', agent: 'codex', publicText: 'The public verification gate passed.', spoilerRisk: 0.05, severity: 'low' },
         { id: 'checkpoint', type: 'git.checkpoint', runId: 'run-broadcast-contract', round: 12, timestamp: '2026-07-10T10:10:01.000Z', agent: 'director', publicText: 'Final checkpoint recorded.', spoilerRisk: 0.05, severity: 'low' },
+        { id: 'quality-state', type: 'decision', runId: 'run-broadcast-contract', round: 12, timestamp: '2026-07-10T10:10:01.200Z', agent: 'director', topic: 'quality-evidence-state', publicText: 'Both reciprocal reviews survive on the current revision.', spoilerRisk: 0.05, severity: 'low', proof: { kind: 'quality-state', acceptedContributionAgents: ['claude', 'codex'], acceptedReviewAgents: ['claude', 'codex'] } },
+        { id: 'supervisor', type: 'build.passed', runId: 'run-broadcast-contract', round: 12, timestamp: '2026-07-10T10:10:01.400Z', agent: 'director', topic: 'supervisor-verification', publicText: 'Independent proof passed.', spoilerRisk: 0.05, severity: 'low', metadata: { checks: [{ id: 'brief:consensus-provenance', outcome: 'passed' }, { id: 'brief:requested-outcome', outcome: 'passed' }] } },
+        { id: 'browser', type: 'decision', runId: 'run-broadcast-contract', round: 12, timestamp: '2026-07-10T10:10:01.600Z', agent: 'director', topic: 'browser-qa-receipt', publicText: 'Browser QA passed.', spoilerRisk: 0.05, severity: 'low', metadata: { smokePassed: true, compactScreenshot: true, fullscreenScreenshot: true, consoleHealthy: true, interactionPassed: true } },
         { id: 'ready', type: 'reveal.ready', runId: 'run-broadcast-contract', round: 12, timestamp: '2026-07-10T10:10:02.000Z', agent: 'director', publicText: 'Reveal ready. The sealed result is prepared.', spoilerRisk: 1, severity: 'high' }
       ]
     }
@@ -949,12 +1057,18 @@ describe('Duo Chaos launch cockpit', () => {
 
     render(<App />)
 
-    const takeover = await screen.findByRole('region', { name: /the build survived/i })
+    const takeover = await screen.findByRole('dialog', { name: /the build survived/i })
     expect(within(takeover).getByRole('heading', { name: /^the build survived$/i })).toBeVisible()
+    expect(within(takeover).getByRole('button', { name: /reveal app/i })).toHaveFocus()
+    expect(document.querySelector('.app-frame')?.parentElement).toHaveAttribute('inert')
     expect(takeover).toHaveTextContent(/reveal ready/i)
     expect(takeover).toHaveTextContent('2/2 tasks complete')
     expect(takeover).toHaveTextContent('Verification passed')
     expect(takeover).toHaveTextContent('Final checkpoint recorded')
+    expect(takeover).toHaveTextContent('2/2 accepted contributions')
+    expect(takeover).toHaveTextContent('2/2 current reviews')
+    expect(takeover).toHaveTextContent('Brief constraints proved')
+    expect(takeover).toHaveTextContent('Browser QA passed')
     await user.click(within(takeover).getByRole('button', { name: /reveal app/i }))
     expect(api.revealRun).toHaveBeenCalledWith(ready.runId)
   })

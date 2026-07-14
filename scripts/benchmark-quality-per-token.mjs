@@ -139,18 +139,40 @@ function normalizeUsage(value, label) {
 
 function normalizeRole(value, label) {
   const input = record(value, label)
-  exactKeys(input, ['acceptedImplementation', 'acceptedCrossReview', 'completedTasks', 'edits'], label)
+  exactKeys(input, ['acceptedImplementation', 'acceptedCrossReview', 'acceptedContributions', 'completedTasks', 'edits'], label)
   return {
     acceptedImplementation: boolean(input.acceptedImplementation, `${label}.acceptedImplementation`),
     acceptedCrossReview: boolean(input.acceptedCrossReview, `${label}.acceptedCrossReview`),
+    acceptedContributions: nonNegativeInteger(input.acceptedContributions, `${label}.acceptedContributions`),
     completedTasks: nonNegativeInteger(input.completedTasks, `${label}.completedTasks`),
     edits: nonNegativeInteger(input.edits, `${label}.edits`)
   }
 }
 
+function normalizeCheckSet(value, label) {
+  const input = record(value, label)
+  exactKeys(input, ['passed', 'total', 'current'], label)
+  const passed = nonNegativeInteger(input.passed, `${label}.passed`)
+  const total = nonNegativeInteger(input.total, `${label}.total`)
+  if (passed > total) fail(`Invalid fixture: ${label}.passed cannot exceed total.`)
+  return { passed, total, current: boolean(input.current, `${label}.current`) }
+}
+
+function normalizeBrowserEvidence(value, label) {
+  const input = record(value, label)
+  exactKeys(input, ['smokePassed', 'compactScreenshot', 'fullscreenScreenshot', 'consoleHealthy', 'interactionPassed'], label)
+  return {
+    smokePassed: boolean(input.smokePassed, `${label}.smokePassed`),
+    compactScreenshot: boolean(input.compactScreenshot, `${label}.compactScreenshot`),
+    fullscreenScreenshot: boolean(input.fullscreenScreenshot, `${label}.fullscreenScreenshot`),
+    consoleHealthy: boolean(input.consoleHealthy, `${label}.consoleHealthy`),
+    interactionPassed: boolean(input.interactionPassed, `${label}.interactionPassed`)
+  }
+}
+
 function normalizeQuality(value, label) {
   const input = record(value, label)
-  exactKeys(input, ['releaseStatus', 'artifactReady', 'verification', 'hiddenJudge', 'roles'], label)
+  exactKeys(input, ['releaseStatus', 'artifactReady', 'verification', 'briefAdherence', 'browserEvidence', 'hiddenJudge', 'roles'], label)
   if (!['ready', 'partial', 'failed'].includes(input.releaseStatus)) fail(`Invalid fixture: ${label}.releaseStatus is unsupported.`)
   const verification = record(input.verification, `${label}.verification`)
   exactKeys(verification, ['passes', 'failures', 'current'], `${label}.verification`)
@@ -169,6 +191,8 @@ function normalizeQuality(value, label) {
       failures: nonNegativeInteger(verification.failures, `${label}.verification.failures`),
       current: boolean(verification.current, `${label}.verification.current`)
     },
+    briefAdherence: normalizeCheckSet(input.briefAdherence, `${label}.briefAdherence`),
+    browserEvidence: normalizeBrowserEvidence(input.browserEvidence, `${label}.browserEvidence`),
     hiddenJudge: { passed, total },
     roles: {
       roleA: normalizeRole(roles.roleA, `${label}.roles.roleA`),
@@ -177,11 +201,25 @@ function normalizeQuality(value, label) {
   }
 }
 
+function normalizeUsageEvidence(value, label) {
+  const input = record(value, label)
+  exactKeys(input, ['accountedCalls', 'totalCalls', 'evidence'], label)
+  if (!['exact', 'provider-partial', 'estimated'].includes(input.evidence)) {
+    fail(`Invalid fixture: ${label}.evidence is unsupported.`)
+  }
+  return {
+    accountedCalls: nonNegativeInteger(input.accountedCalls, `${label}.accountedCalls`),
+    totalCalls: nonNegativeInteger(input.totalCalls, `${label}.totalCalls`),
+    evidence: input.evidence
+  }
+}
+
 function normalizeEfficiency(value, label) {
   const input = record(value, label)
-  exactKeys(input, ['usage', 'promptBytes', 'toolOutputBytes', 'peakContextTokens', 'batonBytes', 'acceptedTasks', 'recoveryCalls', 'activeMs'], label)
+  exactKeys(input, ['usage', 'usageEvidence', 'promptBytes', 'toolOutputBytes', 'peakContextTokens', 'batonBytes', 'acceptedTasks', 'recoveryCalls', 'activeMs'], label)
   return {
     usage: normalizeUsage(input.usage, `${label}.usage`),
+    usageEvidence: normalizeUsageEvidence(input.usageEvidence, `${label}.usageEvidence`),
     promptBytes: nonNegativeInteger(input.promptBytes, `${label}.promptBytes`),
     toolOutputBytes: nonNegativeInteger(input.toolOutputBytes, `${label}.toolOutputBytes`),
     peakContextTokens: nonNegativeInteger(input.peakContextTokens, `${label}.peakContextTokens`),
@@ -192,7 +230,7 @@ function normalizeEfficiency(value, label) {
   }
 }
 
-function hardGates(quality) {
+function hardGates(quality, efficiency) {
   const roles = Object.values(quality.roles)
   const editCounts = roles.map((role) => role.edits)
   const smaller = Math.min(...editCounts)
@@ -203,8 +241,47 @@ function hardGates(quality) {
   return {
     readyRelease: quality.releaseStatus === 'ready' && quality.artifactReady,
     currentVerification: quality.verification.current && quality.verification.passes > 0 && quality.verification.failures === 0,
+    briefAdherence: quality.briefAdherence.current && quality.briefAdherence.total > 0 && quality.briefAdherence.passed === quality.briefAdherence.total,
+    acceptedContributions: roles.every((role) => role.acceptedContributions > 0),
+    browserEvidence: Object.values(quality.browserEvidence).every(Boolean),
     hiddenJudge: quality.hiddenJudge.total > 0 && quality.hiddenJudge.passed === quality.hiddenJudge.total,
-    balancedLogicalRoles: balanced
+    balancedLogicalRoles: balanced,
+    usageComplete: efficiency.usageEvidence.totalCalls > 0 &&
+      efficiency.usageEvidence.accountedCalls === efficiency.usageEvidence.totalCalls &&
+      efficiency.usageEvidence.totalCalls >= efficiency.usage.calls &&
+      efficiency.usageEvidence.evidence !== 'estimated'
+  }
+}
+
+function percentage(numerator, denominator) {
+  if (denominator <= 0) return 0
+  return Math.round((numerator / denominator) * 1_000) / 10
+}
+
+function evidenceScore(quality, efficiency) {
+  const roles = Object.values(quality.roles)
+  const browserChecks = Object.values(quality.browserEvidence)
+  const briefAdherence = quality.briefAdherence.current
+    ? percentage(quality.briefAdherence.passed, quality.briefAdherence.total)
+    : 0
+  const acceptedContributions = percentage(
+    roles.filter((role) => role.acceptedContributions > 0).length,
+    roles.length
+  )
+  const browserEvidence = percentage(browserChecks.filter(Boolean).length, browserChecks.length)
+  const rawUsageCompleteness = percentage(
+    Math.min(efficiency.usageEvidence.accountedCalls, efficiency.usageEvidence.totalCalls),
+    efficiency.usageEvidence.totalCalls
+  )
+  const usageCompleteness = efficiency.usageEvidence.evidence === 'estimated'
+    ? Math.min(50, rawUsageCompleteness)
+    : rawUsageCompleteness
+  return {
+    briefAdherence,
+    acceptedContributions,
+    browserEvidence,
+    usageCompleteness,
+    total: Math.round(((briefAdherence + acceptedContributions + browserEvidence + usageCompleteness) / 4) * 10) / 10
   }
 }
 
@@ -218,7 +295,15 @@ function normalizeVariant(value, index) {
   }
   const quality = normalizeQuality(input.quality, `variants[${String(index)}].quality`)
   const efficiency = normalizeEfficiency(input.efficiency, `variants[${String(index)}].efficiency`)
-  return { id, label, architecture: input.architecture, quality, gates: hardGates(quality), efficiency }
+  return {
+    id,
+    label,
+    architecture: input.architecture,
+    quality,
+    gates: hardGates(quality, efficiency),
+    score: evidenceScore(quality, efficiency),
+    efficiency
+  }
 }
 
 function reductionPercent(before, after) {
@@ -289,12 +374,12 @@ function renderMarkdown(report) {
     '',
     '> Deterministic fixture benchmark. Zero provider calls. It validates comparison plumbing and safety contracts; it does not prove future model quality or token savings.',
     '',
-    '| Variant | Architecture | Hard gates | Processed input | Output | Peak context | Tool output | Calls |',
-    '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |'
+    '| Variant | Architecture | Hard gates | Evidence score | Brief | Contributions | Browser | Usage evidence | Processed input | Output | Peak context | Tool output | Calls |',
+    '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
   ]
   for (const variant of report.variants) {
     const gates = Object.values(variant.gates).every(Boolean) ? 'pass' : 'fail'
-    lines.push(`| ${variant.label} | ${variant.architecture} | ${gates} | ${String(variant.efficiency.usage.processedInputTokens)} | ${String(variant.efficiency.usage.outputTokens)} | ${String(variant.efficiency.peakContextTokens)} | ${String(variant.efficiency.toolOutputBytes)} | ${String(variant.efficiency.usage.calls)} |`)
+    lines.push(`| ${variant.label} | ${variant.architecture} | ${gates} | ${String(variant.score.total)} | ${String(variant.score.briefAdherence)} | ${String(variant.score.acceptedContributions)} | ${String(variant.score.browserEvidence)} | ${String(variant.score.usageCompleteness)} | ${String(variant.efficiency.usage.processedInputTokens)} | ${String(variant.efficiency.usage.outputTokens)} | ${String(variant.efficiency.peakContextTokens)} | ${String(variant.efficiency.toolOutputBytes)} | ${String(variant.efficiency.usage.calls)} |`)
   }
   const deltas = report.comparison.deltas
   lines.push(

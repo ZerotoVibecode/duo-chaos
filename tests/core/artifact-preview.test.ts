@@ -92,4 +92,34 @@ describe('artifact preview target preparation', () => {
       resourceRoot: dirname(entryPath)
     })
   })
+
+  test('opens an allowlisted static-export output without starting a dev server', async () => {
+    const workspace = await temporaryDirectory('duo-preview-workspace-')
+    const app = join(workspace, 'app')
+    const entryPath = join(app, 'out', 'index.html')
+    await mkdir(dirname(entryPath), { recursive: true })
+    await writeFile(join(app, 'package.json'), JSON.stringify({ scripts: { dev: 'next dev', build: 'next build && next export' } }))
+    await writeFile(entryPath, '<!doctype html><h1>Exported</h1>')
+
+    await expect(prepareArtifactPreviewTarget(workspace, 'app')).resolves.toEqual({
+      status: 'ready',
+      entryPath,
+      resourceRoot: dirname(entryPath)
+    })
+  })
+
+  test('opens a nested allowlisted browser build output', async () => {
+    const workspace = await temporaryDirectory('duo-preview-workspace-')
+    const app = join(workspace, 'app')
+    const entryPath = join(app, 'dist', 'client', 'browser', 'index.html')
+    await mkdir(dirname(entryPath), { recursive: true })
+    await writeFile(join(app, 'package.json'), JSON.stringify({ scripts: { dev: 'ng serve', build: 'ng build' } }))
+    await writeFile(entryPath, '<!doctype html><h1>Nested build</h1>')
+
+    await expect(prepareArtifactPreviewTarget(workspace, 'app')).resolves.toEqual({
+      status: 'ready',
+      entryPath,
+      resourceRoot: dirname(entryPath)
+    })
+  })
 })

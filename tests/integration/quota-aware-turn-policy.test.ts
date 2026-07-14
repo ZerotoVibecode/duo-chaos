@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -7,6 +7,10 @@ import {
   RunOrchestrator,
   type ProcessRunnerPort
 } from '../../src/main/orchestrator/run-orchestrator'
+import {
+  SupervisorVerifier,
+  type SupervisorBrowserEvidencePort
+} from '../../src/main/orchestrator/supervisor-verifier'
 import type {
   ProcessRunOptions,
   ProcessRunResult
@@ -44,6 +48,75 @@ function result(exitCode = 0): ProcessRunResult {
   return { exitCode, signal: null, timedOut: false, cancelled: false, startedAt: now, finishedAt: now }
 }
 
+function quotaFixtureHtml(humanBrief: string): string {
+  const evidence = humanBrief.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+  return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Shared Signal</title></head><body><main><h1>Shared Signal</h1><p>${evidence}</p><p id="fixture-status" aria-live="polite">Interaction ready.</p><button type="button" data-fixture-interaction>Run interaction</button></main><script>document.querySelector('[data-fixture-interaction]').addEventListener('click',()=>{document.querySelector('#fixture-status').textContent='Interaction complete.'})</script></body></html>`
+}
+
+function qualityBriefFromPrompt(prompt: string): string {
+  return prompt.match(/^HUMAN BRIEF\r?\n([^\r\n]+)/mi)?.[1]?.trim() ?? 'Build a useful, runnable local interaction.'
+}
+
+function quotaDialogueCapsule(round: number, agent: 'claude' | 'codex', prompt: string) {
+  const humanBrief = qualityBriefFromPrompt(prompt)
+  const speech = (move: string) => ({
+    publicText: `I think the shared [FEATURE] needs a ${move} that stays bounded and directly testable.`,
+    privateText: `${agent} records the private ${move} for Shared Signal in round ${String(round)}.`
+  })
+  const consensus = round === 4
+    ? {
+        appName: 'Shared Signal',
+        idea: `${humanBrief} The selected result is a useful, responsive, accessible, runnable local interaction built together.`,
+        summary: `Shared Signal preserves the complete human brief: ${humanBrief}`,
+        spec: `${humanBrief} Build one bounded local interaction. Each agent owns, changes, verifies, and hands off a distinct source slice before release.`,
+        redactions: [{ value: 'Shared Signal', label: 'APP_NAME' }]
+      }
+    : null
+  return {
+    opening: speech('opening'),
+    counter: speech('counter'),
+    verdict: speech('verdict'),
+    opinion: { ...speech('opinion'), tone: 'collaborative' },
+    pitches: round <= 2
+      ? [
+          { title: 'Shared Signal', idea: `${humanBrief} Shared Signal implements the requested outcome.`, appeal: 'Small, useful, and directly testable.', risk: 'Requires disciplined source ownership.' },
+          { title: `${agent} Alternative`, idea: `${humanBrief} A second bounded implementation strategy.`, appeal: 'Provides a real tradeoff.', risk: 'May be less memorable.' }
+        ]
+      : [],
+    tasks: round === 4
+      ? [
+          {
+            id: 'claude-slice', publicTitle: 'First [FEATURE] slice', privateTitle: 'Claude source slice',
+            publicDescription: 'Implement and verify the first source-changing slice.', privateDescription: 'Claude owns one Shared Signal source slice.',
+            kind: 'implementation', impact: 'substantial',
+            expectedOutcome: 'Claude lands and verifies one independently attributable Shared Signal source slice.',
+            acceptanceChecks: ['The Claude source boundary exists and its direct verification passes.'],
+            risk: 'medium', claimedBy: 'claude', files: ['app/claude-*.txt']
+          },
+          {
+            id: 'codex-slice', publicTitle: 'Second [FEATURE] slice', privateTitle: 'Codex source slice',
+            publicDescription: 'Implement and verify the second source-changing slice.', privateDescription: 'Codex owns one Shared Signal source slice.',
+            kind: 'implementation', impact: 'substantial',
+            expectedOutcome: 'Codex lands and verifies one independently attributable Shared Signal source slice.',
+            acceptanceChecks: ['The Codex source boundary exists and its direct verification passes.'],
+            risk: 'medium', claimedBy: 'codex', files: ['app/codex-*.txt']
+          }
+        ]
+      : [],
+    consensus,
+    redactions: [{ value: 'Shared Signal', label: 'APP_NAME' }]
+  }
+}
+
+async function completeOwnedQuotaTask(workspacePath: string, agent: 'claude' | 'codex'): Promise<void> {
+  const boardPath = join(workspacePath, '.duo', 'board.json')
+  const board = JSON.parse(await readFile(boardPath, 'utf8')) as { tasks?: Array<Record<string, unknown>> }
+  board.tasks = (board.tasks ?? []).map((task) => task.claimedBy === agent || task.owner === agent
+    ? { ...task, status: 'done' }
+    : task)
+  await writeFile(boardPath, JSON.stringify(board), 'utf8')
+}
+
 class QuotaAwarePolicyRunner implements ProcessRunnerPort {
   readonly calls: Array<{
     agent: 'claude' | 'codex'
@@ -53,11 +126,15 @@ class QuotaAwarePolicyRunner implements ProcessRunnerPort {
     resumed: boolean
   }> = []
   private rejectedResume = false
+  private frozenHumanBrief = 'Build a useful, runnable local interaction.'
 
   async run(options: ProcessRunOptions): Promise<ProcessRunResult> {
     const agent = agentOf(options)
     const round = roundOf(options)
     const stage = stageOf(options)
+    const prompt = promptOf(options)
+    const explicitHumanBrief = prompt.match(/^HUMAN BRIEF\r?\n([^\r\n]+)/mi)?.[1]?.trim()
+    if (explicitHumanBrief) this.frozenHumanBrief = explicitHumanBrief
     const resumed = options.command.args.includes('--resume') || options.command.args.includes('resume')
     this.calls.push({ agent, round, stage, effort: effortOf(options), resumed })
 
@@ -68,7 +145,7 @@ class QuotaAwarePolicyRunner implements ProcessRunnerPort {
       }))
     }
 
-    if (stage === 'dialogue' || stage === 'opening' || stage === 'verdict' || stage === 'recovery') {
+    if (stage === 'opening' || stage === 'verdict' || stage === 'recovery') {
       options.onLine('stdout', JSON.stringify({
         id: `${agent}-${String(round)}-${stage}-dispatch-${String(this.calls.length)}`,
         type: 'agent.dispatch',
@@ -91,6 +168,30 @@ class QuotaAwarePolicyRunner implements ProcessRunnerPort {
       }))
     }
 
+    if (stage === 'dialogue') {
+      const capsule = quotaDialogueCapsule(round, agent, prompt)
+      options.onLine('stdout', agent === 'claude'
+        ? JSON.stringify({ type: 'result', subtype: 'success', structured_output: capsule })
+        : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(capsule) } }))
+    }
+
+    if (stage === 'work') {
+      const latestStatementId = prompt.match(/^LATEST .+ STATEMENT\r?\n([^:\r\n]+):/mi)?.[1]?.trim()
+      options.onLine('stdout', JSON.stringify({
+        id: `${agent}-${String(round)}-work-dispatch-${String(this.calls.length)}`,
+        type: 'agent.dispatch',
+        agent,
+        targetAgent: agent === 'claude' ? 'codex' : 'claude',
+        round,
+        dispatchKind: 'verdict',
+        claimKey: 'shared-work',
+        ...(latestStatementId ? { replyTo: latestStatementId } : {}),
+        publicText: 'I have a verified [FEATURE] source handoff for the shared build.',
+        privateText: `${agent} hands off the verified Shared Signal source slice.`,
+        spoilerRisk: 0.02
+      }))
+    }
+
     if (round === 5 && stage === 'work' && !this.rejectedResume) {
       this.rejectedResume = true
       options.onLine('stdout', JSON.stringify({
@@ -104,13 +205,21 @@ class QuotaAwarePolicyRunner implements ProcessRunnerPort {
       return result(1)
     }
 
-    if (stage === 'work') {
+    if (stage === 'work' && round <= 6) {
       await mkdir(join(options.command.cwd, 'app'), { recursive: true })
       const file = `${agent}-${String(round)}.txt`
       await writeFile(join(options.command.cwd, 'app', file), `${agent} durable source work\n`, 'utf8')
+      if (round === 5 || round === 6) await completeOwnedQuotaTask(options.command.cwd, agent)
+      if (round === 6) await writeFile(join(options.command.cwd, 'app', 'index.html'), quotaFixtureHtml(this.frozenHumanBrief), 'utf8')
       options.onLine('stdout', JSON.stringify({
         type: 'item.completed',
         item: { type: 'file_change', changes: [{ path: `app/${file}`, kind: 'update' }] }
+      }))
+    }
+    if (stage === 'work') {
+      options.onLine('stdout', JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'npm test', exit_code: 0 }
       }))
     }
 
@@ -128,6 +237,35 @@ const healthyAgents = () => Promise.resolve([
   { id: 'git' as const, label: 'Git', command: 'git', available: true, version: 'git 1', checkedAt: new Date().toISOString() }
 ])
 
+function fixtureSupervisorVerifier(): SupervisorVerifier {
+  const browserPort: SupervisorBrowserEvidencePort = {
+    capture: async ({ entryPath }) => {
+      const html = await readFile(entryPath, 'utf8')
+      const interactionSucceeded = /data-fixture-interaction/iu.test(html) &&
+        /addEventListener\s*\(\s*['"]click['"]/iu.test(html)
+      const viewport = (id: 'compact' | 'full', width: number, height: number, image: string) => ({
+        id,
+        width,
+        height,
+        screenshotCaptured: true,
+        imageDataUrl: `data:image/png;base64,${image}`,
+        visibleTextCharacters: 80,
+        mainLandmark: /<main(?:\s|>)/iu.test(html),
+        horizontalOverflow: false,
+        interactiveElementCount: 1,
+        accessibleInteractiveElementCount: 1,
+        interactionAttempted: true,
+        interactionSucceeded,
+        interactionObservedChanges: interactionSucceeded ? ['dom'] : [],
+        consoleErrors: [],
+        pageErrors: []
+      })
+      return { viewports: [viewport('compact', 900, 640, 'YQ=='), viewport('full', 1600, 900, 'Yg==')] }
+    }
+  }
+  return new SupervisorVerifier({ run: () => Promise.resolve(result()) }, browserPort)
+}
+
 describe('quota-aware turn policy', () => {
   it('caps creative dialogue below Max while preserving extra reasoning for final consensus', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-low-dialogue-'))
@@ -141,6 +279,7 @@ describe('quota-aware turn policy', () => {
       onSnapshot: () => undefined,
       testOnlyMinimumTurns: 2,
       processRunner: runner,
+      supervisorVerifier: fixtureSupervisorVerifier(),
       healthProvider: healthyAgents,
       protocolPollMs: 5
     })
@@ -214,6 +353,7 @@ describe('quota-aware turn policy', () => {
       }),
       onSnapshot: () => undefined,
       processRunner: runner,
+      supervisorVerifier: fixtureSupervisorVerifier(),
       healthProvider: healthyAgents,
       protocolPollMs: 5
     })

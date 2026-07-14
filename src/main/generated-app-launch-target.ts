@@ -1,4 +1,4 @@
-import { readFile, realpath, stat } from 'node:fs/promises'
+import { readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 
 function assertInsideWorkspace(workspacePath: string, target: string): void {
@@ -28,9 +28,32 @@ async function packageRequiresRunner(directory: string): Promise<boolean> {
   }
 }
 
+const BUILT_BROWSER_OUTPUTS = ['dist', 'build', 'out', '.output/public'] as const
+
+async function nestedBuiltIndex(directory: string, depth: number): Promise<string | undefined> {
+  if (depth > 3) return undefined
+  for (const filename of ['index.html', 'index.htm']) {
+    const candidate = await existingFile(join(directory, filename))
+    if (candidate) return candidate
+  }
+  let entries
+  try {
+    entries = await readdir(directory, { withFileTypes: true })
+  } catch {
+    return undefined
+  }
+  entries.sort((left, right) => left.name.localeCompare(right.name))
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+    const candidate = await nestedBuiltIndex(join(directory, entry.name), depth + 1)
+    if (candidate) return candidate
+  }
+  return undefined
+}
+
 async function builtIndex(directory: string): Promise<string | undefined> {
-  for (const output of ['dist', 'build']) {
-    const candidate = await existingFile(join(directory, output, 'index.html'))
+  for (const output of BUILT_BROWSER_OUTPUTS) {
+    const candidate = await nestedBuiltIndex(join(directory, output), 0)
     if (candidate) return candidate
   }
   return undefined

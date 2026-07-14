@@ -16,6 +16,14 @@
           "privateTitle": { "type": "string" },
           "publicDescription": { "type": "string" },
           "privateDescription": { "type": "string" },
+          "impact": { "enum": ["core", "substantial"] },
+          "expectedOutcome": { "type": "string", "minLength": 24, "maxLength": 600 },
+          "acceptanceChecks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": { "type": "string", "minLength": 12, "maxLength": 240 }
+          },
           "status": { "enum": ["open", "claimed", "in-progress", "review", "done", "blocked"] },
           "claimedBy": { "enum": ["claude", "codex", "director", "both", "none"] },
           "risk": { "enum": ["low", "medium", "high"] },

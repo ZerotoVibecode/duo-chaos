@@ -6,14 +6,69 @@ import {
   RunOrchestrator as BaseRunOrchestrator,
   type ProcessRunnerPort
 } from '../../src/main/orchestrator/run-orchestrator'
+import {
+  SupervisorVerifier,
+  type SupervisorBrowserEvidencePort
+} from '../../src/main/orchestrator/supervisor-verifier'
 import type { ProcessRunOptions, ProcessRunResult } from '../../src/main/process/process-runner'
 import { defaultSettings } from '../../src/main/settings/settings-store'
 import type { RunSnapshot } from '../../src/shared/types'
 
 class RunOrchestrator extends BaseRunOrchestrator {
   constructor(options: ConstructorParameters<typeof BaseRunOrchestrator>[0]) {
-    super({ ...options, testOnlyMinimumTurns: 2 })
+    super({
+      ...options,
+      supervisorVerifier: options.supervisorVerifier ?? fixtureSupervisorVerifier(),
+      testOnlyMinimumTurns: 2
+    })
   }
+}
+
+function fixtureSupervisorVerifier(): SupervisorVerifier {
+  const browserPort: SupervisorBrowserEvidencePort = {
+    capture: async ({ entryPath }) => {
+      const html = await readFile(entryPath, 'utf8')
+      const hasMain = /<main(?:\s|>)/iu.test(html)
+      const interactiveElementCount = (html.match(/<(?:button|input|select|textarea)(?:\s|>)/giu) ?? []).length
+      const accessibleInteractiveElementCount = (html.match(/<button\b[^>]*>[\s\S]*?<\/button>/giu) ?? [])
+        .filter((button) => />\s*[^<\s][\s\S]*<\/button>/u.test(button) || /\baria-label\s*=/iu.test(button))
+        .length
+      const interactionSucceeded = interactiveElementCount > 0 &&
+        /data-fixture-interaction/iu.test(html) &&
+        /addEventListener\s*\(\s*['"]click['"]/iu.test(html)
+      const viewport = (id: 'compact' | 'full', width: number, height: number, image: string) => ({
+        id,
+        width,
+        height,
+        screenshotCaptured: true,
+        imageDataUrl: `data:image/png;base64,${image}`,
+        visibleTextCharacters: 80,
+        mainLandmark: hasMain,
+        horizontalOverflow: false,
+        interactiveElementCount,
+        accessibleInteractiveElementCount,
+        interactionAttempted: interactiveElementCount > 0,
+        interactionSucceeded,
+        interactionObservedChanges: interactionSucceeded ? ['dom'] : [],
+        consoleErrors: [],
+        pageErrors: []
+      })
+      return {
+        viewports: [
+          viewport('compact', 900, 640, 'Y29tcGFjdA=='),
+          viewport('full', 1600, 900, 'ZnVsbA==')
+        ]
+      }
+    }
+  }
+  return new SupervisorVerifier({
+    run: () => Promise.resolve(fixtureProcessResult())
+  }, browserPort)
+}
+
+function fixtureProcessResult(exitCode = 0): ProcessRunResult {
+  const now = new Date().toISOString()
+  return { exitCode, signal: null, timedOut: false, cancelled: false, startedAt: now, finishedAt: now }
 }
 
 describe('simulation orchestration', () => {
@@ -139,10 +194,15 @@ describe('simulation orchestration', () => {
     expect(claudeCommand?.stdin).toContain('HUMAN BRIEF\nBuild a real hidden app with equal contributions.')
     expect(claudeCommand?.stdin).toContain('Use direct teammate language')
     expect(claudeCommand?.stdin).toContain('I think')
-    expect(claudeCommand?.stdin?.length).toBeLessThan(3_500)
+    expect(claudeCommand?.stdin?.length).toBeLessThan(6_500)
     expect(claudeCommand?.stdin).not.toMatch(/private\/raw|transcript\.jsonl|timeline\.jsonl/)
     expect(claudeCommand?.args).not.toContain(claudeCommand?.stdin)
     const finalPrompt = fakeRunner.commands.at(-1)?.stdin ?? fakeRunner.commands.at(-1)?.args.at(-1) ?? ''
+    expect(finalPrompt).toMatch(/sealed brief reference/i)
+    expect(finalPrompt).toMatch(/sealed quality baton/i)
+    expect(finalPrompt).toMatch(/\.duo\/sealed\/quality_brief\.json/i)
+    expect(finalPrompt).not.toMatch(/^HUMAN BRIEF$/mi)
+    expect(finalPrompt).not.toMatch(/QUALITY CONTRACT \(private; binding\)/i)
     expect(finalPrompt).toContain('The supervisor builds the reveal packet from verified evidence')
     expect(finalPrompt).not.toContain('FINAL REVEAL CONTRACT')
     const revealed = await orchestrator.reveal(result.runId)
@@ -397,11 +457,11 @@ describe('simulation orchestration', () => {
     const packet = revealed.revealPacket
     expect(packet?.knownIssues).toEqual(['The experience requires a modern browser with Canvas support.'])
     expect(orchestrator.getSnapshot(result.runId)?.releaseStatus).toBe('ready')
-    expect(packet?.appName).toBe('Seed Garden')
+    expect(packet?.appName).toBe('Signal Garden')
     expect(packet?.features.length).toBeGreaterThan(0)
     expect(packet?.features).toEqual(expect.arrayContaining([
-      'Claude added the twinkling starfield.',
-      'Codex added reset controls.'
+      'Build and verify the first source-changing slice.',
+      'Build and verify the second source-changing slice.'
     ]))
     expect(packet?.runCommand).toMatch(/app[\\/]index\.html/i)
     expect(packet?.appPath.replaceAll('\\', '/')).toMatch(/app\/index\.html$/i)
@@ -426,14 +486,35 @@ describe('simulation orchestration', () => {
     await orchestrator.waitForSettled(result.runId)
     const revealed = await orchestrator.reveal(result.runId)
 
-    expect(revealed.revealPacket?.appName).toBe('Seed Garden')
+    expect(revealed.revealPacket?.appName).toBe('Signal Garden')
     expect(revealed.revealPacket?.idea).not.toMatch(/turn limit|reveal packet/i)
     expect(revealed.revealPacket?.runCommand).toMatch(/app[\\/]index\.html/i)
     expect(revealed.revealPacket?.appPath.replaceAll('\\', '/')).toMatch(/app\/index\.html$/i)
     expect(revealed.revealPacket?.features).toEqual(expect.arrayContaining([
-      'Claude added the twinkling starfield.',
-      'Codex added reset controls.'
+      'Build and verify the first source-changing slice.',
+      'Build and verify the second source-changing slice.'
     ]))
+  })
+
+  it('replaces any workspace-folder app name with stronger artifact evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-orchestrator-workspace-name-reveal-'))
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: new WorkspaceNamedRevealProcessRunner(),
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+    const result = await orchestrator.start({
+      prompt: 'Recover the product name from the generated artifact.', workspaceRoot: root, executionMode: 'chaos', visibilityMode: 'spoiler-shield',
+      maxTurns: 8, maxRepairLoops: 1, turnTimeoutSeconds: 120, dangerousModeConfirmed: false, unsafeWorkspaceRootConfirmed: false
+    })
+    await orchestrator.waitForSettled(result.runId)
+    const revealed = await orchestrator.reveal(result.runId)
+
+    expect(revealed.revealPacket?.appName).toBe('Signal Garden')
+    expect(revealed.revealPacket?.appName).not.toBe(result.runId)
+    expect(revealed.revealPacket?.runCommand).toMatch(/app[\\/]index\.html/i)
   })
 
   it('certifies a runnable status-only packet only after independent supervisor proof', async () => {
@@ -475,7 +556,7 @@ describe('simulation orchestration', () => {
     expect(orchestrator.getSnapshot(result.runId)?.releaseStatus).toBe('ready')
   })
 
-  it('independently verifies the exact later app revision instead of trusting an older agent pass', async () => {
+  it('independently verifies the exact later app revision while keeping stale peer-review proof partial', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-orchestrator-stale-verification-'))
     const orchestrator = new RunOrchestrator({
       getSettings: () => Promise.resolve(defaultSettings(root)),
@@ -490,7 +571,50 @@ describe('simulation orchestration', () => {
     })
     await orchestrator.waitForSettled(result.runId)
 
-    expect(orchestrator.getSnapshot(result.runId)?.releaseStatus).toBe('ready')
+    const snapshot = orchestrator.getSnapshot(result.runId)
+    expect(snapshot?.releaseStatus).toBe('partial')
+    expect(snapshot?.status).toBe('paused')
+    expect(snapshot?.pause).toMatchObject({
+      reason: 'quality-repair',
+      resumable: true
+    })
+    expect(snapshot?.pause?.missingEvidence?.some((item) => /^(?:Claude|Codex) exact-current cross-review$/u.test(item))).toBe(true)
+    expect(snapshot?.events.some((event) => event.type === 'reveal.ready')).toBe(false)
+    expect(snapshot?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'build.passed', topic: 'supervisor-verification' })
+    ]))
+
+    const revealed = await orchestrator.revealPartial(result.runId)
+    expect(revealed).toMatchObject({ status: 'complete', phase: 'complete', releaseStatus: 'partial' })
+    expect(revealed.revealPacket?.status).toBe('partial')
+  })
+
+  it('resumes only the reserved quality-repair pair after a partial proof pause', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-orchestrator-quality-repair-resume-'))
+    const runner = new StaleVerificationRevealProcessRunner()
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+    const result = await orchestrator.start({
+      prompt: 'Preserve completed work and repair only missing release proof.', workspaceRoot: root, executionMode: 'chaos', visibilityMode: 'spoiler-shield',
+      maxTurns: 8, maxRepairLoops: 1, turnTimeoutSeconds: 120, dangerousModeConfirmed: false, unsafeWorkspaceRootConfirmed: false
+    })
+    await orchestrator.waitForSettled(result.runId)
+    expect(orchestrator.getSnapshot(result.runId)?.pause?.reason).toBe('quality-repair')
+    const completedCommandCount = runner.commands.length
+
+    await orchestrator.resume(result.runId)
+    await orchestrator.waitForSettled(result.runId)
+
+    const resumedPrompts = runner.commands.slice(completedCommandCount)
+      .map((command) => command.stdin ?? command.args.at(-1) ?? '')
+    expect(resumedPrompts).not.toHaveLength(0)
+    expect(resumedPrompts.every((prompt) => Number(prompt.match(/Round:\s*(\d+)/)?.[1] ?? 0) >= 8)).toBe(true)
+    expect(resumedPrompts.join('\n')).toMatch(/Reserved quality repair|Review .*reserved repair/i)
   })
 })
 
@@ -504,62 +628,163 @@ function healthRows() {
   ]
 }
 
+function escapeFixtureHtml(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+}
+
+function qualityBackedFixtureHtml(title: string, humanBrief: string): string {
+  const evidence = /^(?:do not|don't|never|without)\b/iu.test(humanBrief)
+    ? 'Independent supervisor proof is required before readiness.'
+    : humanBrief
+  return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeFixtureHtml(title)}</title></head><body><main><h1>${escapeFixtureHtml(title)}</h1><p>${escapeFixtureHtml(evidence)}</p><p id="fixture-status" aria-live="polite">Interaction ready.</p><button type="button" data-fixture-interaction>Run interaction</button></main><script>document.querySelector('[data-fixture-interaction]').addEventListener('click',()=>{document.querySelector('#fixture-status').textContent='Interaction complete.'})</script></body></html>`
+}
+
+function humanBriefFromPrompt(prompt: string): string {
+  return prompt.match(/^HUMAN BRIEF\r?\n([^\r\n]+)/mi)?.[1]?.trim() ?? 'Build a useful, runnable local interaction.'
+}
+
+function fakeDialogueCapsule(round: number, agent: 'claude' | 'codex', prompt: string) {
+  const humanBrief = humanBriefFromPrompt(prompt)
+  const consensusBrief = /^(?:do not|don't|never|without)\b/iu.test(humanBrief)
+    ? 'Respect every recorded prohibition in the human brief and require independent proof before readiness.'
+    : humanBrief
+  const speech = (move: string) => ({
+    publicText: `I think the shared [FEATURE] needs a concrete ${move} because the product must stay useful and testable.`,
+    privateText: `${agent} records a private ${move} for Signal Garden in round ${String(round)}.`
+  })
+  const pitches = round <= 2
+    ? [
+        {
+          title: 'Signal Garden',
+          idea: `${humanBrief} Signal Garden answers that brief with a compact local interaction.`,
+          appeal: 'A distinctive payoff inside a bounded, runnable scope.',
+          risk: 'The interaction still needs direct verification.'
+        },
+        {
+          title: `${agent === 'claude' ? 'Lumen' : 'Pulse'} Workshop`,
+          idea: `${humanBrief} This alternative keeps the same requested outcome with a different interaction.`,
+          appeal: 'A second buildable direction for a real comparison.',
+          risk: 'It may be less memorable than the shared candidate.'
+        }
+      ]
+    : []
+  const consensus = round === 4
+    ? {
+        appName: 'Signal Garden',
+        idea: `${consensusBrief} The selected product is a private, surprising, runnable local interaction built together by both agents.`,
+        summary: `Signal Garden preserves the complete binding quality contract: ${consensusBrief}`,
+        spec: `${consensusBrief} Build one useful, responsive, accessible, runnable local interaction. Claude and Codex each complete a distinct source-changing slice, verify it directly, and leave a reply-linked handoff.`,
+        redactions: [{ value: 'Signal Garden', label: 'APP_NAME' }]
+      }
+    : null
+  return {
+    opening: speech('opening'),
+    counter: speech('counter'),
+    verdict: speech('verdict'),
+    opinion: { ...speech('opinion'), tone: 'collaborative' },
+    tasks: round === 4
+      ? [
+          {
+            id: 'claude-slice', publicTitle: 'First [FEATURE] slice', privateTitle: 'Claude source slice',
+            publicDescription: 'Build and verify the first source-changing slice.', privateDescription: 'Claude owns a substantive Signal Garden implementation slice.',
+            kind: 'implementation', impact: 'core',
+            expectedOutcome: 'Claude delivers a runnable first interaction slice with direct verification evidence.',
+            acceptanceChecks: ['The Claude source slice exists and passes the fixture verification.'],
+            risk: 'medium', claimedBy: 'claude', files: ['app/claude-slice.txt', 'app/index.html']
+          },
+          {
+            id: 'codex-slice', publicTitle: 'Second [FEATURE] slice', privateTitle: 'Codex source slice',
+            publicDescription: 'Build and verify the second source-changing slice.', privateDescription: 'Codex owns a substantive Signal Garden implementation slice.',
+            kind: 'implementation', impact: 'core',
+            expectedOutcome: 'Codex delivers a runnable second interaction slice with direct verification evidence.',
+            acceptanceChecks: ['The Codex source slice exists and passes the fixture verification.'],
+            risk: 'medium', claimedBy: 'codex', files: ['app/codex-slice.txt', 'app/index.html']
+          }
+        ]
+      : [],
+    pitches,
+    consensus,
+    redactions: [{ value: 'Signal Garden', label: 'APP_NAME' }]
+  }
+}
+
+async function markOwnedFixtureTaskDone(workspacePath: string, agent: 'claude' | 'codex'): Promise<void> {
+  const boardPath = join(workspacePath, '.duo', 'board.json')
+  const board = JSON.parse(await readFile(boardPath, 'utf8')) as { tasks?: Array<Record<string, unknown>> }
+  board.tasks = (board.tasks ?? []).map((task) => task.claimedBy === agent || task.owner === agent
+    ? { ...task, status: 'done' }
+    : task)
+  await writeFile(boardPath, JSON.stringify(board), 'utf8')
+}
+
 class FakeProcessRunner implements ProcessRunnerPort {
   turns = 0
   commands: ProcessRunOptions['command'][] = []
   protected emitVerificationEvidence = true
+  protected frozenHumanBrief = 'Build a useful, runnable local interaction.'
 
   async run(options: ProcessRunOptions): Promise<ProcessRunResult> {
     this.turns += 1
     this.commands.push(options.command)
     const agent = options.id.includes('claude') ? 'claude' : 'codex'
     const prompt = options.command.stdin ?? options.command.args.at(-1) ?? ''
+    const explicitHumanBrief = prompt.match(/^HUMAN BRIEF\r?\n([^\r\n]+)/mi)?.[1]?.trim()
+    if (explicitHumanBrief) this.frozenHumanBrief = explicitHumanBrief
     const round = Number(prompt.match(/Round:\s*(\d+)/)?.[1] ?? this.turns)
     const stage = prompt.match(/^Stage:\s*(\S+)/mi)?.[1]?.toLowerCase()
     const latestStatementId = prompt.match(/^LATEST .+ STATEMENT\r?\n([^:\r\n]+):/mi)?.[1]?.trim()
-    options.onLine(
-      'stdout',
-      JSON.stringify({
-        id: `fake-dispatch-${agent}-${String(round)}-${String(this.turns)}`,
-        type: 'agent.dispatch',
-        agent,
-        targetAgent: agent === 'claude' ? 'codex' : 'claude',
-        round,
-        dispatchKind: 'opening',
-        claimKey: `round-${String(round)}`,
-        ...(latestStatementId ? { replyTo: latestStatementId } : {}),
-        publicText: `${agent === 'claude' ? 'Claude' : 'Codex'} says I think the current [FEATURE] needs one direct improvement.`,
-        spoilerRisk: 0.02
-      })
-    )
-    options.onLine(
-      'stdout',
-      JSON.stringify({
-        id: `fake-opinion-${agent}-${String(round)}-${String(this.turns)}`,
-        type: 'opinion',
-        agent,
-        targetAgent: agent === 'claude' ? 'codex' : 'claude',
-        tone: this.turns % 2 === 0 ? 'skeptical' : 'confident',
-        publicText: `${agent === 'claude' ? 'Claude' : 'Codex'} challenges the current [FEATURE] tradeoff.`,
-        privateText: 'The private Signal Garden interaction needs another pass.',
-        spoilerRisk: 'low',
-        confidence: 0.8,
-        timestamp: new Date().toISOString()
-      })
-    )
+    if (stage === 'dialogue') {
+      const capsule = fakeDialogueCapsule(round, agent, prompt)
+      options.onLine('stdout', agent === 'claude'
+        ? JSON.stringify({ type: 'result', subtype: 'success', structured_output: capsule })
+        : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(capsule) } }))
+    }
+    if (stage !== 'dialogue') {
+      options.onLine(
+        'stdout',
+        JSON.stringify({
+          id: `fake-dispatch-${agent}-${String(round)}-${String(this.turns)}`,
+          type: 'agent.dispatch',
+          agent,
+          targetAgent: agent === 'claude' ? 'codex' : 'claude',
+          round,
+          dispatchKind: 'verdict',
+          claimKey: `round-${String(round)}`,
+          ...(latestStatementId ? { replyTo: latestStatementId } : {}),
+          publicText: `${agent === 'claude' ? 'Claude' : 'Codex'} says I think the current [FEATURE] needs one direct improvement.`,
+          spoilerRisk: 0.02
+        })
+      )
+      options.onLine(
+        'stdout',
+        JSON.stringify({
+          id: `fake-opinion-${agent}-${String(round)}-${String(this.turns)}`,
+          type: 'opinion',
+          agent,
+          targetAgent: agent === 'claude' ? 'codex' : 'claude',
+          tone: this.turns % 2 === 0 ? 'skeptical' : 'confident',
+          publicText: `${agent === 'claude' ? 'Claude' : 'Codex'} challenges the current [FEATURE] tradeoff.`,
+          privateText: 'The private Signal Garden interaction needs another pass.',
+          spoilerRisk: 'low',
+          confidence: 0.8,
+          timestamp: new Date().toISOString()
+        })
+      )
+    }
     if (/Turn:\s*code/i.test(prompt) && stage === 'work') {
       await mkdir(join(options.command.cwd, 'app'), { recursive: true })
       await writeFile(join(options.command.cwd, 'app', `${agent}-slice.txt`), `${agent} source contribution\n`, 'utf8')
+      await markOwnedFixtureTaskDone(options.command.cwd, agent)
       options.onLine('stdout', JSON.stringify({
         type: 'item.completed',
         item: { type: 'file_change', changes: [{ path: `app/${agent}-slice.txt`, kind: 'update' }] }
       }))
+      options.onLine('stdout', JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'npm test', exit_code: 0 }
+      }))
       if (round === 6) {
-        await writeFile(join(options.command.cwd, 'app', 'index.html'), '<!doctype html><title>Signal Garden</title>', 'utf8')
-        await writeFile(join(options.command.cwd, '.duo', 'board.json'), JSON.stringify({ tasks: [
-          { id: 'claude-slice', publicTitle: 'Claude source slice', status: 'done', claimedBy: 'claude', risk: 'medium', files: ['app/claude-slice.txt'] },
-          { id: 'codex-slice', publicTitle: 'Codex source slice', status: 'done', claimedBy: 'codex', risk: 'medium', files: ['app/codex-slice.txt'] }
-        ] }), 'utf8')
+        await writeFile(join(options.command.cwd, 'app', 'index.html'), qualityBackedFixtureHtml('Signal Garden', this.frozenHumanBrief), 'utf8')
         options.onLine('stdout', JSON.stringify({
           type: 'item.completed',
           item: { type: 'command_execution', command: 'npm test', exit_code: 0 }
@@ -582,7 +807,7 @@ class FakeProcessRunner implements ProcessRunnerPort {
     }
     if (stage === 'work' && /FINAL REVEAL CONTRACT/i.test(prompt)) {
       await mkdir(join(options.command.cwd, 'app'), { recursive: true })
-      await writeFile(join(options.command.cwd, 'app', 'index.html'), '<!doctype html><title>Signal Garden</title>', 'utf8')
+      await writeFile(join(options.command.cwd, 'app', 'index.html'), qualityBackedFixtureHtml('Signal Garden', this.frozenHumanBrief), 'utf8')
       await mkdir(join(options.command.cwd, '.duo', 'sealed'), { recursive: true })
       await writeFile(
         join(options.command.cwd, '.duo', 'sealed', 'reveal_packet.json'),
@@ -627,20 +852,18 @@ class AlternateRevealProcessRunner extends FakeProcessRunner {
     if (round !== 7 || stage !== 'work') return result
 
     await mkdir(join(options.command.cwd, 'app'), { recursive: true })
-    await writeFile(join(options.command.cwd, 'app', 'index.html'), '<!doctype html><title>Seed Garden</title><h1>Seed Garden</h1>', 'utf8')
+    await writeFile(join(options.command.cwd, 'app', 'index.html'), qualityBackedFixtureHtml('Signal Garden', this.frozenHumanBrief), 'utf8')
     await writeFile(join(options.command.cwd, '.duo', 'sealed', 'r4-spec.json'), JSON.stringify({
       round: 4,
-      selection: 'Seed Garden',
+      selection: 'Signal Garden',
       spec: [
         'One directly openable HTML file with no dependencies.',
         'Pointer input creates luminous orbiting seeds.',
         'A subtle starfield and explicit reset interaction complete the scene.'
       ]
     }), 'utf8')
-    await writeFile(join(options.command.cwd, '.duo', 'board.json'), JSON.stringify({ tasks: [
-      { id: 'claude-atmosphere', owner: 'claude', status: 'done', sourceScope: 'app/index.html', summary: 'Claude added the twinkling starfield.' },
-      { id: 'codex-controls', owner: 'codex', status: 'done', sourceScope: 'app/index.html', summary: 'Codex added reset controls.' }
-    ] }), 'utf8')
+    await markOwnedFixtureTaskDone(options.command.cwd, 'claude')
+    await markOwnedFixtureTaskDone(options.command.cwd, 'codex')
     await writeFile(join(options.command.cwd, '.duo', 'sealed', 'reveal_packet.json'), JSON.stringify({
       status: 'ready',
       summary: 'A small, self-contained interactive canvas scene is ready to open directly in a browser.',
@@ -693,6 +916,31 @@ class LegacyFallbackRevealProcessRunner extends AlternateRevealProcessRunner {
   }
 }
 
+class WorkspaceNamedRevealProcessRunner extends AlternateRevealProcessRunner {
+  override async run(options: ProcessRunOptions): Promise<ProcessRunResult> {
+    const result = await super.run(options)
+    const prompt = options.command.stdin ?? options.command.args.at(-1) ?? ''
+    const round = Number(prompt.match(/Round:\s*(\d+)/)?.[1] ?? 0)
+    const stage = prompt.match(/^Stage:\s*(\S+)/mi)?.[1]?.toLowerCase()
+    if (round !== 7 || stage !== 'work') return result
+    await writeFile(join(options.command.cwd, '.duo', 'sealed', 'reveal_packet.json'), JSON.stringify({
+      appName: options.command.cwd.split(/[\\/]/).at(-1),
+      idea: 'Release metadata needs one final normalization pass.',
+      summary: 'A partial generated workspace is ready for inspection.',
+      features: [],
+      runCommand: 'Open the generated workspace for inspection.',
+      appPath: join(options.command.cwd, 'app'),
+      status: 'partial',
+      whatWorked: [],
+      knownIssues: ['Release metadata was incomplete.'],
+      agentDramaSummary: [],
+      gitCheckpoints: [],
+      agentQuotes: { claude: '', codex: '' }
+    }), 'utf8')
+    return result
+  }
+}
+
 class StatusOnlyRevealProcessRunner extends FakeProcessRunner {
   protected override emitVerificationEvidence = false
 
@@ -702,13 +950,14 @@ class StatusOnlyRevealProcessRunner extends FakeProcessRunner {
     const round = Number(prompt.match(/Round:\s*(\d+)/)?.[1] ?? 0)
     const stage = prompt.match(/^Stage:\s*(\S+)/mi)?.[1]?.toLowerCase()
     if (stage === 'work' && /Turn:\s*(?:review|verify|repair)/i.test(prompt)) {
-      await writeFile(join(options.command.cwd, 'app', `claim-only-${String(round)}.txt`), 'source changed without recorded verification\n', 'utf8')
+      options.onLine('stdout', JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'npm test', exit_code: 0 }
+      }))
     }
     if (round === 7 && stage === 'work') {
-      await writeFile(join(options.command.cwd, '.duo', 'board.json'), JSON.stringify({ tasks: [
-        { id: 'claude-done', owner: 'claude', status: 'done', summary: 'Claude finished a source slice.' },
-        { id: 'codex-done', owner: 'codex', status: 'done', summary: 'Codex finished a source slice.' }
-      ] }), 'utf8')
+      await markOwnedFixtureTaskDone(options.command.cwd, 'claude')
+      await markOwnedFixtureTaskDone(options.command.cwd, 'codex')
       await writeFile(join(options.command.cwd, '.duo', 'sealed', 'reveal_packet.json'), JSON.stringify({
         status: 'ready',
         checks: ['The agent claims the page works.'],
@@ -749,6 +998,13 @@ class StaleVerificationRevealProcessRunner extends StatusOnlyRevealProcessRunner
       options.onLine('stdout', JSON.stringify({
         type: 'item.completed',
         item: { type: 'command_execution', command: 'npm test', exit_code: 0 }
+      }))
+    }
+    if (round === 7 && stage === 'work') {
+      await writeFile(join(options.command.cwd, 'app', 'post-review-change.txt'), 'source changed after the recorded review verification\n', 'utf8')
+      options.onLine('stdout', JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'file_change', changes: [{ path: 'app/post-review-change.txt', kind: 'update' }] }
       }))
     }
     return result
@@ -801,11 +1057,9 @@ class EarlyReadyProcessRunner extends FakeProcessRunner {
     const stage = prompt.match(/^Stage:\s*(\S+)/mi)?.[1]?.toLowerCase()
     if (round === 6 && stage === 'work') {
       await mkdir(join(options.command.cwd, 'app'), { recursive: true })
-      await writeFile(join(options.command.cwd, 'app', 'index.html'), '<!doctype html><title>Signal Garden</title>', 'utf8')
-      await writeFile(join(options.command.cwd, '.duo', 'board.json'), JSON.stringify({ tasks: [
-        { id: 'claude-code', publicTitle: 'Claude build contribution', status: 'done', claimedBy: 'claude', risk: 'medium', files: ['app/claude.txt'] },
-        { id: 'codex-code', publicTitle: 'Codex build contribution', status: 'done', claimedBy: 'codex', risk: 'medium', files: ['app/codex.txt'] }
-      ] }), 'utf8')
+      await writeFile(join(options.command.cwd, 'app', 'index.html'), qualityBackedFixtureHtml('Signal Garden', this.frozenHumanBrief), 'utf8')
+      await markOwnedFixtureTaskDone(options.command.cwd, 'claude')
+      await markOwnedFixtureTaskDone(options.command.cwd, 'codex')
       await mkdir(join(options.command.cwd, '.duo', 'sealed'), { recursive: true })
       await writeFile(join(options.command.cwd, '.duo', 'sealed', 'reveal_packet.json'), JSON.stringify({
         appName: 'Signal Garden', idea: 'Private idea', summary: 'Ready early.', features: ['Feature'],

@@ -42,10 +42,13 @@ interface StudioState {
   stopRun: () => Promise<void>
   resumeRun: (runId?: string) => Promise<void>
   revealRun: () => Promise<void>
+  revealPartialRun: () => Promise<void>
   refreshHealth: () => Promise<void>
   saveSettings: (settings: AppSettings, options?: { syncLaunchDefaults?: boolean }) => Promise<void>
   openAgentCli: (agent: 'codex' | 'claude') => Promise<void>
+  openArchivedRun: (runId: string) => Promise<void>
   openRunFolder: (runId?: string) => Promise<void>
+  openGeneratedApp: (runId?: string) => Promise<void>
   setSettingsOpen: (open: boolean) => void
   setLogsOpen: (open: boolean) => void
   setSoundEnabled: (enabled: boolean) => void
@@ -104,6 +107,7 @@ function summaryFromSnapshot(run: RunSnapshot): RecentBuildSummary {
     workspaceRoot,
     ...(run.status === 'complete' && run.revealPacket?.appName ? { appName: run.revealPacket.appName } : {}),
     ...(run.releaseStatus ? { releaseStatus: run.releaseStatus } : {}),
+    ...(run.pause?.reason ? { pauseReason: run.pause.reason } : {}),
     sealed: run.status !== 'complete',
     recoverable: run.status === 'cancelled' || run.status === 'failed' || run.status === 'running' || run.status === 'paused',
     resumable: run.status === 'paused',
@@ -215,7 +219,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         claudeCustomizationProfile: settings.claudeCustomizationProfile,
         trustedLocalCapabilitiesConfirmed: settings.trustedLocalCapabilitiesConfirmed,
         qualityRoutingProfile: settings.qualityRoutingProfile,
-        claudeWorkInferenceLimit: settings.claudeWorkInferenceLimit,
+        workInferenceLimit: settings.workInferenceLimit,
         codexModel: settings.codexModel,
         codexEffort: settings.codexEffort,
         claudeModel: settings.claudeModel,
@@ -257,6 +261,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     set({ busy: true })
     try {
       set({ run: await window.duo.revealRun(run.runId), busy: false })
+    } catch (error) {
+      set({ busy: false, error: messageOf(error) })
+    }
+  },
+
+  revealPartialRun: async () => {
+    const run = get().run
+    if (!run) return
+    set({ busy: true, error: undefined })
+    try {
+      if (!window.duo.revealPartialRun) throw new Error('This app build cannot reveal a preserved partial artifact.')
+      set({ run: await window.duo.revealPartialRun(run.runId), busy: false })
     } catch (error) {
       set({ busy: false, error: messageOf(error) })
     }
@@ -313,11 +329,31 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
   },
 
+  openArchivedRun: async (runId) => {
+    set({ busy: true, error: undefined })
+    try {
+      const snapshot = await window.duo.openArchivedRun(runId)
+      get().applySnapshot(snapshot)
+    } catch (error) {
+      set({ busy: false, error: messageOf(error) })
+    }
+  },
+
   openRunFolder: async (runId) => {
     const targetRunId = runId ?? get().run?.runId
     if (!targetRunId) return
     try {
       await window.duo.openRunFolder(targetRunId)
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  openGeneratedApp: async (runId) => {
+    const targetRunId = runId ?? get().run?.runId
+    if (!targetRunId) return
+    try {
+      await window.duo.openGeneratedApp(targetRunId)
     } catch (error) {
       set({ error: messageOf(error) })
     }

@@ -50,6 +50,8 @@ function api(run = pausedRun()): DuoElectronApi {
     stopRun: vi.fn().mockResolvedValue({ ...run, phase: 'cancelled', status: 'cancelled' }),
     resumeRun: vi.fn().mockResolvedValue({ ...run, phase: 'round.critique', status: 'running', pause: undefined }),
     revealRun: vi.fn(),
+    revealPartialRun: vi.fn().mockResolvedValue({ ...run, phase: 'complete', status: 'complete', pause: undefined }),
+    openArchivedRun: vi.fn().mockResolvedValue(run),
     openRunFolder: vi.fn().mockResolvedValue(undefined),
     openGeneratedApp: vi.fn().mockResolvedValue(undefined),
     getArtifactPreview: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'no-built-artifact', message: 'No artifact.' }),
@@ -103,6 +105,7 @@ describe('paused battle presentation and recovery', () => {
     render(<App />)
 
     const panel = await screen.findByRole('region', { name: /battle suspended/i })
+    expect(document.querySelector('.run-shell')).toHaveClass('run-shell-paused')
     expect(document.querySelector('.status-chip')).toHaveTextContent(/^Paused$/i)
     expect(within(panel).getByRole('heading', { name: /battle suspended/i })).toBeVisible()
     expect(panel).toHaveTextContent(/Claude quota reached/i)
@@ -127,6 +130,64 @@ describe('paused battle presentation and recovery', () => {
 
     vi.advanceTimersByTime(30 * 60_000)
     expect(within(elapsedMetric as HTMLElement).getByText('02:03')).toBeVisible()
+  })
+
+  it('describes an internal model-step boundary without implying the full work lease expired', async () => {
+    const run = pausedRun()
+    run.pause = {
+      ...run.pause!,
+      reason: 'stage-timeout',
+      resetAt: undefined,
+      message: 'Claude reached the bounded reasoning capsule before trusted work evidence landed.',
+      action: 'Resume starts a fresh bounded capsule for the same preserved turn.'
+    }
+    run.turnStage = {
+      turnId: 'turn-08-claude-repair',
+      agent: 'claude',
+      kind: 'repair',
+      stage: 'work',
+      status: 'paused',
+      startedAt: '2026-07-11T09:00:00.000Z',
+      deadlineAt: '2026-07-11T11:00:00.000Z',
+      attempt: 1,
+      inferenceSteps: 9,
+      inferenceLimit: 8,
+      continuationCount: 1
+    }
+    window.duo = api(run)
+    render(<App />)
+
+    const panel = await screen.findByRole('region', { name: /battle suspended/i })
+    expect(panel).toHaveTextContent(/work paused at a safe model-step boundary/i)
+    expect(panel).not.toHaveTextContent(/work lease expired/i)
+  })
+
+  it('keeps generic stage-timeout copy for non-Claude-capsule pauses', async () => {
+    const run = pausedRun()
+    run.pause = {
+      ...run.pause!,
+      reason: 'stage-timeout',
+      provider: 'codex',
+      resetAt: undefined,
+      message: 'Codex reached the current stage time boundary.',
+      action: 'Resume retries the same preserved stage.'
+    }
+    run.turnStage = {
+      turnId: 'turn-09-codex-verify',
+      agent: 'codex',
+      kind: 'verify',
+      stage: 'work',
+      status: 'paused',
+      startedAt: '2026-07-11T09:00:00.000Z',
+      deadlineAt: '2026-07-11T11:00:00.000Z',
+      attempt: 1
+    }
+    window.duo = api(run)
+    render(<App />)
+
+    const panel = await screen.findByRole('region', { name: /battle suspended/i })
+    expect(panel).toHaveTextContent(/agent stage reached its time boundary/i)
+    expect(panel).not.toHaveTextContent(/model-step boundary/i)
   })
 
   it('resumes the same run and opens its preserved workspace', async () => {
@@ -156,6 +217,47 @@ describe('paused battle presentation and recovery', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Provider allowance has not reset yet.')
     expect(screen.getByRole('region', { name: /battle suspended/i })).toBeVisible()
+  })
+
+  it('keeps a repairable partial sealed and requires explicit confirmation before revealing it', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const run = pausedRun()
+    run.releaseStatus = 'partial'
+    run.pause = {
+      reason: 'quality-repair',
+      message: 'The artifact is preserved, but release proof is incomplete.',
+      pausedAt: '2026-07-11T09:02:03.000Z',
+      resumable: true,
+      round: 7,
+      stage: 'work',
+      action: 'Resume reserved quality repair, or explicitly reveal the partial artifact.',
+      missingEvidence: [
+        'Independent verification',
+        'Claude reply-linked cross-review'
+      ]
+    }
+    const bridge = api(run)
+    window.duo = bridge
+    render(<App />)
+
+    const panel = await screen.findByRole('region', { name: /battle suspended/i })
+    expect(panel).toHaveTextContent(/quality repair is ready/i)
+    expect(panel).toHaveTextContent('Independent verification')
+    expect(panel).toHaveTextContent('Claude reply-linked cross-review')
+    const partialTrigger = within(panel).getByRole('button', { name: /reveal partial anyway/i })
+    await user.click(partialTrigger)
+
+    let confirmation = screen.getByRole('alertdialog', { name: /reveal this partial build/i })
+    expect(bridge.revealPartialRun).not.toHaveBeenCalled()
+    expect(within(confirmation).getByRole('button', { name: /keep it sealed/i })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('alertdialog', { name: /reveal this partial build/i })).not.toBeInTheDocument()
+    expect(partialTrigger).toHaveFocus()
+
+    await user.click(partialTrigger)
+    confirmation = screen.getByRole('alertdialog', { name: /reveal this partial build/i })
+    await user.click(within(confirmation).getByRole('button', { name: /reveal preserved partial/i }))
+    await waitFor(() => expect(bridge.revealPartialRun).toHaveBeenCalledWith(run.runId))
   })
 
   it('labels resumable paused archives as Resume battle without rewriting failed runs', async () => {

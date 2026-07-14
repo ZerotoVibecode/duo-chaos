@@ -46,9 +46,15 @@ const capsule = {
       publicDescription: 'Implement the primary interaction and accessible alternate input.',
       privateDescription: 'Implement drag placement and keyboard orbit selection.',
       kind: 'implementation',
+      impact: 'core',
+      expectedOutcome: 'A complete pointer and keyboard interaction that reaches the same deterministic completion state.',
+      acceptanceChecks: [
+        'Pointer input reaches the completed interaction state.',
+        'Keyboard input reaches the same completed interaction state.'
+      ],
       risk: 'medium',
       claimedBy: 'claude',
-      files: []
+      files: ['app/src/**', 'app/tests/**']
     }
   ],
   pitches: [],
@@ -63,7 +69,11 @@ describe('dialogue capsule contract', () => {
       required: ['opening', 'counter', 'verdict', 'opinion', 'tasks', 'pitches', 'consensus', 'redactions']
     })
     const taskItems = DIALOGUE_CAPSULE_JSON_SCHEMA.properties.tasks.items
-    expect(taskItems.required).toContain('files')
+    expect(taskItems.required).toEqual(expect.arrayContaining([
+      'impact', 'expectedOutcome', 'acceptanceChecks', 'risk', 'files'
+    ]))
+    expect(taskItems.properties.acceptanceChecks).toMatchObject({ minItems: 1, maxItems: 4 })
+    expect(taskItems.properties.files).toMatchObject({ minItems: 1 })
     expect(DIALOGUE_CAPSULE_JSON_SCHEMA.$defs.speech.properties.publicText.maxLength).toBeGreaterThan(180)
     expect(DIALOGUE_CAPSULE_JSON_SCHEMA.properties.opinion.properties.publicText.maxLength).toBe(
       DIALOGUE_CAPSULE_JSON_SCHEMA.$defs.speech.properties.publicText.maxLength
@@ -223,6 +233,67 @@ describe('dialogue capsule contract', () => {
       kind: 'critique',
       phase: 'round.consensus'
     }).tasks.map((task) => task.claimedBy)).toEqual(['claude', 'codex'])
+  })
+
+  it('rejects a trivial task paired with a core task but accepts similarly material source contracts', () => {
+    const consensus = {
+      ...capsule,
+      pitches: [],
+      consensus: {
+        appName: 'Orbit Garden', idea: 'A spatial seed ritual.', summary: 'A small tactile app.',
+        spec: 'Implement and verify the complete interaction.',
+        redactions: [{ value: 'Orbit Garden', label: 'APP_NAME' }]
+      },
+      redactions: [...capsule.redactions, { value: 'Orbit Garden', label: 'APP_NAME' }]
+    }
+    const trivialPair = {
+      ...consensus,
+      tasks: [
+        { ...capsule.tasks[0], id: 'core-loop', claimedBy: 'claude' },
+        {
+          ...capsule.tasks[0],
+          id: 'tiny-copy',
+          claimedBy: 'codex',
+          kind: 'design',
+          impact: 'substantial',
+          risk: 'low',
+          privateTitle: 'Tiny copy-only tweak',
+          privateDescription: 'Change one optional label after the core experience is complete.',
+          expectedOutcome: 'One optional label is adjusted without changing product behavior.',
+          acceptanceChecks: ['The optional label uses the revised wording.'],
+          files: ['app/src/copy.ts']
+        }
+      ]
+    }
+    expect(() => validateDialogueCapsuleForTurn(parseDialogueCapsule(trivialPair), {
+      kind: 'consensus',
+      phase: 'round.consensus'
+    })).toThrow(/material|substantive|imbalanc|trivial/i)
+
+    const materialPair = {
+      ...consensus,
+      tasks: [
+        { ...capsule.tasks[0], id: 'core-loop', claimedBy: 'claude' },
+        {
+          ...capsule.tasks[0],
+          id: 'accessible-state',
+          claimedBy: 'codex',
+          impact: 'core',
+          privateTitle: 'Build accessible state and recovery behavior',
+          privateDescription: 'Implement focus-safe keyboard state, reset behavior, and automated interaction coverage.',
+          expectedOutcome: 'Keyboard and pointer users can finish, reset, and replay the complete interaction without losing state.',
+          acceptanceChecks: [
+            'Keyboard-only completion and reset pass automated coverage.',
+            'Focus remains visible and stable after every state transition.'
+          ],
+          files: ['app/src/accessibility/**', 'app/tests/accessibility/**']
+        }
+      ]
+    }
+    expect(() => validateDialogueCapsuleForTurn(parseDialogueCapsule(materialPair), {
+      kind: 'consensus',
+      phase: 'round.consensus'
+    })).not.toThrow()
   })
 
   it('honors ownership named in task copy and rejects a semantically impossible split', () => {
@@ -537,9 +608,15 @@ describe('dialogue capsule contract', () => {
           publicDescription: 'Complete motion, copy, and verification for the shared interaction.',
           privateDescription: 'Polish the garden motion and verify pointer plus keyboard behavior.',
           kind: 'design',
+          impact: 'core',
+          expectedOutcome: 'The complete garden interaction is polished, accessible, and verified across pointer and keyboard input.',
+          acceptanceChecks: [
+            'Motion remains clear and stable throughout the complete interaction.',
+            'Pointer and keyboard completion pass the interaction checks.'
+          ],
           risk: 'medium',
           claimedBy: 'codex',
-          files: []
+          files: ['app/src/motion/**', 'app/tests/input/**']
         }
       ]
     }
@@ -560,6 +637,18 @@ describe('dialogue capsule contract', () => {
     await expect(readFile(join(workspacePath, '.duo', 'sealed', 'idea.md'), 'utf8')).resolves.toContain('Orbit Garden')
     await expect(readFile(join(workspacePath, '.duo', 'sealed', 'spec.md'), 'utf8')).resolves.toContain('deterministic state')
     await expect(readFile(join(workspacePath, '.duo', 'sealed', 'redactions.json'), 'utf8')).resolves.toContain('APP_NAME')
+    const board = JSON.parse(await readFile(join(workspacePath, '.duo', 'board.json'), 'utf8')) as {
+      tasks: Array<Record<string, unknown>>
+    }
+    expect(board.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'task-orbit-input', impact: 'core',
+        expectedOutcome: capsule.tasks[0].expectedOutcome,
+        acceptanceChecks: capsule.tasks[0].acceptanceChecks,
+        files: capsule.tasks[0].files
+      }),
+      expect.objectContaining({ id: 'task-orbit-polish', impact: 'core' })
+    ]))
     const publicProtocol = await Promise.all([
       readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8'),
       readFile(join(workspacePath, '.duo', 'public', 'opinions.jsonl'), 'utf8')
@@ -578,6 +667,40 @@ describe('dialogue capsule contract', () => {
     const workspacePath = await protocolWorkspace('duo-dialogue-serious-consensus-')
     const humanBrief = 'Build an accessible invoice dashboard with offline CSV review.'
     await writeSeriousMissionContract(join(workspacePath, '.duo', 'sealed'), humanBrief, '2026-07-12T00:00:00.000Z')
+    const seriousPitch = {
+      ...capsule,
+      tasks: [],
+      pitches: [
+        {
+          title: 'Ledger Lantern',
+          idea: 'An accessible invoice dashboard with offline CSV review.',
+          appeal: 'A focused workflow for reviewing invoices without a network dependency.',
+          risk: 'CSV edge cases and keyboard behavior need explicit tests.'
+        },
+        {
+          title: 'Receipt Room',
+          idea: 'A local receipt triage workspace.',
+          appeal: 'Fast batch review.',
+          risk: 'The broader invoice workflow may be underspecified.'
+        }
+      ],
+      redactions: [
+        { value: 'Ledger Lantern', label: 'APP_NAME' },
+        { value: 'Receipt Room', label: 'APP_NAME' }
+      ]
+    }
+    await writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-serious-consensus',
+      round: 1,
+      agent: 'claude',
+      targetAgent: 'codex',
+      claimKey: 'shared-direction',
+      contract: { kind: 'pitch', phase: 'round.pitch' },
+      missionProfile: 'serious',
+      humanBrief,
+      capsule: parseDialogueCapsule(seriousPitch)
+    })
     const seriousConsensus = {
       ...capsule,
       pitches: [],
@@ -612,6 +735,109 @@ describe('dialogue capsule contract', () => {
     expect(specification).toContain(humanBrief)
     expect(specification).toMatch(/brief fingerprint/i)
     expect(specification).toContain('Acceptance checks')
+  })
+
+  it('rejects an unpitched consensus and records stable private provenance for a pitched winner', async () => {
+    const workspacePath = await protocolWorkspace('duo-dialogue-provenance-')
+    const humanBrief = 'Build a useful local app for content creators.'
+    const pitchCapsule = {
+      ...capsule,
+      tasks: [],
+      pitches: [
+        {
+          title: 'Cutlight',
+          idea: 'A useful local shot planner for content creators.',
+          appeal: 'Turns a rough creator idea into a concrete sequence.',
+          risk: 'The workflow needs one fast path.'
+        },
+        {
+          title: 'Takeboard',
+          idea: 'A local take-review board for content creators.',
+          appeal: 'Fast comparison and clear next actions.',
+          risk: 'Media handling should stay deliberately small.'
+        }
+      ],
+      redactions: [
+        { value: 'Cutlight', label: 'APP_NAME' },
+        { value: 'Takeboard', label: 'APP_NAME' }
+      ]
+    }
+    await writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-dialogue-provenance',
+      round: 1,
+      agent: 'claude',
+      targetAgent: 'codex',
+      claimKey: 'shared-direction',
+      contract: { kind: 'pitch', phase: 'round.pitch' },
+      humanBrief,
+      capsule: parseDialogueCapsule(pitchCapsule)
+    })
+
+    const consensusCapsule = {
+      ...capsule,
+      pitches: [],
+      consensus: {
+        appName: 'Museum of Almost',
+        idea: 'A useful local shot planner for content creators.',
+        summary: 'Turn a creator brief into a cinematic shot plan.',
+        spec: 'Build a useful local content-creator workflow, store projects locally, and verify a complete shot-planning journey.',
+        redactions: [{ value: 'Museum of Almost', label: 'APP_NAME' }]
+      },
+      tasks: [
+        { ...capsule.tasks[0], id: 'claude-build', claimedBy: 'claude' },
+        { ...capsule.tasks[0], id: 'codex-build', claimedBy: 'codex' }
+      ],
+      redactions: [{ value: 'Museum of Almost', label: 'APP_NAME' }]
+    }
+    await expect(writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-dialogue-provenance',
+      round: 4,
+      agent: 'codex',
+      targetAgent: 'claude',
+      claimKey: 'shared-direction',
+      contract: { kind: 'consensus', phase: 'round.consensus' },
+      humanBrief,
+      capsule: parseDialogueCapsule(consensusCapsule)
+    })).rejects.toThrow(/pitched|provenance|candidate/i)
+
+    const alignedConsensus = {
+      ...consensusCapsule,
+      consensus: {
+        appName: 'Cutlight',
+        idea: 'A useful local shot planner for content creators.',
+        summary: 'Turn a creator brief into a cinematic shot plan.',
+        spec: 'Build a useful local content-creator workflow, store projects locally, and verify a complete shot-planning journey.',
+        redactions: [{ value: 'Cutlight', label: 'APP_NAME' }]
+      },
+      redactions: [{ value: 'Cutlight', label: 'APP_NAME' }]
+    }
+    await writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-dialogue-provenance',
+      round: 4,
+      agent: 'codex',
+      targetAgent: 'claude',
+      claimKey: 'shared-direction',
+      contract: { kind: 'consensus', phase: 'round.consensus' },
+      humanBrief,
+      capsule: parseDialogueCapsule(alignedConsensus)
+    })
+
+    const provenance = JSON.parse(
+      await readFile(join(workspacePath, '.duo', 'sealed', 'consensus_provenance.json'), 'utf8')
+    ) as { sourcePitchIds: string[]; qualityBriefFingerprint: string }
+    expect(provenance.sourcePitchIds).toHaveLength(1)
+    expect(provenance.sourcePitchIds[0]).toMatch(/^pitch-[a-f0-9]{24}$/u)
+    expect(provenance.qualityBriefFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+
+    const publicProtocol = await Promise.all([
+      readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8'),
+      readFile(join(workspacePath, '.duo', 'public', 'opinions.jsonl'), 'utf8')
+    ])
+    expect(publicProtocol.join('\n')).not.toContain('Cutlight')
+    expect(publicProtocol.join('\n')).not.toContain(provenance.sourcePitchIds[0])
   })
 
   it('rejects pre-consensus public text that contains an explicitly sealed pitch term', async () => {

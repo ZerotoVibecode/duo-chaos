@@ -31,14 +31,17 @@
         "releaseStatus": "ready",
         "artifactReady": true,
         "verification": { "passes": 3, "failures": 0, "current": true },
+        "briefAdherence": { "passed": 6, "total": 6, "current": true },
+        "browserEvidence": { "smokePassed": true, "compactScreenshot": true, "fullscreenScreenshot": true, "consoleHealthy": true, "interactionPassed": true },
         "hiddenJudge": { "passed": 8, "total": 8 },
         "roles": {
-          "roleA": { "acceptedImplementation": true, "acceptedCrossReview": true, "completedTasks": 1, "edits": 3 },
-          "roleB": { "acceptedImplementation": true, "acceptedCrossReview": true, "completedTasks": 1, "edits": 4 }
+          "roleA": { "acceptedImplementation": true, "acceptedCrossReview": true, "acceptedContributions": 1, "completedTasks": 1, "edits": 3 },
+          "roleB": { "acceptedImplementation": true, "acceptedCrossReview": true, "acceptedContributions": 1, "completedTasks": 1, "edits": 4 }
         }
       },
       "efficiency": {
         "usage": { "processedInputTokens": 480000, "cachedInputTokens": 350000, "outputTokens": 70000, "reasoningTokens": 18000, "calls": 3 },
+        "usageEvidence": { "accountedCalls": 3, "totalCalls": 3, "evidence": "exact" },
         "promptBytes": 15000,
         "toolOutputBytes": 120000,
         "peakContextTokens": 93000,
@@ -56,14 +59,17 @@
         "releaseStatus": "ready",
         "artifactReady": true,
         "verification": { "passes": 3, "failures": 0, "current": true },
+        "briefAdherence": { "passed": 6, "total": 6, "current": true },
+        "browserEvidence": { "smokePassed": true, "compactScreenshot": true, "fullscreenScreenshot": true, "consoleHealthy": true, "interactionPassed": true },
         "hiddenJudge": { "passed": 8, "total": 8 },
         "roles": {
-          "roleA": { "acceptedImplementation": true, "acceptedCrossReview": true, "completedTasks": 1, "edits": 3 },
-          "roleB": { "acceptedImplementation": true, "acceptedCrossReview": true, "completedTasks": 1, "edits": 4 }
+          "roleA": { "acceptedImplementation": true, "acceptedCrossReview": true, "acceptedContributions": 1, "completedTasks": 1, "edits": 3 },
+          "roleB": { "acceptedImplementation": true, "acceptedCrossReview": true, "acceptedContributions": 1, "completedTasks": 1, "edits": 4 }
         }
       },
       "efficiency": {
         "usage": { "processedInputTokens": 210000, "cachedInputTokens": 110000, "outputTokens": 35000, "reasoningTokens": 9000, "calls": 5 },
+        "usageEvidence": { "accountedCalls": 5, "totalCalls": 5, "evidence": "exact" },
         "promptBytes": 11000,
         "toolOutputBytes": 48000,
         "peakContextTokens": 28000,

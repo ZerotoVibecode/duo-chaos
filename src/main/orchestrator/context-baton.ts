@@ -17,6 +17,11 @@ export interface BuildContextBatonInput {
   mission: string
   tasks: ContextBatonTask[]
   verificationDigest?: string
+  hardConstraints?: string[]
+  acceptanceChecks?: string[]
+  decisionDelta?: string[]
+  opponentPosition?: string
+  contributionReceipt?: string
   maxCharacters?: number
 }
 
@@ -59,9 +64,18 @@ export async function buildContextBaton(input: BuildContextBatonInput): Promise<
   const inventory = await appInventory(input.workspacePath)
   const owned = input.tasks.filter((task) => task.claimedBy === input.agent || task.claimedBy === 'both')
   const tasks = (owned.length ? owned : input.tasks).slice(0, 6)
+  const section = (title: string, values: string[] | undefined, limit: number): string[] => {
+    const bounded = (values ?? []).map(clean).filter(Boolean).slice(0, limit)
+    return bounded.length ? [title, ...bounded.map((value) => `- ${value}`)] : []
+  }
   const lines = [
     'FOCUS BATON (supervisor-compiled; do not rediscover this context unless evidence requires it)',
     `Mission: ${clean(input.mission)}`,
+    ...section('Binding constraints:', input.hardConstraints, 6),
+    ...section('Acceptance checks for this slice:', input.acceptanceChecks, 6),
+    ...section('Relevant decision delta:', input.decisionDelta, 4),
+    ...(input.opponentPosition ? [`Latest teammate position: ${clean(input.opponentPosition).slice(0, 900)}`] : []),
+    ...(input.contributionReceipt ? [`Previous contribution receipt: ${clean(input.contributionReceipt).slice(0, 900)}`] : []),
     'Current tasks:',
     ...tasks.map((task) => `- ${task.id}: ${clean(task.title)} [${task.status}; ${task.claimedBy ?? 'unclaimed'}]${task.files?.length ? ` files=${task.files.slice(0, 8).join(',')}` : ''}`),
     input.verificationDigest ? `Latest verification: ${clean(input.verificationDigest).slice(0, 1_000)}` : 'Latest verification: no supervisor failure is pending.',

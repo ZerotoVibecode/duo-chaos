@@ -90,6 +90,12 @@ export function normalizeBoard(value: unknown): DuoTask[] {
     const explicitPublicTitle = textOf(task.publicTitle)
     const privateTitle = textOf(task.privateTitle) ?? textOf(task.title)
     const privateDescription = textOf(task.privateDescription) ?? textOf(task.description) ?? textOf(task.summary)
+    const privateExpectedOutcome = textOf(task.expectedOutcome) ?? textOf(task.privateExpectedOutcome)
+    const privateAcceptanceChecks = Array.isArray(task.acceptanceChecks)
+      ? task.acceptanceChecks.map(textOf).filter((check): check is string => Boolean(check)).slice(0, 4)
+      : Array.isArray(task.privateAcceptanceChecks)
+        ? task.privateAcceptanceChecks.map(textOf).filter((check): check is string => Boolean(check)).slice(0, 4)
+        : []
     const explicitFiles = Array.isArray(task.files)
       ? task.files.map(textOf).filter((file): file is string => Boolean(file))
       : textOf(task.file) ? [textOf(task.file)!]
@@ -104,6 +110,9 @@ export function normalizeBoard(value: unknown): DuoTask[] {
       ...(privateTitle ? { privateTitle } : {}),
       ...(textOf(task.publicDescription) ? { publicDescription: textOf(task.publicDescription) } : {}),
       ...(privateDescription ? { privateDescription } : {}),
+      ...(task.impact === 'core' || task.impact === 'substantial' ? { impact: task.impact } : {}),
+      ...(privateExpectedOutcome ? { privateExpectedOutcome } : {}),
+      ...(privateAcceptanceChecks.length > 0 ? { privateAcceptanceChecks } : {}),
       status: normalizeStatus(task.status),
       ...(owner ? { claimedBy: owner } : {}),
       risk,
@@ -111,4 +120,26 @@ export function normalizeBoard(value: unknown): DuoTask[] {
       ...(explicitFiles.length > 0 ? { privateFiles: explicitFiles } : {})
     }]
   })
+}
+
+/**
+ * Agent boards own progress only. Product scope, materiality, acceptance, risk,
+ * and file boundaries stay frozen at the supervisor-accepted contract.
+ */
+export function mergeBoardWithTaskContracts(incoming: DuoTask[], contracts: DuoTask[]): DuoTask[] {
+  const incomingById = new Map(incoming.map((task) => [task.id, task]))
+  const contractIds = new Set(contracts.map((task) => task.id))
+  const frozen = contracts.map((contract) => {
+    const update = incomingById.get(contract.id)
+    if (!update) return contract
+    return {
+      ...contract,
+      status: update.status,
+      ...(update.claimedBy ? { claimedBy: update.claimedBy } : {})
+    }
+  })
+  return [
+    ...frozen,
+    ...incoming.filter((task) => !contractIds.has(task.id))
+  ]
 }

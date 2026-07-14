@@ -31,20 +31,18 @@ export interface DurableWorkEvidenceInput {
   preservedOpeningSource: boolean
   queuedVerification?: VerificationOutcome
   streamedVerification?: VerificationOutcome
-  successfulWorkspaceCommand: boolean
-  protocolBuildFailed: boolean
 }
 
 /**
  * Process output is normalized onto the UI event queue asynchronously. The
  * direct stream receipt is therefore authoritative for stage acceptance when
- * the same successful command has not reached that queue yet. A recorded
- * build failure remains a conservative blocker in either path.
+ * the same explicit verification result has not reached that queue yet. A
+ * generic successful shell command is activity, not proof that the current
+ * source is correct. The latest explicit verification evidence is authoritative.
  */
 export function hasDurableWorkEvidence(input: DurableWorkEvidenceInput): boolean {
   return input.durableSourceChanged || input.preservedOpeningSource ||
-    input.queuedVerification === 'passed' || input.streamedVerification === 'passed' ||
-    input.successfulWorkspaceCommand
+    input.queuedVerification === 'passed' || input.streamedVerification === 'passed'
 }
 
 export function reusableDurableWorkEvidence(
@@ -77,7 +75,7 @@ export function assessTurnAcceptance(input: TurnAcceptanceInput): TurnAcceptance
   const leaseTimebox = input.result.cancelled && input.result.cancelReason === 'lease'
   const fatalProcess = input.result.cancelled && !leaseTimebox || input.result.exitCode !== 0 && !input.result.timedOut && !leaseTimebox
   if (input.result.cancelled && !leaseTimebox) reasons.push('process-cancelled')
-  else if (input.result.exitCode !== 0 && !input.result.timedOut) reasons.push('process-failed')
+  else if (input.result.exitCode !== 0 && !input.result.timedOut && !leaseTimebox) reasons.push('process-failed')
   if (requiresDispatch && !relevant.some((event) => event.type === 'agent.dispatch')) reasons.push('missing-dispatch')
   if (requiresOpinion && !relevant.some((event) => event.type === 'opinion')) reasons.push('missing-opinion')
   if (input.requiresSourceChange && !durableSourceChanged) reasons.push('missing-source-change')

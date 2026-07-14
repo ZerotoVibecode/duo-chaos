@@ -1,8 +1,9 @@
 import crossSpawn from 'cross-spawn'
 import { createHash, randomUUID } from 'node:crypto'
-import { access, mkdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { buildBaseChildEnvironment } from '../process/process-runner'
 
 const CHECKPOINT_SUPERVISOR_PATHS = [
   '.duo', '.agents', '.claude', '.codex', '.mcp.json', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md'
@@ -22,6 +23,15 @@ export interface GitResult {
   ok: boolean
   detail?: string
   commit?: string
+}
+
+export interface AppChangeSummary {
+  changed: boolean
+  files: string[]
+  fileCount: number
+  insertions: number
+  deletions: number
+  truncated: boolean
 }
 
 interface CaptureResult {
@@ -97,7 +107,7 @@ export class GitManager {
 
   private supervisorEnvironment(): NodeJS.ProcessEnv {
     return {
-      ...process.env,
+      ...buildBaseChildEnvironment(process.env),
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: this.emptyGlobalConfig,
       GIT_TERMINAL_PROMPT: '0'
@@ -237,24 +247,82 @@ export class GitManager {
     return status.code === 0 && status.stdout.length > 0
   }
 
-  async appStateFingerprint(workspacePath: string): Promise<string | undefined> {
-    const [tree, index, paths] = await Promise.all([
-      this.run(workspacePath, ['rev-parse', 'HEAD:app']),
-      this.run(workspacePath, ['ls-files', '-s', '-z', '--', 'app']),
-      this.run(workspacePath, ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', 'app'])
+  /**
+   * Produces a bounded, content-free receipt for the current app delta. The
+   * supervisor uses it for contribution attribution without exposing source,
+   * private coordination files, or host paths to the renderer.
+   */
+  async summarizeAppChanges(workspacePath: string, maximumFiles = 32): Promise<AppChangeSummary> {
+    const [status, numstat] = await Promise.all([
+      this.run(workspacePath, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', 'app']),
+      this.run(workspacePath, ['diff', '--numstat', '--', 'app'])
     ])
-    if (index.code !== 0 || paths.code !== 0) return undefined
+    if (status.code !== 0 || numstat.code !== 0) {
+      return { changed: false, files: [], fileCount: 0, insertions: 0, deletions: 0, truncated: false }
+    }
+
+    const statusEntries = status.stdout.split('\0').filter(Boolean)
+    const changedFiles = new Set<string>()
+    const untrackedFiles: string[] = []
+    for (const entry of statusEntries) {
+      const path = entry.slice(3).trim().replace(/^"|"$/gu, '')
+      if (!path.startsWith('app/')) continue
+      changedFiles.add(path)
+      if (entry.startsWith('?? ')) untrackedFiles.push(path)
+    }
+
+    let insertions = 0
+    let deletions = 0
+    for (const line of numstat.stdout.split(/\r?\n/u).filter(Boolean)) {
+      const [added, removed, path] = line.split('\t')
+      if (path?.startsWith('app/')) changedFiles.add(path)
+      if (added && added !== '-') insertions += Number.parseInt(added, 10) || 0
+      if (removed && removed !== '-') deletions += Number.parseInt(removed, 10) || 0
+    }
+
+    const canonicalWorkspace = resolve(workspacePath)
+    for (const path of untrackedFiles.slice(0, maximumFiles)) {
+      const absolute = resolve(canonicalWorkspace, path)
+      if (!absolute.startsWith(`${canonicalWorkspace}${process.platform === 'win32' ? '\\' : '/'}`)) continue
+      try {
+        const content = await readFile(absolute)
+        if (content.length <= 2 * 1024 * 1024) {
+          insertions += content.toString('utf8').split(/\r?\n/u).filter((line) => line.length > 0).length
+        }
+      } catch {
+        // A file can disappear while the provider is finishing its write.
+      }
+    }
+
+    const allFiles = [...changedFiles].sort()
+    return {
+      changed: allFiles.length > 0,
+      files: allFiles.slice(0, maximumFiles),
+      fileCount: allFiles.length,
+      insertions,
+      deletions,
+      truncated: allFiles.length > maximumFiles
+    }
+  }
+
+  async appStateFingerprint(workspacePath: string): Promise<string | undefined> {
+    const paths = await this.run(
+      workspacePath,
+      ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', 'app']
+    )
+    if (paths.code !== 0) return undefined
 
     const workspaceHashes: string[] = []
     for (const path of [...new Set(paths.stdout.split('\0').filter(Boolean))].sort()) {
       const result = await this.run(workspacePath, ['hash-object', '--no-filters', '--', path])
-      workspaceHashes.push(`${path}:${result.code === 0 ? result.stdout : 'missing'}`)
+      // Deleted tracked paths remain in the index until checkpointing. Ignore
+      // those absent paths so the same filesystem state has the same identity
+      // before and after Git seals it.
+      if (result.code === 0) workspaceHashes.push(`${path}:${result.stdout}`)
     }
 
     return `sha256:${createHash('sha256')
-      .update(`tree:${tree.code === 0 ? tree.stdout : 'absent'}\n`)
-      .update(`index:${index.stdout}\n`)
-      .update(`worktree:${workspaceHashes.join('\n')}`)
+      .update(`app-content-v1\n${workspaceHashes.join('\n')}`)
       .digest('hex')}`
   }
 }

@@ -4,6 +4,7 @@ import { basename, dirname, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 const DEFAULT_PROTOCOL_LIMIT = 4 * 1024 * 1024
+const appendQueues = new Map<string, Promise<void>>()
 
 export class UnsafeProtocolPathError extends Error {
   constructor(message = 'Unsafe protocol path: a generated workspace link or path escape was rejected.') {
@@ -108,11 +109,22 @@ export async function safeAppendProtocolText(
   content: string,
   maximumBytes = DEFAULT_PROTOCOL_LIMIT
 ): Promise<void> {
-  const existing = await safeReadProtocolText(rootPath, path, maximumBytes) ?? ''
-  if (Buffer.byteLength(existing) + Buffer.byteLength(content) > maximumBytes) {
-    throw new UnsafeProtocolPathError('Unsafe protocol path: the protocol file exceeded its supervisor size limit.')
-  }
-  await safeWriteProtocolText(rootPath, path, `${existing}${content}`)
+  const queueKey = comparablePath(path)
+  const previous = appendQueues.get(queueKey) ?? Promise.resolve()
+  const append = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const existing = await safeReadProtocolText(rootPath, path, maximumBytes) ?? ''
+      if (Buffer.byteLength(existing) + Buffer.byteLength(content) > maximumBytes) {
+        throw new UnsafeProtocolPathError('Unsafe protocol path: the protocol file exceeded its supervisor size limit.')
+      }
+      await safeWriteProtocolText(rootPath, path, `${existing}${content}`)
+    })
+  appendQueues.set(queueKey, append)
+  void append.finally(() => {
+    if (appendQueues.get(queueKey) === append) appendQueues.delete(queueKey)
+  }).catch(() => undefined)
+  await append
 }
 
 export async function safeListProtocolFiles(

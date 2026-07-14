@@ -1,4 +1,4 @@
-import { appendFile, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -299,7 +299,10 @@ describe('durable paused-run recovery', () => {
       .map((line) => JSON.parse(line) as { state?: { status?: string; cursor?: { stage?: string } } })
     const firstRunningRecord = resumedJournal.find((record) => record.state?.status === 'running')
     expect(firstRunningRecord?.state?.cursor?.stage).toBe('recovery')
-    expect(restored.getSnapshot(started.runId)?.status).toBe('reveal-ready')
+    expect(restored.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: true }
+    })
   })
 
   it('pauses the whole balanced battle on provider quota and continues after the reset without solo takeover', async () => {
@@ -386,8 +389,67 @@ describe('durable paused-run recovery', () => {
     const resumed = await restored.resume(started.runId)
     expect(resumed.agentRuntimes).toEqual(preservedLoadout)
     await restored.waitForSettled(started.runId)
-    expect(restored.getSnapshot(started.runId)?.status).toBe('reveal-ready')
+    expect(restored.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: true }
+    })
     expect(new Set(runner.calls)).toEqual(new Set(['claude', 'codex']))
+  })
+
+  it('self-heals missing pre-skill policy directories before resuming a legacy paused battle', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-pause-legacy-skills-'))
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'duo-pause-legacy-skills-runtime-'))
+    const runner = new RecoverableQuotaRunner()
+    const first = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await first.start(request(root))
+    await first.waitForSettled(started.runId)
+    expect(first.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'provider-quota', resumable: true }
+    })
+    await Promise.all([
+      rm(join(started.workspacePath, '.duo', 'private', 'skills'), { recursive: true, force: true }),
+      rm(join(started.workspacePath, '.agents'), { recursive: true, force: true }),
+      rm(join(started.workspacePath, '.claude'), { recursive: true, force: true }),
+      rm(join(started.workspacePath, 'AGENTS.md'), { force: true }),
+      rm(join(started.workspacePath, 'CLAUDE.md'), { force: true })
+    ])
+
+    runner.rejectQuota = false
+    const restored = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+    await expect(restored.restore()).resolves.toBe(1)
+    await expect(restored.resume(started.runId)).resolves.toMatchObject({ status: 'running' })
+    await restored.waitForSettled(started.runId)
+
+    const restoredPolicyPaths = [
+      join(started.workspacePath, '.duo', 'private', 'skills', 'duo-quality', 'SKILL.md'),
+      join(started.workspacePath, '.agents', 'skills', 'duo-quality', 'SKILL.md'),
+      join(started.workspacePath, '.claude', 'skills', 'duo-quality', 'SKILL.md')
+    ]
+    for (const path of restoredPolicyPaths) {
+      await expect(readFile(path, 'utf8')).resolves.toContain('name: duo-quality')
+    }
+    await expect(readFile(join(started.workspacePath, 'AGENTS.md'), 'utf8')).resolves.toContain('equal AI coding agents')
+    await expect(readFile(join(started.workspacePath, 'CLAUDE.md'), 'utf8')).resolves.toContain('@AGENTS.md')
+    expect(restored.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: true }
+    })
   })
 
   it('restores the private pitch baton after restart without exposing it publicly', async () => {
@@ -424,7 +486,10 @@ describe('durable paused-run recovery', () => {
 
     expect(runner.resumedPrompt).toContain('Hidden One')
     expect(runner.resumedPrompt).toContain('Hidden Two')
-    expect(restored.getSnapshot(started.runId)?.status).toBe('reveal-ready')
+    expect(restored.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: true }
+    })
     expect(restored.getSnapshot(started.runId)?.events.map((event) => event.publicText).join('\n'))
       .not.toMatch(/Hidden One|Hidden Two/u)
   })

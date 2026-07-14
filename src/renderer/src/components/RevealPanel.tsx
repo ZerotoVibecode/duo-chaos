@@ -36,17 +36,44 @@ function uniqueText(values: string[]): string[] {
   })
 }
 
+function compactDisplayText(value: string, maximum: number): string {
+  const compact = value
+    .replace(/^#+\s*/gm, '')
+    .replace(/^[-*]\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (compact.length <= maximum) return compact
+  const sentenceBoundary = compact.lastIndexOf('.', maximum - 1)
+  const wordBoundary = compact.lastIndexOf(' ', maximum - 1)
+  const boundary = sentenceBoundary >= Math.floor(maximum * 0.55)
+    ? sentenceBoundary + 1
+    : wordBoundary >= Math.floor(maximum * 0.55)
+      ? wordBoundary
+      : maximum - 1
+  return `${compact.slice(0, boundary).trimEnd()}…`
+}
+
+function displayProductName(value: string): string {
+  const normalized = compactDisplayText(value, 120)
+  const [name] = normalized.split(/\s*(?:—|–|\|)\s*/u, 1)
+  return compactDisplayText(name || normalized, 96)
+}
+
 function shippedItems(run: RunSnapshot): string[] {
   const packet = run.revealPacket
   if (!packet) return []
 
   const completedTasks = run.tasks
     .filter((task) => task.status === 'done')
-    .map((task) => task.publicDescription?.trim() || task.publicTitle)
-  const candidates = [packet.features, packet.whatWorked, completedTasks]
+    .map((task) => task.publicTitle.trim() || task.publicDescription?.trim() || task.privateTitle || task.privateDescription || '')
+  const packetLists = [packet.features, packet.whatWorked]
+  const packetCopyIsVerbose = packetLists.some((items) => items.some((item) => item.trim().length > 240))
+  const candidates = packetCopyIsVerbose
+    ? [completedTasks, ...packetLists]
+    : [...packetLists, completedTasks]
 
   for (const candidate of candidates) {
-    const items = uniqueText(candidate)
+    const items = uniqueText(candidate.map((item) => compactDisplayText(item, 180))).slice(0, 8)
     if (items.length > 0) return items
   }
   return []
@@ -78,6 +105,17 @@ function revealedCopy(value: string, appName: string): string {
     .replace(/\[(?:FEATURE|MECHANIC|INTERACTION)\]/gi, 'signature interaction')
 }
 
+function displayRevealCopy(value: string, appName: string, maximum: number): string {
+  return compactDisplayText(revealedCopy(value, appName), maximum)
+}
+
+function displayKnownIssue(value: string, appName: string): string {
+  if (/no valid reveal packet was produced before the turn limit/i.test(value)) {
+    return 'Final release metadata was incomplete; the preserved artifact remains available.'
+  }
+  return displayRevealCopy(value, appName, 220)
+}
+
 export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
   const packet = run.revealPacket ? enrichRevealPacket(run.revealPacket, run.events, run.tasks) : undefined
   const shipped = shippedItems(run)
@@ -85,7 +123,7 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
   const evidence = deriveEvidenceMomentum(run)
   const labels = missionPresentation(run.missionProfile)
   const { returnToLaunch } = useStudioStore()
-  const [copied, setCopied] = useState(false)
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [launchError, setLaunchError] = useState<string>()
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [proofOpen, setProofOpen] = useState(false)
@@ -115,10 +153,18 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
 
   if (!packet) return <></>
 
+  const displayName = displayProductName(packet.appName)
+  const displayIdea = displayRevealCopy(packet.idea, displayName, 320)
+  const displaySummary = displayRevealCopy(packet.summary, displayName, 420)
+
   const copyCommand = async (): Promise<void> => {
-    await navigator.clipboard.writeText(packet.runCommand)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1_500)
+    try {
+      await navigator.clipboard.writeText(packet.runCommand)
+      setCopyStatus('copied')
+      setTimeout(() => setCopyStatus('idle'), 1_500)
+    } catch {
+      setCopyStatus('failed')
+    }
   }
 
   const retryPreview = (): void => {
@@ -137,13 +183,11 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
 
   const tasksDone = evidence.shared.tasksDone
   const verificationPassed = evidence.shared.buildPasses > 0
-  const bothEdited = evidence.agents.claude.edits > 0 && evidence.agents.codex.edits > 0
-  const bothCompletedTasks = evidence.agents.claude.tasksDone > 0 && evidence.agents.codex.tasksDone > 0
-  const collaborationLabel = bothEdited && bothCompletedTasks
-    ? 'Balanced duo contribution'
-    : evidence.agents.claude.edits > 0 || evidence.agents.codex.edits > 0
-      ? 'Agent handoff recorded'
-      : 'Contribution evidence limited'
+  const collaborationLabel = evidence.shared.acceptedContributions >= evidence.shared.acceptedContributionGoal
+    ? `${String(evidence.shared.acceptedContributionGoal)}/${String(evidence.shared.acceptedContributionGoal)} accepted contributions`
+    : evidence.shared.acceptedContributions > 0
+      ? `${String(evidence.shared.acceptedContributions)}/${String(evidence.shared.acceptedContributionGoal)} accepted contributions`
+      : 'Accepted contribution proof unavailable'
   const statusLabel = packet.status === 'ready'
     ? 'Verified artifact'
     : packet.status === 'partial'
@@ -166,7 +210,7 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
     ? 'Checking artifact…'
     : preview?.status === 'ready'
       ? packet.status === 'ready'
-        ? `Launch ${packet.appName}`
+        ? `Launch ${displayName}`
         : `Open ${packet.status === 'partial' ? 'preserved' : 'recovered'} artifact`
       : packet.status === 'ready'
         ? 'Inspect app workspace'
@@ -187,13 +231,13 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
           <div className="artifact-convergence" aria-hidden="true"><i /><i /><span /></div>
           <div className="artifact-copy">
             <span className="reveal-kicker"><Sparkles size={14} /> {kicker}</span>
-            <h1 id="artifact-title">{packet.appName}</h1>
-            <p className="reveal-idea">{revealedCopy(packet.idea, packet.appName)}</p>
-            <p className="reveal-summary">{revealedCopy(packet.summary, packet.appName)}</p>
+            <h1 id="artifact-title">{displayName}</h1>
+            <p className="reveal-idea">{displayIdea}</p>
+            <p className="reveal-summary">{displaySummary}</p>
             {packet.knownIssues.length > 0 && (
               <aside className="artifact-caveats" role="note" aria-label="Release caveats">
                 <strong>{packet.status === 'ready' ? 'Known caveat' : 'Why this is not marked ready'}</strong>
-                <ul>{packet.knownIssues.slice(0, 3).map((issue) => <li key={issue}>{revealedCopy(issue, packet.appName)}</li>)}</ul>
+                <ul>{packet.knownIssues.slice(0, 3).map((issue) => <li key={issue}>{displayKnownIssue(issue, displayName)}</li>)}</ul>
               </aside>
             )}
           </div>
@@ -208,6 +252,11 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
               <span className={verificationPassed ? 'proof-positive' : 'proof-caveat'}><ShieldCheck size={15} />{verificationPassed ? 'Verification passed' : 'Verification not recorded'}</span>
               <span><GitCommitHorizontal size={15} /><b>{evidence.shared.checkpoints}</b> {evidence.shared.checkpoints === 1 ? 'checkpoint' : 'checkpoints'}</span>
               <span><Swords size={15} />{collaborationLabel}</span>
+              {evidence.shared.browser.available && (
+                <span className={evidence.shared.browser.passed ? 'proof-positive' : 'proof-caveat'}>
+                  <ShieldCheck size={15} />{evidence.shared.browser.passed ? 'Browser QA passed' : 'Browser QA incomplete'}
+                </span>
+              )}
               <span><Clock3 size={15} />{formatElapsed(run)}</span>
             </div>
             <button className="artifact-launch" type="button" disabled={previewPending} onClick={openPrimaryAction}>
@@ -228,10 +277,10 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
 
         </section>
 
-        <figure className={`artifact-preview artifact-preview-${preview?.status ?? 'loading'}`} aria-label={`${packet.appName} proof of life`}>
+        <figure className={`artifact-preview artifact-preview-${preview?.status ?? 'loading'}`} aria-label={`${displayName} proof of life`}>
           {preview?.status === 'ready' ? (
             <>
-              <img src={preview.imageDataUrl} alt={`${packet.appName} artifact preview`} width={preview.width} height={preview.height} />
+              <img src={preview.imageDataUrl} alt={`${displayName} artifact preview`} width={preview.width} height={preview.height} />
               <figcaption><ShieldCheck size={14} /> Artifact rendered in an isolated preview</figcaption>
             </>
           ) : preview ? (
@@ -265,7 +314,9 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
           <section className="reveal-run-details" aria-label="Run details">
             <div className="reveal-command">
               <div><span>Run command</span><code>{packet.runCommand}</code></div>
-              <button className="icon-button" type="button" aria-label="Copy run command" onClick={() => void copyCommand()}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
+              <button className="icon-button" type="button" aria-label={copyStatus === 'copied' ? 'Run command copied' : 'Copy run command'} onClick={() => void copyCommand()}>{copyStatus === 'copied' ? <Check size={16} /> : <Copy size={16} />}</button>
+              <span className="sr-only" role="status" aria-live="polite">{copyStatus === 'copied' ? 'Run command copied to clipboard.' : ''}</span>
+              {copyStatus === 'failed' && <span className="copy-feedback" role="alert">Copy failed. Select the command text instead.</span>}
             </div>
             <div className="reveal-utility-actions">
               <button className="secondary-button" type="button" onClick={() => void window.duo.openRunFolder(run.runId)}><FolderOpen size={15} /> Open workspace</button>
@@ -278,12 +329,14 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
           <article className="survivor-list">
             <span className="eyebrow">{survivorEyebrow}</span>
             <h2>{survivorHeading}</h2>
-            <ul>{shipped.map((feature) => <li key={feature}><Check size={15} />{revealedCopy(feature, packet.appName)}</li>)}</ul>
+            {shipped.length > 0
+              ? <ul>{shipped.map((feature) => <li key={feature}><Check size={15} />{displayRevealCopy(feature, displayName, 180)}</li>)}</ul>
+              : <p className="survivor-empty"><ShieldCheck size={16} /><span>No verified product slice was recorded for this run.</span></p>}
           </article>
           <article className="drama-recap">
             <span className="eyebrow">The argument that changed it</span>
             <h2>How the build got better</h2>
-            <ol>{packet.agentDramaSummary.slice(0, 4).map((item, index) => <li key={item}><b>{String(index + 1).padStart(2, '0')}</b><span>{revealedCopy(item, packet.appName)}</span></li>)}</ol>
+            <ol>{packet.agentDramaSummary.slice(0, 4).map((item, index) => <li key={item}><b>{String(index + 1).padStart(2, '0')}</b><span>{displayRevealCopy(item, displayName, 240)}</span></li>)}</ol>
           </article>
         </section>
 
@@ -307,8 +360,8 @@ export function RevealPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
           <section className="after-action-exchange" aria-label="After-action exchange">
             <span className="eyebrow">After-action exchange</span>
             <div>
-              {meaningfulQuote(packet.agentQuotes.claude, 'Claude') && <blockquote><span>Claude</span>“{revealedCopy(packet.agentQuotes.claude, packet.appName)}”</blockquote>}
-              {meaningfulQuote(packet.agentQuotes.codex, 'Codex') && <blockquote><span>Codex</span>“{revealedCopy(packet.agentQuotes.codex, packet.appName)}”</blockquote>}
+              {meaningfulQuote(packet.agentQuotes.claude, 'Claude') && <blockquote><span>Claude</span>“{displayRevealCopy(packet.agentQuotes.claude, displayName, 280)}”</blockquote>}
+              {meaningfulQuote(packet.agentQuotes.codex, 'Codex') && <blockquote><span>Codex</span>“{displayRevealCopy(packet.agentQuotes.codex, displayName, 280)}”</blockquote>}
             </div>
           </section>
         )}

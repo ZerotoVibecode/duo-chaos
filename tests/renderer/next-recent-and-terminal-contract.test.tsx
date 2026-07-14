@@ -18,6 +18,10 @@ function apiWithRuns(runs: RunSnapshot[]): DuoElectronApi {
     stopRun: vi.fn(),
     resumeRun: vi.fn(),
     revealRun: vi.fn(),
+    openArchivedRun: vi.fn().mockImplementation((runId: string) => {
+      const run = runs.find((candidate) => candidate.runId === runId)
+      return run ? Promise.resolve(run) : Promise.reject(new Error('Archive missing.'))
+    }),
     openRunFolder: vi.fn().mockResolvedValue(undefined),
     openGeneratedApp: vi.fn().mockResolvedValue(undefined),
     getArtifactPreview: vi.fn().mockResolvedValue({
@@ -100,8 +104,14 @@ describe('recent builds and terminal run presentation', () => {
     expect(within(recent).getByText(/cancelled/i)).toBeVisible()
     expect(within(screen.getByTestId('recent-build-duo-run-complete-safe')).getByText('No CLI calls')).toBeVisible()
     expect(within(screen.getByTestId('recent-build-duo-run-cancelled-private')).getByText('Simulation')).toBeVisible()
-    fireEvent.click(within(screen.getByTestId('recent-build-duo-run-complete-safe')).getByRole('button', { name: /open workspace/i }))
+    const completeCard = within(screen.getByTestId('recent-build-duo-run-complete-safe'))
+    fireEvent.click(completeCard.getByRole('button', { name: /open workspace/i }))
     expect(api.openRunFolder).toHaveBeenCalledWith('duo-run-complete-safe')
+    fireEvent.click(completeCard.getByRole('button', { name: /open app/i }))
+    expect(api.openGeneratedApp).toHaveBeenCalledWith('duo-run-complete-safe')
+    fireEvent.click(completeCard.getByRole('button', { name: /view reveal/i }))
+    expect(api.openArchivedRun).toHaveBeenCalledWith('duo-run-complete-safe')
+    expect(await screen.findByRole('heading', { name: 'Finished Local Build' })).toBeVisible()
     expect(screen.queryByText('PRIVATE_CANCELLED_PROMPT_MUST_NOT_RENDER')).not.toBeInTheDocument()
   })
 

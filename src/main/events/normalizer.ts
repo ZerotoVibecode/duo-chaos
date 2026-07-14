@@ -339,39 +339,48 @@ function shellPayload(command: string): string {
   return payload
 }
 
+function isRecognizableVerificationSegment(candidate: string): boolean {
+  const segment = candidate
+    .trim()
+    .replace(/^[(&\s]+/, '')
+    .replace(/^&\s*/, '')
+    .replace(/^(?:cross-env(?:-shell)?\s+(?:[^\s=]+=[^\s]+\s+)*)/i, '')
+    .trim()
+  const executable = '(?:"?[^"\\s]+[\\\\/])?'
+  const packageManager = new RegExp(
+    `^${executable}(?:npm|pnpm|yarn|bun)(?:\\.(?:cmd|exe|ps1))?\\s+(?:run\\s+)?(?:test(?::[\\w.-]+)?|build(?::[\\w.-]+)?|typecheck|lint|check|verify)(?:\\s|$)`,
+    'i'
+  )
+  const packageExecutor = new RegExp(
+    `^${executable}(?:npx|bunx)(?:\\.(?:cmd|exe|ps1))?(?:\\s+--yes)?\\s+(?:vitest|jest|tsc|eslint|playwright)(?:\\s|$)|^${executable}(?:pnpm\\s+exec|yarn\\s+dlx)\\s+(?:vitest|jest|tsc|eslint|playwright)(?:\\s|$)`,
+    'i'
+  )
+  return packageManager.test(segment) || packageExecutor.test(segment) ||
+    /^(?:python(?:3|\.exe)?\s+-m\s+)?pytest(?:\s|$)/i.test(segment) ||
+    /^cargo\s+(?:test|check|clippy)(?:\s|$)/i.test(segment) ||
+    /^go\s+test(?:\s|$)/i.test(segment) ||
+    /^dotnet\s+(?:test|build)(?:\s|$)/i.test(segment) ||
+    /^(?:\.\/?|\.\\)?(?:mvnw?|gradlew?)(?:\.cmd|\.bat|\.exe)?\s+(?:test|verify|build|check)(?:\s|$)/i.test(segment) ||
+    /^(?:node(?:\.exe)?\s+--check|(?:bash|sh)\s+-n|deno\s+(?:test|check|lint))(?:\s|$)/i.test(segment)
+}
+
 function isRecognizableVerificationCommand(command: string): boolean {
   const payload = shellPayload(command)
   // Standard stderr-to-stdout redirection is common in verifier commands and
   // does not alter their exit status. Remove only that narrow form before
   // rejecting shell control operators; a remaining ampersand is still unsafe.
   const controlPayload = payload.replace(/\d*>\s*&\s*\d+/g, '')
+  const guardedPowerShellSequence = controlPayload.match(
+    /^([^;|\r\n{}]+);\s*if\s*\(\s*\$LASTEXITCODE\s+-eq\s+0\s*\)\s*\{\s*([^;|\r\n{}]+)\s*\}\s*;\s*exit\s+\$LASTEXITCODE\s*$/i
+  )
+  if (guardedPowerShellSequence) {
+    return isRecognizableVerificationSegment(guardedPowerShellSequence[1] ?? '') &&
+      isRecognizableVerificationSegment(guardedPowerShellSequence[2] ?? '')
+  }
   if (/[;|\r\n]/.test(controlPayload)) return false
   const segments = controlPayload.split(/&&/)
   if (segments.some((candidate) => /&/.test(candidate.trim().replace(/^&\s*/, '')))) return false
-  return segments.some((candidate) => {
-    const segment = candidate
-      .trim()
-      .replace(/^[(&\s]+/, '')
-      .replace(/^&\s*/, '')
-      .replace(/^(?:cross-env(?:-shell)?\s+(?:[^\s=]+=[^\s]+\s+)*)/i, '')
-      .trim()
-    const executable = '(?:"?[^"\\s]+[\\\\/])?'
-    const packageManager = new RegExp(
-      `^${executable}(?:npm|pnpm|yarn|bun)(?:\\.(?:cmd|exe|ps1))?\\s+(?:run\\s+)?(?:test(?::[\\w.-]+)?|build(?::[\\w.-]+)?|typecheck|lint|check|verify)(?:\\s|$)`,
-      'i'
-    )
-    const packageExecutor = new RegExp(
-      `^${executable}(?:npx|bunx)(?:\\.(?:cmd|exe|ps1))?(?:\\s+--yes)?\\s+(?:vitest|jest|tsc|eslint|playwright)(?:\\s|$)|^${executable}(?:pnpm\\s+exec|yarn\\s+dlx)\\s+(?:vitest|jest|tsc|eslint|playwright)(?:\\s|$)`,
-      'i'
-    )
-    return packageManager.test(segment) || packageExecutor.test(segment) ||
-      /^(?:python(?:3|\.exe)?\s+-m\s+)?pytest(?:\s|$)/i.test(segment) ||
-      /^cargo\s+(?:test|check|clippy)(?:\s|$)/i.test(segment) ||
-      /^go\s+test(?:\s|$)/i.test(segment) ||
-      /^dotnet\s+(?:test|build)(?:\s|$)/i.test(segment) ||
-      /^(?:\.\/?|\.\\)?(?:mvnw?|gradlew?)(?:\.cmd|\.bat|\.exe)?\s+(?:test|verify|build|check)(?:\s|$)/i.test(segment) ||
-      /^(?:node(?:\.exe)?\s+--check|(?:bash|sh)\s+-n|deno\s+(?:test|check|lint))(?:\s|$)/i.test(segment)
-  })
+  return segments.some(isRecognizableVerificationSegment)
 }
 
 function commandSummary(

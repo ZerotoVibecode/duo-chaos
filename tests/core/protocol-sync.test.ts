@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeBoard, parseProtocolJsonl } from '../../src/main/orchestrator/protocol-sync'
+import { mergeBoardWithTaskContracts, normalizeBoard, parseProtocolJsonl } from '../../src/main/orchestrator/protocol-sync'
 
 describe('real workspace protocol synchronization', () => {
   it('parses real-run opinion aliases with stable ids across repeated polls', () => {
@@ -96,6 +96,46 @@ describe('real workspace protocol synchronization', () => {
     ])
   })
 
+  it('accepts only status and claim changes for a frozen material task contract', () => {
+    const contract = normalizeBoard({ tasks: [{
+      id: 'claude-core',
+      publicTitle: 'Core interaction',
+      privateTitle: 'Build the real interaction',
+      privateDescription: 'Implement the complete private interaction.',
+      impact: 'core',
+      expectedOutcome: 'The primary interaction works from start to completion.',
+      acceptanceChecks: ['Pointer journey completes.', 'Keyboard journey completes.'],
+      files: ['app/src/**'],
+      status: 'open',
+      claimedBy: 'claude',
+      risk: 'high'
+    }] })
+    const agentRewrite = normalizeBoard({ tasks: [{
+      id: 'claude-core',
+      publicTitle: 'Tiny copy tweak',
+      privateTitle: 'Delete the hard part',
+      privateDescription: 'Downgraded.',
+      files: [],
+      status: 'done',
+      claimedBy: 'codex',
+      risk: 'low'
+    }] })
+
+    const [merged] = mergeBoardWithTaskContracts(agentRewrite, contract)
+    expect(merged).toMatchObject({
+      id: 'claude-core',
+      publicTitle: 'Core interaction',
+      privateTitle: 'Build the real interaction',
+      impact: 'core',
+      privateExpectedOutcome: 'The primary interaction works from start to completion.',
+      privateAcceptanceChecks: ['Pointer journey completes.', 'Keyboard journey completes.'],
+      privateFiles: ['app/src/**'],
+      risk: 'high',
+      status: 'done',
+      claimedBy: 'codex'
+    })
+  })
+
   it('tolerates partial JSONL and normalizes the supported loose-board variants', () => {
     const parsed = parseProtocolJsonl([
       '{"incomplete":',
@@ -111,7 +151,13 @@ describe('real workspace protocol synchronization', () => {
       tasks: [
         null,
         { title: 'Fix a hidden issue', status: 'working', claimedBy: null, files: ['a.ts', '', 3], risk: 'low' },
-        { publicTitle: 'Public verification', privateTitle: 'Verify the hidden loop', publicDescription: 'Safe check', privateDescription: 'Private check', title: 'Check the build', status: 'claimed', claimedBy: 'both', risk: 'medium' },
+        {
+          publicTitle: 'Public verification', privateTitle: 'Verify the hidden loop',
+          publicDescription: 'Safe check', privateDescription: 'Private check',
+          expectedOutcome: 'The complete hidden loop is verified across both input paths.',
+          acceptanceChecks: ['Pointer completion passes.', 'Keyboard completion passes.'],
+          impact: 'core', title: 'Check the build', status: 'claimed', claimedBy: 'both', risk: 'medium'
+        },
         { title: 'Copy and UX pass', status: 'review', claimedBy: 'director', risk: 'high' },
         { title: 'Ordinary work', status: 'blocked', claimedBy: 'none' },
         { type: 'implementation', status: 'open', claimedBy: 'invalid' },
@@ -132,7 +178,11 @@ describe('real workspace protocol synchronization', () => {
     ])
     expect(tasks[0]?.id).toBe('task-1')
     expect(tasks[1]).toMatchObject({ claimedBy: 'none', privateFiles: ['a.ts'], files: ['[WORKSPACE_FILE]'], risk: 'low' })
-    expect(tasks[2]).toMatchObject({ publicDescription: 'Safe check', privateDescription: 'Private check', claimedBy: 'both' })
+    expect(tasks[2]).toMatchObject({
+      publicDescription: 'Safe check', privateDescription: 'Private check', claimedBy: 'both', impact: 'core',
+      privateExpectedOutcome: 'The complete hidden loop is verified across both input paths.',
+      privateAcceptanceChecks: ['Pointer completion passes.', 'Keyboard completion passes.']
+    })
     expect(tasks[3]?.claimedBy).toBe('director')
     expect(tasks[4]?.claimedBy).toBe('none')
     expect(tasks[5]?.claimedBy).toBeUndefined()
