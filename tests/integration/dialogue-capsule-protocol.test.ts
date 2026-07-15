@@ -97,7 +97,20 @@ describe('dialogue capsule contract', () => {
     const consensusSchema = dialogueCapsuleJsonSchemaForTurn({ kind: 'critique', phase: 'round.consensus' })
     expect(consensusSchema.properties.pitches).toMatchObject({ minItems: 0, maxItems: 0 })
     expect(consensusSchema.properties.tasks).toMatchObject({ minItems: 2, maxItems: 2 })
+    const consensusContract = consensusSchema.properties.consensus as {
+      required?: unknown
+      properties?: { sourcePitchIds?: unknown }
+    }
     expect(consensusSchema.properties.consensus).toMatchObject({ type: 'object' })
+    expect(consensusContract.required).toEqual(expect.arrayContaining(['sourcePitchIds']))
+    expect(consensusContract.properties?.sourcePitchIds).toMatchObject({
+      minItems: 1,
+      maxItems: 2
+    })
+    // Codex structured outputs reject `uniqueItems`. Duplicate provenance is
+    // still rejected by the supervisor after parsing, outside the provider's
+    // deliberately restricted response-schema dialect.
+    expect(consensusContract.properties?.sourcePitchIds).not.toHaveProperty('uniqueItems')
     expect(consensusSchema.properties.tasks.items.properties.claimedBy.enum).toEqual(['claude', 'codex'])
   })
 
@@ -156,7 +169,7 @@ describe('dialogue capsule contract', () => {
     expect(privateDispatch.privateText).toBe(capsule.opening.privateText)
   })
 
-  it('keeps semantic spoiler validation on the complete provider statement before clipping', async () => {
+  it('redacts a sealed term near the end of the complete provider statement before clipping', async () => {
     const workspacePath = await protocolWorkspace('duo-dialogue-long-leak-')
     const safePrefix = Array.from(
       { length: 8 },
@@ -190,7 +203,9 @@ describe('dialogue capsule contract', () => {
       claimKey: 'shared-direction',
       contract: { kind: 'pitch', phase: 'round.pitch' },
       capsule: parseDialogueCapsule(unsafe)
-    })).rejects.toThrow(/public|sealed|term/i)
+    })).resolves.toBeUndefined()
+    const publicProtocol = await readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8')
+    expect(publicProtocol).not.toMatch(/Orbit Garden|Signal Room/iu)
   })
 
   it('enforces two pitches before consensus and locally balances two consensus tasks', () => {
@@ -233,6 +248,84 @@ describe('dialogue capsule contract', () => {
       kind: 'critique',
       phase: 'round.consensus'
     }).tasks.map((task) => task.claimedBy)).toEqual(['claude', 'codex'])
+  })
+
+  it('canonicalizes every consensus source boundary into the generated app directory', () => {
+    const unscopedConsensus = {
+      ...capsule,
+      pitches: [],
+      consensus: {
+        appName: 'Orbit Garden', idea: 'A spatial seed ritual.', summary: 'A small tactile app.',
+        spec: 'Implement and verify the complete interaction.',
+        redactions: [{ value: 'Orbit Garden', label: 'APP_NAME' }]
+      },
+      tasks: [
+        { ...capsule.tasks[0], files: ['src/garden/**', './tests/garden.test.ts'] },
+        { ...capsule.tasks[0], id: 'task-state', claimedBy: 'codex', files: ['app/src/state/**', 'package.json'] }
+      ],
+      redactions: [...capsule.redactions, { value: 'Orbit Garden', label: 'APP_NAME' }]
+    }
+
+    const validated = validateDialogueCapsuleForTurn(parseDialogueCapsule(unscopedConsensus), {
+      kind: 'consensus',
+      phase: 'round.consensus'
+    })
+
+    expect(validated.tasks.map((task) => task.files)).toEqual([
+      ['app/src/garden/**', 'app/tests/garden.test.ts'],
+      ['app/src/state/**', 'app/package.json']
+    ])
+
+    const placeholderTask = {
+      ...unscopedConsensus,
+      tasks: [
+        { ...unscopedConsensus.tasks[0], files: ['[WORKSPACE_FILE]'] },
+        unscopedConsensus.tasks[1]
+      ]
+    }
+    expect(() => validateDialogueCapsuleForTurn(parseDialogueCapsule(placeholderTask), {
+      kind: 'consensus',
+      phase: 'round.consensus'
+    })).toThrow(/file boundar|app\//iu)
+  })
+
+  it('hydrates a provider-redacted consensus name from one private app-name term', () => {
+    const redactions = [
+      ...capsule.redactions,
+      { value: 'Signal Garden', label: 'app name' }
+    ]
+    const providerRedactedConsensus = {
+      ...capsule,
+      pitches: [],
+      consensus: {
+        appName: '[APP_NAME]',
+        idea: 'A spatial seed ritual.',
+        summary: 'A small tactile app.',
+        spec: 'Implement and verify the complete interaction.',
+        redactions
+      },
+      tasks: [capsule.tasks[0], { ...capsule.tasks[0], id: 'task-two', claimedBy: 'codex' }],
+      redactions
+    }
+
+    const validated = validateDialogueCapsuleForTurn(parseDialogueCapsule(providerRedactedConsensus), {
+      kind: 'critique',
+      phase: 'round.consensus'
+    })
+    expect(validated.consensus?.appName).toBe('Signal Garden')
+
+    const ambiguous = {
+      ...providerRedactedConsensus,
+      redactions: [...redactions, { value: 'Focus Field', label: 'APP_NAME' }],
+      consensus: {
+        ...providerRedactedConsensus.consensus,
+        redactions: [...redactions, { value: 'Focus Field', label: 'APP_NAME' }]
+      }
+    }
+    expect(() => validateDialogueCapsuleForTurn(parseDialogueCapsule(ambiguous), {
+      kind: 'critique',
+      phase: 'round.consensus'
+    })).toThrow(/ambiguous|app.name/i)
   })
 
   it('rejects a trivial task paired with a core task but accepts similarly material source contracts', () => {
@@ -840,7 +933,7 @@ describe('dialogue capsule contract', () => {
     expect(publicProtocol.join('\n')).not.toContain(provenance.sourcePitchIds[0])
   })
 
-  it('rejects pre-consensus public text that contains an explicitly sealed pitch term', async () => {
+  it('redacts an explicitly sealed pitch term from pre-consensus public text', async () => {
     const workspacePath = await protocolWorkspace('duo-dialogue-leak-')
     const unsafe = {
       ...capsule,
@@ -869,10 +962,13 @@ describe('dialogue capsule contract', () => {
       claimKey: 'shared-direction',
       contract: { kind: 'pitch', phase: 'round.pitch' },
       capsule: parseDialogueCapsule(unsafe)
-    })).rejects.toThrow(/public|sealed|term/i)
+    })).resolves.toBeUndefined()
+    const publicProtocol = await readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8')
+    expect(publicProtocol).not.toMatch(/Orbit Garden|Signal Room/iu)
+    expect(publicProtocol).toContain('[APP_NAME]')
   })
 
-  it('rejects punctuation variants of sealed terms in public dialogue', async () => {
+  it('redacts punctuation variants of sealed terms in public dialogue', async () => {
     const workspacePath = await protocolWorkspace('duo-dialogue-normalized-leak-')
     const unsafe = {
       ...capsule,
@@ -900,10 +996,78 @@ describe('dialogue capsule contract', () => {
       claimKey: 'shared-direction',
       contract: { kind: 'pitch', phase: 'round.pitch' },
       capsule: parseDialogueCapsule(unsafe)
-    })).rejects.toThrow(/public|sealed|term/i)
+    })).resolves.toBeUndefined()
+    const publicProtocol = await readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8')
+    expect(publicProtocol).not.toMatch(/Signal(?:\s|-|\/)Garden|Pocket Echo/iu)
   })
 
-  it('rejects a later turn that omits and leaks a title sealed by an earlier turn', async () => {
+  it('redacts a symbol-only sealed title instead of dropping it from the dictionary', async () => {
+    const workspacePath = await protocolWorkspace('duo-dialogue-symbol-leak-')
+    const unsafe = {
+      ...capsule,
+      opening: {
+        publicText: '🌱 should win because the interaction reads immediately.',
+        privateText: '🌱 should win because the interaction reads immediately.'
+      },
+      tasks: [],
+      pitches: [
+        { title: '🌱', idea: 'A symbolic seed ritual.', appeal: 'Immediate.', risk: 'Naming.' },
+        { title: 'Pocket Echo', idea: 'A disappearing message.', appeal: 'Tension.', risk: 'Audio.' }
+      ],
+      redactions: [
+        { value: '🌱', label: 'APP_NAME' },
+        { value: 'Pocket Echo', label: 'APP_NAME' }
+      ]
+    }
+
+    await writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-dialogue-symbol-leak',
+      round: 1,
+      agent: 'claude',
+      targetAgent: 'codex',
+      claimKey: 'shared-direction',
+      contract: { kind: 'pitch', phase: 'round.pitch' },
+      capsule: parseDialogueCapsule(unsafe)
+    })
+    const publicProtocol = await readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8')
+    expect(publicProtocol).not.toContain('🌱')
+    expect(publicProtocol).toContain('[APP_NAME]')
+  })
+
+  it('preserves ordinary lower-case copy for a generic one-word title while redacting the title form', async () => {
+    const workspacePath = await protocolWorkspace('duo-dialogue-generic-title-')
+    const unsafe = {
+      ...capsule,
+      opening: {
+        publicText: 'The focus should remain on one compact [FEATURE]. Focus is the private title.',
+        privateText: 'Focus should remain compact.'
+      },
+      tasks: [],
+      pitches: [
+        { title: 'Focus', idea: 'A compact attention ritual.', appeal: 'Clear.', risk: 'Generic name.' },
+        { title: 'Pocket Echo', idea: 'A disappearing message.', appeal: 'Tension.', risk: 'Audio.' }
+      ],
+      redactions: [{ value: 'Pocket Echo', label: 'APP_NAME' }]
+    }
+
+    await writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-dialogue-generic-title',
+      round: 1,
+      agent: 'codex',
+      targetAgent: 'claude',
+      claimKey: 'shared-direction',
+      contract: { kind: 'pitch', phase: 'round.pitch' },
+      capsule: parseDialogueCapsule(unsafe)
+    })
+    const publicProtocol = await readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8')
+    expect(publicProtocol).toContain('The focus should remain')
+    expect(publicProtocol).not.toContain('Focus is the private title')
+    expect(publicProtocol).toContain('[APP_NAME]')
+  })
+
+  it('redacts a title accumulated by an earlier turn even when the later turn omits it', async () => {
     const workspacePath = await protocolWorkspace('duo-dialogue-cross-turn-leak-')
     const opening = {
       ...capsule,
@@ -950,6 +1114,8 @@ describe('dialogue capsule contract', () => {
       contract: { kind: 'critique', phase: 'round.conflict' },
       replyTo: 'dialogue-prior',
       capsule: parseDialogueCapsule(laterLeak)
-    })).rejects.toThrow(/public|sealed|term/i)
+    })).resolves.toBeUndefined()
+    const publicProtocol = await readFile(join(workspacePath, '.duo', 'public', 'dispatches.jsonl'), 'utf8')
+    expect(publicProtocol).not.toMatch(/Signal(?:\s|-|\/)Garden|Pocket Echo/iu)
   })
 })

@@ -88,8 +88,9 @@ describe('structured tool-free dialogue command policy', () => {
     expect(command.args.indexOf('--ignore-user-config')).toBeGreaterThan(command.args.indexOf('exec'))
     expect(command.args.indexOf('--ignore-rules')).toBeGreaterThan(command.args.indexOf('exec'))
     expect(command.args).not.toContain('resume')
-    expect(command.args.at(-1)).toContain('Return exactly one dialogue capsule')
-    expect(command.args.at(-1)).toContain('Do not inspect, edit, or run workspace tools')
+    expect(command.args.at(-1)).toBe('-')
+    expect(command.stdin).toContain('Return exactly one dialogue capsule')
+    expect(command.stdin).toContain('Do not inspect, edit, or run workspace tools')
   })
 
   it('drops custom arguments that could re-enable tools, writes, or stream-only output during dialogue', () => {
@@ -123,7 +124,8 @@ describe('structured tool-free dialogue command policy', () => {
       expect(valueAfter(command.args, '--sandbox')).toBe('read-only')
       expect(command.args.some((value, index) => value === '--disable' && command.args[index + 1] === 'shell_tool')).toBe(true)
       expect(command.args).toContain('--ephemeral')
-      expect(command.args.at(-1)).toContain('Return exactly one recovery capsule')
+      expect(command.args.at(-1)).toBe('-')
+      expect(command.stdin).toContain('Return exactly one recovery capsule')
     }
   })
 })

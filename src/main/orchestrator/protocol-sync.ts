@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { DuoEvent, DuoTask, TaskStatus } from '@shared/types'
 import { normalizeEvent } from '@main/events/normalizer'
+import { canonicalAppSourceBoundaries } from './app-source-boundary'
 
 interface ProtocolContext {
   runId: string
@@ -96,10 +97,11 @@ export function normalizeBoard(value: unknown): DuoTask[] {
       : Array.isArray(task.privateAcceptanceChecks)
         ? task.privateAcceptanceChecks.map(textOf).filter((check): check is string => Boolean(check)).slice(0, 4)
         : []
-    const explicitFiles = Array.isArray(task.files)
+    const rawExplicitFiles = Array.isArray(task.files)
       ? task.files.map(textOf).filter((file): file is string => Boolean(file))
       : textOf(task.file) ? [textOf(task.file)!]
         : textOf(task.sourceScope) ? [textOf(task.sourceScope)!] : []
+    const explicitFiles = canonicalAppSourceBoundaries(rawExplicitFiles)
     const risk = task.risk === 'low' || task.risk === 'medium' || task.risk === 'high'
       ? task.risk
       : kind === 'repair' ? 'high' : 'medium'
@@ -123,8 +125,9 @@ export function normalizeBoard(value: unknown): DuoTask[] {
 }
 
 /**
- * Agent boards own progress only. Product scope, materiality, acceptance, risk,
- * and file boundaries stay frozen at the supervisor-accepted contract.
+ * Agent boards own progress status and progress descriptions only. Product
+ * scope, ownership, materiality, acceptance, risk, and file boundaries stay
+ * frozen at the supervisor-accepted contract.
  */
 export function mergeBoardWithTaskContracts(incoming: DuoTask[], contracts: DuoTask[]): DuoTask[] {
   const incomingById = new Map(incoming.map((task) => [task.id, task]))
@@ -135,7 +138,8 @@ export function mergeBoardWithTaskContracts(incoming: DuoTask[], contracts: DuoT
     return {
       ...contract,
       status: update.status,
-      ...(update.claimedBy ? { claimedBy: update.claimedBy } : {})
+      ...(update.publicDescription ? { publicDescription: update.publicDescription } : {}),
+      ...(update.privateDescription ? { privateDescription: update.privateDescription } : {})
     }
   })
   return [

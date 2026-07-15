@@ -217,6 +217,7 @@ describe('DurableRunStateStore', () => {
       pause: {
         reason: 'other',
         pausedAt: '2026-07-11T12:05:00.000Z',
+        resumable: false,
         detailCode: 'quality-repair'
       }
     })
@@ -226,6 +227,28 @@ describe('DurableRunStateStore', () => {
     await expect(store.reconstruct()).resolves.toMatchObject({
       status: 'paused',
       qualityRepair: repair.qualityRepair,
+      pause: { reason: 'other', resumable: false, detailCode: 'quality-repair' }
+    })
+  })
+
+  test('accepts a legacy pause manifest without the restart finality bit', async () => {
+    const root = await temporaryRoot()
+    const store = new DurableRunStateStore(root, {
+      runId: 'duo-run-fixture-a1b2',
+      workspaceId: 'workspace-fixture-a1b2'
+    })
+    const legacy = JSON.parse(JSON.stringify(manifest({
+      status: 'paused',
+      pause: {
+        reason: 'other',
+        pausedAt: '2026-07-11T12:05:00.000Z',
+        detailCode: 'quality-repair'
+      }
+    }))) as { pause: Record<string, unknown> }
+    delete legacy.pause.resumable
+    await writeFile(store.manifestPath, `${JSON.stringify(legacy)}\n`, 'utf8')
+
+    await expect(store.readManifest()).resolves.toMatchObject({
       pause: { reason: 'other', detailCode: 'quality-repair' }
     })
   })

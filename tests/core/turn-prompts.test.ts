@@ -110,6 +110,11 @@ describe('turn stage prompts', () => {
     expect(prompt).toMatch(/reply-linked handoff/i)
     expect(prompt).toMatch(/cohesive contribution/i)
     expect(prompt).toMatch(/do not run git commands/i)
+    expect(prompt).toMatch(/shell.*already starts.*workspace root/i)
+    expect(prompt).toMatch(/never.*\bcd\b/i)
+    expect(prompt).toMatch(/windows.*npm\.cmd.*npx\.cmd/i)
+    expect(prompt).toMatch(/(?:denied|classifier).*do not retry.*(?:tool|command)|do not retry.*(?:denied|classifier).*(?:tool|command)/i)
+    expect(prompt).toMatch(/record.*once.*(?:fallback|continue|finish)|record.*limitation.*once/i)
     expect(prompt).not.toMatch(/reveal_packet\.json/i)
   })
 
@@ -171,10 +176,39 @@ describe('turn stage prompts', () => {
     expect(prompt).toMatch(/verdict.*consensus/i)
   })
 
+  it('gives consensus an immutable compact pitch catalog and requires exact source ids', () => {
+    const prompt = composeTurnStagePrompt({
+      ...base,
+      stage: 'dialogue',
+      turn: {
+        id: 'turn-04-codex-consensus',
+        agent: 'codex',
+        kind: 'consensus',
+        phase: 'round.consensus',
+        goal: 'Seal one direction.'
+      },
+      pitchCatalog: [
+        { pitchId: 'pitch-111111111111111111111111', agent: 'claude', title: 'Bloom Board' },
+        { pitchId: 'pitch-222222222222222222222222', agent: 'codex', title: 'Focus Field' }
+      ]
+    })
+
+    expect(prompt).toContain('IMMUTABLE PITCH CATALOG')
+    expect(prompt).toContain('pitch-111111111111111111111111 | claude | Bloom Board')
+    expect(prompt).toContain('pitch-222222222222222222222222 | codex | Focus Field')
+    expect(prompt).toMatch(/sourcePitchIds.*exact.*(?:one or two|1-2)/is)
+    expect(prompt).toMatch(/every task file boundary.*app\//isu)
+  })
+
   it('makes verdict and recovery short contract-only handoffs', () => {
     const verdict = composeTurnStagePrompt({ ...base, stage: 'verdict' })
     const recovery = composeTurnStagePrompt({
       ...base,
+      turn: {
+        ...base.turn,
+        kind: 'critique',
+        phase: 'round.consensus'
+      },
       stage: 'recovery',
       recoveryReasons: ['missing-dispatch', 'missing-opinion']
     })
@@ -188,6 +222,20 @@ describe('turn stage prompts', () => {
     expect(recovery).toMatch(/recovery capsule contract/i)
     expect(recovery).toMatch(/orchestrator.*persist/iu)
     expect(recovery).toMatch(/do not include.*(?:paths|commands|file operations)/iu)
+  })
+
+  it('makes a rejected quality consensus actionable during dialogue recovery', () => {
+    const recovery = composeTurnStagePrompt({
+      ...base,
+      stage: 'recovery',
+      recoveryOriginStage: 'dialogue',
+      recoveryReasons: ['consensus-quality-contract', 'missing-dispatch', 'missing-opinion']
+    })
+
+    expect(recovery).toMatch(/failed the binding quality brief/iu)
+    expect(recovery).toMatch(/rewrite.*consensus.*(?:idea|summary|spec)/isu)
+    expect(recovery).toMatch(/visual direction/iu)
+    expect(recovery).toMatch(/every binding (?:product )?requirement/iu)
   })
 
   it('gives the final verdict an explicit canonical reveal packet contract', () => {

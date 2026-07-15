@@ -17,6 +17,11 @@ export interface ComposeTurnStagePromptInput {
   quotaHandoffFrom?: 'claude' | 'codex'
   leanContribution?: boolean
   contextBaton?: string
+  pitchCatalog?: Array<{
+    pitchId: string
+    agent: 'claude' | 'codex'
+    title: string
+  }>
   capabilityShortlist?: string
   qualityContract?: string
   qualityBaton?: string
@@ -66,6 +71,13 @@ Write .duo/sealed/reveal_packet.json with this exact shape and factual values fr
 Use status ready only when the runnable artifact and checks support it; otherwise use partial or failed and name the caveats. Do not use the run-folder name as appName.`
 }
 
+function sourceExecutionContract(): string {
+  return `SOURCE EXECUTION RULES
+- The shell already starts at the workspace root. Never run cd or prefix a command with cd; target app/... paths directly.
+- On Windows, prefer npm.cmd and npx.cmd (plus the matching .cmd or .exe package-runner shim) so PowerShell does not resolve a blocked script shim.
+- If a tool call is denied because the permission or safety classifier is unavailable, do not retry that identical tool or command. Record the limitation once in .duo/board.json, fall back to Read, Glob, Grep, Edit, Write, or another preapproved verifier, and finish the handoff with the available evidence.`
+}
+
 function common(input: ComposeTurnStagePromptInput): string {
   const other = input.turn.agent === 'claude' ? 'Codex' : 'Claude Code'
   const brief = input.briefReference
@@ -101,6 +113,7 @@ ${input.quotaHandoffFrom
 
 BOUNDARIES
 - Stay inside this workspace. Never inspect runtime telemetry directories or parent/sibling directories.
+- Treat app/ as the generated product root. Create and edit all product source, manifests, assets, and product tests under app/, never beside it.
 - Do not ask the human for product decisions.
 - Both agents design and code. Preserve the teammate's accepted work.
 - Keep hidden nouns private. Public text uses [APP_NAME], [FEATURE], [DOMAIN], or [REDACTED].
@@ -115,8 +128,16 @@ function dialogueCapsuleContract(input: ComposeTurnStagePromptInput): string {
       ? 'Include `pitches` with exactly two compact private solution approaches for the requested product. Compare architecture, UX, or implementation strategy; neither candidate may replace the product. Each needs title, idea, appeal, and risk.'
       : 'Include `pitches` with exactly two compact private product candidates. Each needs title, idea, appeal, and risk.'
     : 'Set `pitches` to an empty array unless presenting a genuinely new candidate.'
+  const pitchCatalog = input.pitchCatalog?.slice(0, 8).map((pitch) =>
+    `${pitch.pitchId} | ${pitch.agent} | ${pitch.title.replace(/[\r\n|]+/gu, ' ').replace(/\s+/gu, ' ').trim()}`
+  ).join('\n')
+  const selectionContract = input.turn.phase === 'round.consensus'
+    ? `IMMUTABLE PITCH CATALOG
+${pitchCatalog || 'No immutable pitches are available; do not invent source IDs.'}
+Set consensus.sourcePitchIds to the exact one or two pitch IDs from this catalog that materially source the decision. Never credit every pitch by default and never invent an ID.`
+    : ''
   const consensusContract = input.turn.phase === 'round.consensus'
-    ? `Include \`consensus\` with appName, idea, summary, an implementation-ready spec, and redaction terms.${serious ? ' The spec must be at least 120 characters, reuse the brief’s important product terms, and end with an "Acceptance checks" section containing at least two specific bullet checks that cover the stated requirements.' : ''} Include exactly two similarly weighted source-changing tasks: one claimed by claude and one by codex. Every task needs impact (core or substantial), a concrete expectedOutcome, 1-4 concise acceptanceChecks, risk, and 1-12 expected source file boundaries in \`files\`. No copy-only, docs-only, or verification-only consolation task.`
+    ? `Include \`consensus\` with appName, idea, summary, an implementation-ready spec, and redaction terms.${serious ? ' The spec must be at least 120 characters, explicitly preserve every binding product requirement and requested quality direction (including visual, readability, interaction, and evidence expectations when present), reuse the brief’s important product terms, and end with an "Acceptance checks" section containing at least two specific bullet checks that cover the stated requirements.' : ''} Include exactly two similarly weighted source-changing tasks: one claimed by claude and one by codex. Every task needs impact (core or substantial), a concrete expectedOutcome, 1-4 concise acceptanceChecks, risk, and 1-12 expected source file boundaries in \`files\`. Every task file boundary must begin with \`app/\` (for example \`app/src/**\` or \`app/tests/**\`); the workspace root is not a product source tree. No copy-only, docs-only, or verification-only consolation task.`
     : 'Set `consensus` to null. Keep `tasks` empty until the direction is sealed.'
   return `DIALOGUE CAPSULE CONTRACT
 Return exactly one schema-valid JSON object. The orchestrator will persist it; you have no workspace tools in this stage.
@@ -132,7 +153,25 @@ Return exactly one schema-valid JSON object. The orchestrator will persist it; y
 - The redactions array lists every private pitch title, chosen app name, and distinctive mechanic/product term that public text must not reveal.
 - Do not manufacture agreement. Respond to the teammate context above in plain language.
 ${pitchContract}
+${selectionContract}
 ${consensusContract}`
+}
+
+function dialogueRecoveryGuidance(input: ComposeTurnStagePromptInput): string {
+  const reasons = new Set(input.recoveryReasons ?? [])
+  if (reasons.has('consensus-quality-contract')) {
+    return `QUALITY CONTRACT REPAIR
+The prior consensus failed the binding quality brief. Rewrite consensus.idea, consensus.summary, and consensus.spec so they explicitly preserve every binding product requirement and requested quality direction. Do not treat visual direction, readability, accessibility, interaction feedback, or verification as optional implementation detail. Keep the agreed product and valid pitch IDs; repair only the omitted contract coverage.`
+  }
+  if (reasons.has('consensus-provenance')) {
+    return `PROVENANCE REPAIR
+Keep the agreed direction, but set consensus.sourcePitchIds only to the exact one or two immutable pitch IDs that materially source it. Do not invent, broaden, or replace the recorded selection.`
+  }
+  if (reasons.has('structured-tool-activity')) {
+    return `TOOL-BOUNDARY REPAIR
+Return the structured capsule directly. Do not call, name, or simulate workspace tools in this tool-free dialogue stage.`
+  }
+  return ''
 }
 
 function stagedRecoveryCapsuleContract(input: ComposeTurnStagePromptInput): string {
@@ -165,12 +204,14 @@ Stop immediately after those coordination records are valid. Do not edit app sou
 
 COHESIVE CONTRIBUTION
 This is one fresh, self-contained source contribution. Do not expect a later paid opening or verdict call.
+${sourceExecutionContract()}
 - State your direct answer to the teammate's latest position, then act on it.
 - Read .duo/sealed/idea.md, .duo/sealed/spec.md, and .duo/board.json before choosing the implementation boundary. The complete sealed decision outranks a shortened handoff.
 - Batch independent reads and searches. Inspect only files needed for this mission; do not tour the repository.
 - A small app-owned skill lives at .duo/private/skills/duo-quality/SKILL.md. Use it when it sharpens implementation or review; do not reread it repeatedly.
 - ${capabilityContract(input.customizationProfile)}
 - Git metadata is supervisor-private and intentionally absent here. Do not run Git commands; inspect and verify the workspace files directly.
+- On Windows use npm.cmd; elsewhere use npm. Dependency setup must use npm install --ignore-scripts. Do not use npx, alternate package managers, or arbitrary inline node programs. Prefer package scripts, node --check, or node --test for verification.
 - Preserve accepted teammate work. For an integration turn, review that work before adding your distinct slice.
 - Claim or update your matching task in .duo/board.json, implement the goal, and run the smallest useful verification set.
 - Keep source changes inside the task's expected file boundaries; satisfy its concise acceptance checks and preserve the expectedOutcome as the definition of done.
@@ -184,6 +225,7 @@ The supervisor builds the reveal packet from verified evidence. Do not spend tim
 
 WORK LEASE
 Implement the distinct source-changing goal and produce real workspace evidence. Do not redo or reopen the settled product decision unless the current build proves it impossible.
+${sourceExecutionContract()}
 Read .duo/sealed/idea.md, .duo/sealed/spec.md, and .duo/board.json before choosing the implementation boundary.
 Use the supervisor FOCUS BATON as the starting map. ${capabilityContract(input.customizationProfile)}
 Claim or update the matching task in .duo/board.json, keep the teammate's slice intact, run the most useful available checks, and leave the workspace in a recoverable state.
@@ -209,6 +251,7 @@ Stop immediately after the verdict and opinion records are valid.`
 CONTRACT-ONLY RECOVERY — STRUCTURED DIALOGUE
 The previous response was missing or invalid: ${(input.recoveryReasons ?? []).join(', ') || 'structured dialogue capsule'}.
 Do not inspect or edit the workspace. Correct only the response contract and return one complete capsule.
+${dialogueRecoveryGuidance(input)}
 ${dialogueCapsuleContract(input)}`
     }
     return `${header}

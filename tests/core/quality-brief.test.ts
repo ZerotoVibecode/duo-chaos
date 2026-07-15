@@ -106,6 +106,62 @@ describe('quality brief compiler', () => {
     expect(violating.valid).toBe(false)
   })
 
+  it('separates positive requirements from the undesired states they forbid', () => {
+    const brief = compileQualityBrief({
+      humanBrief: [
+        'Fit cleanly at 900x640 and 1600x900 without clipped primary controls or page-level horizontal overflow.',
+        'Run fully locally with no backend, account, analytics, remote fonts, or runtime network dependency.'
+      ].join(' '),
+      missionProfile: 'serious'
+    })
+    const required = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'require')
+    const forbidden = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'forbid')
+
+    expect(required.map((constraint) => constraint.sourceText).join(' ')).toMatch(/fit cleanly.*run fully locally/is)
+    expect(forbidden.map((constraint) => constraint.sourceText).join(' ')).toMatch(/without clipped.*no backend/is)
+    expect(forbidden.flatMap((constraint) => constraint.coverageTerms)).not.toEqual(
+      expect.arrayContaining(['primary', 'control', 'pagelevel'])
+    )
+
+    const compliant = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Signal Garden',
+      idea: 'A local-first task garden.',
+      summary: 'The responsive product works at 900x640 and 1600x900.',
+      spec: 'Fit cleanly at both target sizes with no clipped controls or horizontal overflow. It uses an overflow chip inside the garden, while the page remains local-first with no backend, account, analytics, remote fonts, or runtime network dependency.'
+    })
+    const violating = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Signal Garden Cloud',
+      idea: 'A remote task garden with a hosted backend.',
+      summary: 'Analytics and user accounts synchronize state.',
+      spec: 'The primary controls are clipped at 900x640 and the page has horizontal overflow.'
+    })
+
+    expect(compliant).toMatchObject({ valid: true, violations: [] })
+    expect(violating.valid).toBe(false)
+  })
+
+  it('matches prohibited morphology inside one affirmative clause without combining unrelated clauses', () => {
+    const brief = compileQualityBrief({
+      humanBrief: 'Build a local design tool. Avoid remote fonts.',
+      missionProfile: 'serious'
+    })
+    const compliant = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Local Studio',
+      idea: 'A local design tool with bundled typography.',
+      summary: 'Remote sync is optional. The font is bundled locally.',
+      spec: 'Keep all design work local and load bundled type assets.'
+    })
+    const violating = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Remote Studio',
+      idea: 'A local design tool whose typography comes from a hosted service.',
+      summary: 'A remote font loads at runtime.',
+      spec: 'Fetch the font before rendering the editor.'
+    })
+
+    expect(compliant).toMatchObject({ valid: true, violations: [] })
+    expect(violating.valid).toBe(false)
+  })
+
   it('formats an immutable post-consensus baton without repaying the full quality prompt', () => {
     const brief = compileQualityBrief({
       humanBrief: 'Create an accessible offline CSV review tool for documentary editors without analytics.',

@@ -22,7 +22,7 @@ afterEach(async () => {
 })
 
 describe('artifact preview protocol handler', () => {
-  test('publishes deterministic compact and full-screen quality viewports', () => {
+  test('publishes deterministic windowed and full-screen desktop quality viewports', () => {
     expect(ARTIFACT_QUALITY_VIEWPORTS).toEqual([
       { id: 'compact', width: 900, height: 640 },
       { id: 'full', width: 1600, height: 900 }
@@ -106,6 +106,54 @@ describe('artifact preview protocol handler', () => {
     expect(evidence.interactionAttempted).toBe(true)
     expect(evidence.interactionSucceeded).toBe(false)
     expect(evidence.interactionObservedChanges).toEqual([])
+  })
+
+  test('does not treat a native input value mutation as app-observed behavior', async () => {
+    const dom = new JSDOM('<!doctype html><html><body><main><label for="name">Name</label><input id="name" type="text"></main></body></html>', {
+      runScripts: 'dangerously',
+      url: 'https://artifact.test/'
+    })
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 120, bottom: 40, width: 120, height: 40, toJSON: () => ({}) })
+    })
+
+    const evidence = await dom.window.eval(DOM_QUALITY_INSPECTION) as {
+      interactionAttempted: boolean
+      interactionSucceeded: boolean
+      interactionAttemptCount: number
+      interactionSuccessCount: number
+      interactionObservedChanges: string[]
+    }
+
+    expect(evidence.interactionAttempted).toBe(true)
+    expect(evidence.interactionAttemptCount).toBe(1)
+    expect(evidence.interactionSuccessCount).toBe(0)
+    expect(evidence.interactionSucceeded).toBe(false)
+    expect(evidence.interactionObservedChanges).toEqual([])
+  })
+
+  test('exercises multiple controls and records each app-observed response', async () => {
+    const dom = new JSDOM('<!doctype html><html><body><main><button id="first" type="button">First</button><button id="second" type="button">Second</button><output id="result">Waiting</output></main><script>document.querySelector("#first").addEventListener("click", () => document.querySelector("#result").textContent = "First complete"); document.querySelector("#second").addEventListener("click", () => document.querySelector("#result").textContent = "Second complete")</script></body></html>', {
+      runScripts: 'dangerously',
+      url: 'https://artifact.test/'
+    })
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 120, bottom: 40, width: 120, height: 40, toJSON: () => ({}) })
+    })
+
+    const evidence = await dom.window.eval(DOM_QUALITY_INSPECTION) as {
+      interactionAttemptCount: number
+      interactionSuccessCount: number
+      interactionSucceeded: boolean
+      interactionObservedChanges: string[]
+    }
+
+    expect(evidence.interactionAttemptCount).toBe(2)
+    expect(evidence.interactionSuccessCount).toBe(2)
+    expect(evidence.interactionSucceeded).toBe(true)
+    expect(evidence.interactionObservedChanges).toContain('dom')
   })
 
   test('accepts a safe generic interaction only when it causes an observable state change', async () => {

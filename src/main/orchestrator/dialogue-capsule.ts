@@ -24,6 +24,7 @@ import {
   type ConsensusProvenanceRecord,
   type PitchProvenanceRecord
 } from './consensus-provenance'
+import { canonicalAppSourceBoundaries } from './app-source-boundary'
 
 const PUBLIC_TEXT_PRESENTATION_LIMIT = 180
 const PROVIDER_PUBLIC_TEXT_LIMIT = 1_200
@@ -78,6 +79,7 @@ const redactionTermSchema = z.object({
 
 const consensusSchema = z.object({
   appName: z.string().trim().min(1).max(120),
+  sourcePitchIds: z.array(z.string().regex(/^pitch-[a-f0-9]{24}$/u)).max(2).default([]),
   idea: z.string().trim().min(1).max(800),
   summary: z.string().trim().min(1).max(1_200),
   spec: z.string().trim().min(1).max(8_000),
@@ -166,9 +168,13 @@ export const DIALOGUE_CAPSULE_JSON_SCHEMA = {
         {
           type: 'object',
           additionalProperties: false,
-          required: ['appName', 'idea', 'summary', 'spec', 'redactions'],
+          required: ['appName', 'sourcePitchIds', 'idea', 'summary', 'spec', 'redactions'],
           properties: {
             appName: { type: 'string', minLength: 1, maxLength: 120 },
+            sourcePitchIds: {
+              type: 'array', minItems: 1, maxItems: 2,
+              items: { type: 'string', pattern: '^pitch-[a-f0-9]{24}$' }
+            },
             idea: { type: 'string', minLength: 1, maxLength: 800 },
             summary: { type: 'string', minLength: 1, maxLength: 1_200 },
             spec: { type: 'string', minLength: 1, maxLength: 8_000 },
@@ -358,6 +364,38 @@ function normalizedSecretTerm(value: string): string {
     .replace(/\s+/g, ' ')
 }
 
+function secretTermKey(value: string): string {
+  const lexical = normalizedSecretTerm(value)
+  if (lexical) return `text:${lexical}`
+  const raw = value.normalize('NFKC').trim()
+  return raw ? `raw:${raw}` : ''
+}
+
+function isProductNamePlaceholder(value: string): boolean {
+  return /^(?:\[\s*(?:app|product)[_ -]?name\s*\]|\{\{\s*(?:app|product)[_ -]?name\s*\}\}|<\s*(?:app|product)[_ -]?name\s*>|(?:app|product)[_ -]name)$/iu.test(value.trim())
+}
+
+function hydratePrivateConsensusName(capsule: DialogueCapsule): DialogueCapsule {
+  if (!capsule.consensus || !isProductNamePlaceholder(capsule.consensus.appName)) return capsule
+  const candidates = [...capsule.redactions, ...capsule.consensus.redactions]
+    .filter((term) => {
+      const label = normalizedSecretTerm(term.label)
+      return label === 'app name' || label === 'product name'
+    })
+    .map((term) => term.value.trim())
+    .filter((value) => value && !isProductNamePlaceholder(value))
+  const unique = new Map(candidates.map((value) => [secretTermKey(value), value]))
+  if (unique.size !== 1) {
+    throw new DialogueCapsuleError('A redacted consensus app name requires exactly one private app-name term.')
+  }
+  const appName = [...unique.values()][0]
+  if (!appName) throw new DialogueCapsuleError('The private consensus app name is missing.')
+  return {
+    ...capsule,
+    consensus: { ...capsule.consensus, appName }
+  }
+}
+
 function canonicalSecretTitle(value: string): string {
   const trimmed = value.trim()
   const decorated = trimmed.match(/^(.*?)(?:\s*[([{]|\s+(?:—|–|-|\||·)\s+|:\s+)/u)?.[1]?.trim()
@@ -365,13 +403,8 @@ function canonicalSecretTitle(value: string): string {
 }
 
 function isCoveredByRedaction(value: string, redactions: ReadonlySet<string>): boolean {
-  const normalizedValue = normalizedSecretTerm(value)
-  const normalizedBase = normalizedSecretTerm(canonicalSecretTitle(value))
-  if (!normalizedValue) return false
-  return [...redactions].some((term) => {
-    const normalizedTerm = normalizedSecretTerm(term)
-    return Boolean(normalizedTerm) && (normalizedValue === normalizedTerm || normalizedBase === normalizedTerm)
-  })
+  const keys = new Set([secretTermKey(value), secretTermKey(canonicalSecretTitle(value))].filter(Boolean))
+  return keys.size > 0 && [...redactions].some((term) => keys.has(secretTermKey(term)))
 }
 
 interface RequiredRedactionTerm {
@@ -387,13 +420,13 @@ function reserveRequiredRedactions(
   const result: DialogueCapsule['redactions'] = []
   const seen = new Set<string>()
   for (const term of redactions) {
-    const key = normalizedSecretTerm(term.value)
+    const key = secretTermKey(term.value)
     if (!key || seen.has(key)) continue
     seen.add(key)
     result.push(term)
   }
 
-  const requiredKeys = new Set(required.map((term) => normalizedSecretTerm(term.value)))
+  const requiredKeys = new Set(required.map((term) => secretTermKey(term.value)))
 
   for (const term of required) {
     if (isCoveredByRedaction(term.source, new Set(result.map((candidate) => candidate.value)))) continue
@@ -401,17 +434,17 @@ function reserveRequiredRedactions(
       let replaceIndex = -1
       for (let index = result.length - 1; index >= 0; index -= 1) {
         const candidate = result[index]
-        if (candidate && !requiredKeys.has(normalizedSecretTerm(candidate.value))) {
+        if (candidate && !requiredKeys.has(secretTermKey(candidate.value))) {
           replaceIndex = index
           break
         }
       }
       if (replaceIndex >= 0) {
-        seen.delete(normalizedSecretTerm(result[replaceIndex]?.value ?? ''))
+        seen.delete(secretTermKey(result[replaceIndex]?.value ?? ''))
         result.splice(replaceIndex, 1)
       }
     }
-    const key = normalizedSecretTerm(term.value)
+    const key = secretTermKey(term.value)
     if (key && !seen.has(key) && result.length < 24) {
       result.push({ value: term.value, label: term.label })
       seen.add(key)
@@ -507,47 +540,59 @@ function assertMaterialConsensusTasks(tasks: DialogueCapsule['tasks']): void {
   }
 }
 
+function canonicalConsensusTaskBoundaries(tasks: DialogueCapsule['tasks']): DialogueCapsule['tasks'] {
+  return tasks.map((task) => {
+    const files = canonicalAppSourceBoundaries(task.files)
+    if (files.length === 0 || files.includes('[WORKSPACE_FILE]') ||
+      task.files.some((file) => canonicalAppSourceBoundaries([file]).length === 0)) {
+      throw new DialogueCapsuleError('Consensus task file boundaries must be safe workspace-relative paths inside app/.')
+    }
+    return { ...task, files }
+  })
+}
+
 export function validateDialogueCapsuleForTurn(
   capsule: DialogueCapsule,
   contract: DialogueTurnContract
 ): DialogueCapsule {
-  const repairedRedactions = repairedTitleRedactions(capsule)
-  const repairedConsensusRedactions = capsule.consensus
-    ? reserveRequiredRedactions(capsule.consensus.redactions, [{
-        source: capsule.consensus.appName,
-        value: canonicalSecretTitle(capsule.consensus.appName),
+  const hydratedCapsule = hydratePrivateConsensusName(capsule)
+  const repairedRedactions = repairedTitleRedactions(hydratedCapsule)
+  const repairedConsensusRedactions = hydratedCapsule.consensus
+    ? reserveRequiredRedactions(hydratedCapsule.consensus.redactions, [{
+        source: hydratedCapsule.consensus.appName,
+        value: canonicalSecretTitle(hydratedCapsule.consensus.appName),
         label: 'app name'
       }])
     : undefined
   const safeCapsule = dialogueCapsuleSchema.parse({
-    ...capsule,
+    ...hydratedCapsule,
     redactions: repairedRedactions,
-    ...(capsule.consensus && repairedConsensusRedactions
-      ? { consensus: { ...capsule.consensus, redactions: repairedConsensusRedactions } }
+    ...(hydratedCapsule.consensus && repairedConsensusRedactions
+      ? { consensus: { ...hydratedCapsule.consensus, redactions: repairedConsensusRedactions } }
       : {})
   })
 
   if (contract.kind === 'pitch') {
-    if (capsule.pitches.length !== 2) throw new DialogueCapsuleError('Pitch turns require exactly two private pitches.')
-    if (capsule.tasks.length !== 0 || capsule.consensus !== null) {
+    if (hydratedCapsule.pitches.length !== 2) throw new DialogueCapsuleError('Pitch turns require exactly two private pitches.')
+    if (hydratedCapsule.tasks.length !== 0 || hydratedCapsule.consensus !== null) {
       throw new DialogueCapsuleError('Pitch turns cannot create tasks or seal consensus.')
     }
     return safeCapsule
   }
 
   if (contract.phase === 'round.consensus') {
-    if (!capsule.consensus) throw new DialogueCapsuleError('The consensus turn must include a sealed consensus.')
-    if (capsule.pitches.length !== 0) throw new DialogueCapsuleError('The consensus turn cannot introduce fresh pitches.')
-    if (capsule.tasks.length !== 2) throw new DialogueCapsuleError('The consensus turn requires exactly two balanced tasks.')
-    if (new Set(capsule.tasks.map((task) => task.id)).size !== capsule.tasks.length) {
+    if (!hydratedCapsule.consensus) throw new DialogueCapsuleError('The consensus turn must include a sealed consensus.')
+    if (hydratedCapsule.pitches.length !== 0) throw new DialogueCapsuleError('The consensus turn cannot introduce fresh pitches.')
+    if (hydratedCapsule.tasks.length !== 2) throw new DialogueCapsuleError('The consensus turn requires exactly two balanced tasks.')
+    if (new Set(hydratedCapsule.tasks.map((task) => task.id)).size !== hydratedCapsule.tasks.length) {
       throw new DialogueCapsuleError('Consensus task identifiers must be unique.')
     }
-    const tasks = balancedConsensusTasks(safeCapsule.tasks)
+    const tasks = canonicalConsensusTaskBoundaries(balancedConsensusTasks(safeCapsule.tasks))
     assertMaterialConsensusTasks(tasks)
-    return tasks === safeCapsule.tasks ? safeCapsule : { ...safeCapsule, tasks }
+    return { ...safeCapsule, tasks }
   }
 
-  if (capsule.consensus !== null || capsule.tasks.length !== 0) {
+  if (hydratedCapsule.consensus !== null || hydratedCapsule.tasks.length !== 0) {
     throw new DialogueCapsuleError('Pre-consensus critique turns cannot create tasks or seal consensus.')
   }
   return safeCapsule
@@ -566,11 +611,74 @@ function capsulePrivateRedactions(capsule: DialogueCapsule): DialogueCapsule['re
   ]
   const seen = new Set<string>()
   return terms.filter((term) => {
-    const key = normalizedSecretTerm(term.value)
+    const key = secretTermKey(term.value)
     if (!key || seen.has(key)) return false
     seen.add(key)
     return true
   })
+}
+
+function redactionPlaceholder(term: DialogueCapsule['redactions'][number]): '[APP_NAME]' | '[FEATURE]' {
+  const label = normalizedSecretTerm(term.label)
+  return /\b(?:app|name|pitch|product|title)\b/iu.test(label) ? '[APP_NAME]' : '[FEATURE]'
+}
+
+function flexibleSecretPattern(value: string): RegExp | undefined {
+  const raw = value.normalize('NFKC').trim()
+  const tokens = normalizedSecretTerm(value).split(' ').filter(Boolean)
+  if (tokens.length === 0) {
+    return raw
+      ? new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'gu')
+      : undefined
+  }
+  const genericSingleWord = new Set([
+    'app', 'build', 'code', 'echo', 'field', 'flow', 'focus', 'forge', 'garden', 'local',
+    'pulse', 'room', 'signal', 'spark', 'studio', 'task', 'work'
+  ])
+  if (tokens.length === 1 && genericSingleWord.has(tokens[0]!) && /^[\p{L}\p{N}]+$/u.test(raw)) {
+    const escapedRaw = raw.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+    return new RegExp(`(?<![\\p{L}\\p{N}])${escapedRaw}(?![\\p{L}\\p{N}])`, 'gu')
+  }
+  const escaped = tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}])${escaped.join('[^\\p{L}\\p{N}]+')}(?![\\p{L}\\p{N}])`,
+    'giu'
+  )
+}
+
+function redactPublicValue(
+  value: string,
+  terms: DialogueCapsule['redactions']
+): string {
+  let result = value
+  const ordered = [...terms].sort((left, right) =>
+    (normalizedSecretTerm(right.value).length || right.value.normalize('NFKC').trim().length) -
+    (normalizedSecretTerm(left.value).length || left.value.normalize('NFKC').trim().length)
+  )
+  for (const term of ordered) {
+    const pattern = flexibleSecretPattern(term.value)
+    if (pattern) result = result.replace(pattern, redactionPlaceholder(term))
+  }
+  return result
+}
+
+function redactDialoguePublicText(
+  capsule: DialogueCapsule,
+  accumulatedRedactions: DialogueCapsule['redactions']
+): DialogueCapsule {
+  const terms = [...accumulatedRedactions, ...capsulePrivateRedactions(capsule)]
+  return {
+    ...capsule,
+    opening: { ...capsule.opening, publicText: redactPublicValue(capsule.opening.publicText, terms) },
+    counter: { ...capsule.counter, publicText: redactPublicValue(capsule.counter.publicText, terms) },
+    verdict: { ...capsule.verdict, publicText: redactPublicValue(capsule.verdict.publicText, terms) },
+    opinion: { ...capsule.opinion, publicText: redactPublicValue(capsule.opinion.publicText, terms) },
+    tasks: capsule.tasks.map((task) => ({
+      ...task,
+      publicTitle: redactPublicValue(task.publicTitle, terms),
+      publicDescription: redactPublicValue(task.publicDescription, terms)
+    }))
+  }
 }
 
 function assertPublicTextIsSpoilerSafe(
@@ -584,14 +692,13 @@ function assertPublicTextIsSpoilerSafe(
     capsule.opinion.publicText,
     ...capsule.tasks.flatMap((task) => [task.publicTitle, task.publicDescription])
   ].join('\n')
-  const normalizedPublicText = ` ${normalizedSecretTerm(publicText)} `
   const privateTerms = [
     ...accumulatedRedactions.map((term) => term.value),
     ...capsulePrivateRedactions(capsule).map((term) => term.value)
   ]
   for (const term of privateTerms) {
-    const normalizedTerm = normalizedSecretTerm(term)
-    if (normalizedTerm.length >= 2 && normalizedPublicText.includes(` ${normalizedTerm} `)) {
+    const pattern = flexibleSecretPattern(term)
+    if (pattern?.test(publicText)) {
       throw new DialogueCapsuleError(`Public dialogue contains sealed term "${term}".`)
     }
   }
@@ -622,7 +729,7 @@ async function persistAccumulatedRedactions(
 ): Promise<void> {
   const terms = new Map<string, DialogueCapsule['redactions'][number]>()
   for (const term of [...previous, ...capsulePrivateRedactions(capsule)]) {
-    const key = normalizedSecretTerm(term.value)
+    const key = secretTermKey(term.value)
     if (key && !terms.has(key)) terms.set(key, term)
   }
   if (terms.size > ACCUMULATED_REDACTION_LIMIT) {
@@ -904,7 +1011,9 @@ async function preparePrivateQualityContract(input: DialogueCapsuleProtocolInput
   const provenance = resolveConsensusProvenance({
     runId: input.runId,
     appName: consensus.appName,
+    humanBrief: input.humanBrief,
     qualityBriefFingerprint: brief.fingerprint,
+    selectedSourcePitchIds: consensus.sourcePitchIds,
     pitches
   })
   if (!provenance) {
@@ -943,10 +1052,11 @@ export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtoco
   }
   const preparedQuality = await preparePrivateQualityContract({ ...input, capsule: providerCapsule })
   const accumulatedRedactions = await readAccumulatedRedactions(input.workspacePath)
+  const spoilerSafeProviderCapsule = redactDialoguePublicText(providerCapsule, accumulatedRedactions)
   // Validate the complete provider statement before presentation clipping so a
   // sealed term near the end cannot be hidden beyond the broadcast boundary.
-  assertPublicTextIsSpoilerSafe(providerCapsule, accumulatedRedactions)
-  const capsule = normalizeDialoguePublicText(providerCapsule)
+  assertPublicTextIsSpoilerSafe(spoilerSafeProviderCapsule, accumulatedRedactions)
+  const capsule = normalizeDialoguePublicText(spoilerSafeProviderCapsule)
   await persistAccumulatedRedactions(input.workspacePath, accumulatedRedactions, capsule)
   const validated = { ...input, capsule }
   const timestamp = new Date().toISOString()

@@ -45,13 +45,21 @@ function humanBriefFromPrompt(prompt: string): string {
     'Build a useful, runnable local interaction.'
 }
 
+function sourcePitchIdsFromPrompt(prompt: string, title: string): string[] {
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  return [...prompt.matchAll(new RegExp(`^(pitch-[a-f0-9]{24}) \\| (?:claude|codex) \\| ${escapedTitle}$`, 'gimu'))]
+    .map((match) => match[1])
+    .filter((pitchId): pitchId is string => pitchId !== undefined)
+    .slice(0, 2)
+}
+
 function escapeFixtureHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
 }
 
 function qualityBackedFixtureHtml(humanBrief: string): string {
   const evidence = /\b(?:do not|don't|never|without)\b/iu.test(humanBrief)
-    ? 'Independent supervisor proof is required before readiness.'
+    ? `${humanBrief} Independent supervisor proof is required before readiness.`
     : humanBrief
   return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Signal Garden</title></head><body><main><h1>Signal Garden</h1><p>${escapeFixtureHtml(evidence)}</p><button type="button">Run interaction</button></main></body></html>`
 }
@@ -59,7 +67,7 @@ function qualityBackedFixtureHtml(humanBrief: string): string {
 function fixtureDialogueCapsule(round: number, agent: 'claude' | 'codex', prompt: string): Record<string, unknown> {
   const humanBrief = humanBriefFromPrompt(prompt)
   const consensusBrief = /\b(?:do not|don't|never|without)\b/iu.test(humanBrief)
-    ? 'Respect every recorded prohibition in the human brief and require independent proof before readiness.'
+    ? `${humanBrief} Respect every recorded prohibition in that brief and require independent proof before readiness.`
     : humanBrief
   const speech = (move: string) => ({
     publicText: `I think the shared [FEATURE] needs a concrete ${move} because the result must stay useful and testable.`,
@@ -89,6 +97,7 @@ function fixtureDialogueCapsule(round: number, agent: 'claude' | 'codex', prompt
     consensus: round === 4
       ? {
           appName: 'Signal Garden',
+          sourcePitchIds: sourcePitchIdsFromPrompt(prompt, 'Signal Garden'),
           idea: `${consensusBrief} The selected product is a surprising, runnable local interaction built by both agents.`,
           summary: `Signal Garden preserves the complete binding quality contract: ${consensusBrief}`,
           spec: `${consensusBrief} Build one useful, responsive, accessible interaction. Claude and Codex each complete a distinct source-changing slice, verify it, and leave a reply-linked handoff.`,
@@ -1164,9 +1173,11 @@ describe('broadcast turn orchestration', () => {
     const verificationRequest = vi.mocked(supervisorVerifier.verify).mock.calls[0]?.[0] as {
       timeoutMs?: number
       abortSignal?: AbortSignal
+      qualityContract?: { missionProfile?: string }
     } | undefined
     expect(verificationRequest?.timeoutMs).toBe(600_000)
     expect(verificationRequest?.abortSignal).toBeInstanceOf(AbortSignal)
+    expect(verificationRequest?.qualityContract?.missionProfile).toBe('surprise')
     expect(orchestrator.getSnapshot(result.runId)).toMatchObject({
       status: 'paused',
       pause: { reason: 'quality-repair', resumable: true }

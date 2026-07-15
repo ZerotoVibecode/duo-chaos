@@ -54,9 +54,23 @@ function agentOf(options: ProcessRunOptions): 'claude' | 'codex' {
   return options.id.includes('claude') ? 'claude' : 'codex'
 }
 
-function dialogueCapsule(round: number): Record<string, unknown> {
+function sourcePitchIdsFromPrompt(prompt: string, title: string): string[] {
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  return [...prompt.matchAll(new RegExp(`^(pitch-[a-f0-9]{24}) \\| (?:claude|codex) \\| ${escapedTitle}$`, 'gimu'))]
+    .map((match) => match[1])
+    .filter((pitchId): pitchId is string => pitchId !== undefined)
+    .slice(0, 2)
+}
+
+function humanBriefFromPrompt(prompt: string): string {
+  return prompt.match(/^HUMAN BRIEF\r?\n([^\r\n]+)/mi)?.[1]?.trim() ??
+    'Exercise a synthetic provider boundary without private project data.'
+}
+
+function dialogueCapsule(round: number, prompt: string): Record<string, unknown> {
   const pitch = round <= 2
   const consensus = round === 4
+  const humanBrief = humanBriefFromPrompt(prompt)
   return {
     opening: {
       publicText: 'I think the bounded [FEATURE] should lead because its success condition is testable.',
@@ -113,9 +127,10 @@ function dialogueCapsule(round: number): Record<string, unknown> {
     consensus: consensus
       ? {
           appName: 'Synthetic Fixture App',
-          idea: 'A synthetic fixture used only for deterministic orchestration tests.',
-          summary: 'A bounded fixture with equal source tasks.',
-          spec: 'Both agents implement one small source slice and preserve the workspace.',
+          sourcePitchIds: sourcePitchIdsFromPrompt(prompt, 'Synthetic Fixture App'),
+          idea: `${humanBrief} This deterministic fixture keeps the requested provider boundary bounded and testable.`,
+          summary: `${humanBrief} Both agents contribute equal source work under the recorded constraints.`,
+          spec: `${humanBrief} Both agents implement one small source slice, preserve the workspace, and verify the provider boundary.`,
           redactions: [{ value: 'Synthetic Fixture App', label: 'APP_NAME' }]
         }
       : null,
@@ -134,7 +149,7 @@ function dialogueCapsule(round: number): Record<string, unknown> {
 
 function emitDialogue(options: ProcessRunOptions): void {
   const agent = agentOf(options)
-  const capsule = dialogueCapsule(roundOf(options))
+  const capsule = dialogueCapsule(roundOf(options), promptOf(options))
   options.onLine('stdout', agent === 'claude'
     ? JSON.stringify({ type: 'result', subtype: 'success', structured_output: capsule })
     : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(capsule) } }))
@@ -246,7 +261,7 @@ class PrettyPrintedAllowedQuotaRunner implements ProcessRunnerPort {
     if (!this.emittedPrettyEnvelope) {
       this.emittedPrettyEnvelope = true
       const agent = agentOf(options)
-      const capsule = dialogueCapsule(roundOf(options))
+      const capsule = dialogueCapsule(roundOf(options), promptOf(options))
       const finalRecord = agent === 'claude'
         ? { type: 'result', subtype: 'success', structured_output: capsule }
         : { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(capsule) } }
@@ -271,7 +286,7 @@ class AmbiguousConsensusRunner implements ProcessRunnerPort {
   run(options: ProcessRunOptions): Promise<ProcessRunResult> {
     const agent = agentOf(options)
     const round = roundOf(options)
-    const capsule = dialogueCapsule(round)
+    const capsule = dialogueCapsule(round, promptOf(options))
     if (round === 4 && Array.isArray(capsule.tasks)) {
       capsule.tasks = capsule.tasks.map((task, index) => ({
         ...(task as Record<string, unknown>),
@@ -388,7 +403,7 @@ describe('provider fault matrix', () => {
             },
             { type: 'assistant', message: { content: [{ type: 'text', text: 'synthetic fixture' }] } },
             {
-              type: 'result', subtype: 'success', structured_output: dialogueCapsule(roundOf(options)),
+              type: 'result', subtype: 'success', structured_output: dialogueCapsule(roundOf(options), promptOf(options)),
               total_cost_usd: 0.05,
               usage: {
                 input_tokens: 10, cache_creation_input_tokens: 20,
@@ -826,16 +841,23 @@ describe('release recovery hardening', () => {
     })
 
     const started = await orchestrator.start(request(root, 6))
-    await within(runner.discovered, 'waiting for Codex session discovery')
-    await new Promise((resolve) => setTimeout(resolve, 30))
-    const durable = new DurableRunStateStore(join(runtimeRoot, started.runId), {
-      runId: started.runId,
-      workspaceId: started.runId
-    })
-    expect((await durable.readManifest()).providerSessions.codex).toBe(runner.sessionId)
-
-    await orchestrator.stop(started.runId)
-    await within(orchestrator.waitForSettled(started.runId), 'stopping blocked session test')
+    try {
+      // A full parallel integration run can spend several seconds scheduling
+      // the four preceding synthetic dialogue turns. This assertion is about
+      // durable session discovery, not scheduler speed, so give that boundary
+      // enough headroom without weakening the production lease.
+      await within(runner.discovered, 'waiting for Codex session discovery', 30_000)
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      const durable = new DurableRunStateStore(join(runtimeRoot, started.runId), {
+        runId: started.runId,
+        workspaceId: started.runId
+      })
+      expect((await durable.readManifest()).providerSessions.codex).toBe(runner.sessionId)
+    } finally {
+      await orchestrator.stop(started.runId).catch(() => undefined)
+      await within(orchestrator.waitForSettled(started.runId), 'stopping blocked session test', 30_000)
+        .catch(() => undefined)
+    }
   })
 })
 

@@ -90,9 +90,9 @@ export function AgentCard({ agent, run }: AgentCardProps): React.JSX.Element {
       </div>
 
       <div className="agent-metrics">
-        <div><BrainCircuit size={14} /><span>Tone</span><strong>{latest?.tone?.replace('-', ' ') ?? latest?.dispatchKind?.replace('-', ' ') ?? stateLabel.toLowerCase()}</strong></div>
-        <div><Gauge size={14} /><span>Confidence</span><strong>{confidence === undefined ? 'Pending' : `${String(confidence)}%`}</strong></div>
-        <div><Code2 size={14} /><span>Messages</span><strong>{contribution.messages}</strong></div>
+        <div><BrainCircuit size={14} /><span className="agent-metric-label"><span className="agent-metric-label-full">Tone</span><span className="agent-metric-label-compact">Tone</span></span><strong>{latest?.tone?.replace('-', ' ') ?? latest?.dispatchKind?.replace('-', ' ') ?? stateLabel.toLowerCase()}</strong></div>
+        <div><Gauge size={14} /><span className="agent-metric-label"><span className="agent-metric-label-full">Confidence</span><span className="agent-metric-label-compact">Conf.</span></span><strong>{confidence === undefined ? 'Pending' : `${String(confidence)}%`}</strong></div>
+        <div><Code2 size={14} /><span className="agent-metric-label"><span className="agent-metric-label-full">Messages</span><span className="agent-metric-label-compact">Msgs</span></span><strong>{contribution.messages}</strong></div>
       </div>
       <div className="confidence-track"><i style={{ width: `${String(confidence ?? 0)}%` }} /></div>
 

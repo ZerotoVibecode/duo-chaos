@@ -79,6 +79,7 @@ export interface ProviderUsageGuardSnapshot {
   acknowledgedAt?: string
   utilization?: number
   resetAt?: string
+  effectiveInputTokens?: number
   totals?: {
     processedInputTokens: number
     cachedInputTokens: number
@@ -87,7 +88,10 @@ export interface ProviderUsageGuardSnapshot {
     calls: number
   }
   limits?: {
-    processedInputTokens: number
+    /** Legacy raw-input limit retained only for loading older durable runs. */
+    processedInputTokens?: number
+    effectiveInputTokens?: number
+    cachedInputTokenWeight?: number
     outputTokens: number
     reasoningTokens: number
   }

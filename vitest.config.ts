@@ -15,7 +15,21 @@ export default defineConfig({
     // tests past 30 seconds even though focused runs finish much sooner.
     testTimeout: 90_000,
     setupFiles: ['./tests/setup.ts'],
-    exclude: ['tests/e2e/**', 'node_modules/**', 'out/**', 'release/**'],
+    // Runtime workspaces and local benchmark harnesses may contain their own
+    // *.test.* files. They are private evidence, not part of Duo Chaos's test
+    // graph, and must never contaminate public CI or coverage discovery.
+    exclude: [
+      'tests/e2e/**',
+      'node_modules/**',
+      'out/**',
+      'release/**',
+      'coverage/**',
+      'test-results/**',
+      'workspaces/**',
+      'runs/**',
+      '.duo/**',
+      '.codex/**'
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary', 'html'],

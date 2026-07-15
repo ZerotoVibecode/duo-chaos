@@ -62,14 +62,41 @@ function meaningfulBriefTerms(brief: string): string[] {
   ))]
 }
 
+function acceptanceHeadingIndex(agentSpecification: string): number {
+  const pattern = /\bacceptance (?:checks|criteria)\s*:?[ \t]*(?=\r?\n|(?:[-*+]|\d+[.)])\s+)/giu
+  for (const match of agentSpecification.matchAll(pattern)) {
+    const index = match.index ?? -1
+    if (index < 0) continue
+    const prefix = agentSpecification.slice(0, index)
+    const boundary = Math.max(
+      prefix.lastIndexOf('\n'),
+      prefix.lastIndexOf('.'),
+      prefix.lastIndexOf('!'),
+      prefix.lastIndexOf('?')
+    )
+    const headingPrefix = prefix.slice(boundary + 1).trim()
+    if (/^(?:#{1,6}|[-*+>]|\*\*|__)?$/u.test(headingPrefix)) return index
+  }
+  return -1
+}
+
 export function analyzeSeriousAgentSpecification(
   brief: string,
   agentSpecification: string
 ): SeriousSpecificationEvidence {
-  const acceptanceHeading = agentSpecification.search(/^\s{0,3}#{0,6}\s*acceptance (?:checks|criteria)\s*:?[ \t]*$/imu)
+  // Structured providers sometimes keep the heading at the end of the final
+  // plan sentence ("... ready. Acceptance checks:") while still returning a
+  // real bullet list on the following lines. Bind to the labeled list rather
+  // than requiring Markdown line-start styling.
+  const acceptanceHeading = acceptanceHeadingIndex(agentSpecification)
   const acceptanceBody = acceptanceHeading >= 0 ? agentSpecification.slice(acceptanceHeading) : ''
-  const acceptanceChecks = acceptanceBody.split(/\r?\n/u).slice(1).flatMap((line) => {
-    const match = line.match(/^\s*(?:[-*+] |\d+[.)]\s+)(?:\[[ xX]\]\s*)?(.+\S)\s*$/u)
+  const checklistBody = acceptanceBody
+    .replace(/^acceptance (?:checks|criteria)\s*:?[ \t]*/iu, '')
+    .trim()
+  const acceptanceChecks = checklistBody
+    .split(/(?:\r?\n|\s+)(?=(?:[-*+]|\d+[.)])\s+)/u)
+    .flatMap((line) => {
+    const match = line.match(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.+\S)\s*$/u)
     const value = match?.[1]?.trim()
     return value && value.length >= 12 ? [value] : []
   }).slice(0, 24)

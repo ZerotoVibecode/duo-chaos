@@ -35,6 +35,9 @@ interface LeaseGuardOptions {
   initialIdleInferenceSteps?: number
 }
 
+const IDENTICAL_PERMISSION_DENIAL_LIMIT = 2
+const TOTAL_PERMISSION_DENIAL_LIMIT = 3
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -46,6 +49,46 @@ function contentOf(providerRecord: ProviderRecord): Record<string, unknown>[] {
   return Array.isArray(message?.content)
     ? message.content.map(record).filter((value): value is Record<string, unknown> => value !== undefined)
     : []
+}
+
+function flattenText(value: unknown, output: string[], depth = 0): void {
+  if (depth > 5 || output.length >= 32) return
+  if (typeof value === 'string') {
+    output.push(value.slice(0, 4_000))
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 32)) flattenText(item, output, depth + 1)
+    return
+  }
+  const valueRecord = record(value)
+  if (!valueRecord) return
+  for (const item of Object.values(valueRecord).slice(0, 32)) flattenText(item, output, depth + 1)
+}
+
+function toolResultText(block: Record<string, unknown>): string {
+  const text: string[] = []
+  flattenText(block.content, text)
+  return text.join(' ')
+}
+
+function isPermissionClassifierDenial(text: string): boolean {
+  if (!text) return false
+  return /\bauto mode\b.{0,160}\bcannot determine\b.{0,160}\b(?:safety|safe)\b/iu.test(text) ||
+    /\b(?:safety|permission) classifier\b.{0,160}\b(?:unavailable|failed|cannot determine)\b/iu.test(text) ||
+    /\b(?:denied by (?:the )?permission policy|tool use (?:was )?denied by (?:the )?permission policy)\b/iu.test(text)
+}
+
+function permissionDenialFingerprint(text: string): string {
+  return text
+    .toLocaleLowerCase('en-US')
+    .replace(/^error:\s*/u, '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+}
+
+function isPermissionControlledCommand(toolName: string): boolean {
+  return /^(?:bash|powershell|shell|command|terminal|exec)$/iu.test(toolName.trim())
 }
 
 function positiveInteger(value: number, name: string): void {
@@ -64,12 +107,16 @@ function nonNegativeInteger(value: number, name: string): void {
  * calls reset idle pressure, so an agent that is still inspecting, editing,
  * testing, or using a capability is never cancelled just because it emitted N
  * messages. The orchestrator may use `request-finalization` to queue a compact
- * handoff, while `shouldTimebox` is reserved for a no-progress reasoning loop.
+ * handoff, while `shouldTimebox` is reserved for a no-progress reasoning loop
+ * or a repeated provider permission-classifier denial. The latter is detected
+ * from completed error tool results, so replayed stream records and unrelated
+ * in-flight tools retain the normal pending-tool semantics.
  */
 export class WorkLeaseGuard {
   private readonly messageIds = new Set<string>()
   private readonly anonymousMessageFingerprints = new Set<string>()
   private readonly pendingTools = new Set<string>()
+  private readonly pendingToolNames = new Map<string, string>()
   private readonly durableTools = new Set<string>()
   private anonymousMessages = 0
   private readonly initialInferenceSteps: number
@@ -79,6 +126,9 @@ export class WorkLeaseGuard {
   private finalizationRequested = false
   private completion = false
   private idleCancellationRequested = false
+  private permissionDenialTotal = 0
+  private readonly permissionDenialFingerprints = new Map<string, number>()
+  private permissionDenialCancellationRequested = false
 
   private readonly agent: 'claude' | 'codex'
 
@@ -148,6 +198,7 @@ export class WorkLeaseGuard {
       // completion of any tool is work progress; write-family tools also mark
       // a durable source boundary suitable for a later finalization handoff.
       this.pendingTools.add(toolId)
+      this.pendingToolNames.set(toolId, name)
       if (/^(?:edit|write|multiedit|notebookedit)$/iu.test(name)) {
         this.durableTools.add(toolId)
         this.durableBoundary = false
@@ -216,16 +267,41 @@ export class WorkLeaseGuard {
     for (const block of contentOf(providerRecord)) {
       const toolId = typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined
       if (block.type !== 'tool_result' || !toolId || !this.pendingTools.delete(toolId)) continue
+      const toolName = this.pendingToolNames.get(toolId) ?? ''
+      this.pendingToolNames.delete(toolId)
       const durable = this.durableTools.delete(toolId)
       if (block.is_error === true) {
         if (durable) this.durableBoundary = false
+        this.observePermissionDenial(block)
         continue
       }
+      if (isPermissionControlledCommand(toolName)) this.resetPermissionDenials()
       this.progress += 1
       this.idleSteps = 0
       this.idleCancellationRequested = false
       if (durable) this.durableBoundary = true
     }
+  }
+
+  private observePermissionDenial(block: Record<string, unknown>): void {
+    const text = toolResultText(block)
+    if (!isPermissionClassifierDenial(text)) return
+    const fingerprint = permissionDenialFingerprint(text)
+    const identical = (this.permissionDenialFingerprints.get(fingerprint) ?? 0) + 1
+    this.permissionDenialFingerprints.set(fingerprint, identical)
+    this.permissionDenialTotal += 1
+    if (
+      identical >= IDENTICAL_PERMISSION_DENIAL_LIMIT ||
+      this.permissionDenialTotal >= TOTAL_PERMISSION_DENIAL_LIMIT
+    ) {
+      this.permissionDenialCancellationRequested = true
+    }
+  }
+
+  private resetPermissionDenials(): void {
+    if (this.permissionDenialCancellationRequested) return
+    this.permissionDenialTotal = 0
+    this.permissionDenialFingerprints.clear()
   }
 
   private inferenceSteps(): number {
@@ -234,7 +310,10 @@ export class WorkLeaseGuard {
 
   private recommendation(): WorkLeaseRecommendation {
     if (this.completion) return 'accept-complete'
-    if (this.idleCancellationRequested && this.pendingTools.size === 0) return 'cancel-idle'
+    if (
+      (this.idleCancellationRequested || this.permissionDenialCancellationRequested) &&
+      this.pendingTools.size === 0
+    ) return 'cancel-idle'
     if (this.finalizationRequested && this.pendingTools.size === 0) return 'request-finalization'
     return 'continue'
   }

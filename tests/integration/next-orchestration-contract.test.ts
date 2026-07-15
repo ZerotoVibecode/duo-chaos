@@ -45,6 +45,8 @@ const deterministicBrowserEvidence: SupervisorBrowserEvidencePort = {
         accessibleInteractiveElementCount,
         interactionAttempted: interactiveElementCount > 0,
         interactionSucceeded: interactiveElementCount > 0 && observableInteraction,
+        interactionAttemptCount: Math.min(3, interactiveElementCount),
+        interactionSuccessCount: observableInteraction ? 1 : 0,
         interactionObservedChanges: observableInteraction ? ['aria', 'dom'] : [],
         consoleErrors: [],
         pageErrors: []
@@ -883,13 +885,30 @@ class EvidenceCompleteRunner implements ProcessRunnerPort {
     const writesRevealFixture = this.options.quotaCodexCode ? codeWork && agent === 'claude' : turn === 6
     if (writesRevealFixture && stage === 'work') {
       await mkdir(join(options.command.cwd, '.duo', 'sealed'), { recursive: true })
+      const seriousInvoiceFixture = /invoice dashboard/iu.test(prompt)
       await writeFile(
         join(options.command.cwd, 'app', 'index.html'),
-        /invoice dashboard/iu.test(prompt)
+        seriousInvoiceFixture
           ? '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Invoice dashboard</title></head><body><main><h1>Accessible invoice dashboard</h1><label for="csv">Offline CSV import</label><input id="csv" type="file"><button type="button" aria-expanded="false" aria-controls="queue" onclick="this.setAttribute(\'aria-expanded\',\'true\');document.getElementById(\'queue\').hidden=false">Open keyboard-first review queue</button><section id="queue" hidden><h2>Review queue ready</h2><p>Keyboard review is available offline.</p></section></main></body></html>'
           : '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ready</title></head><body><main><h1>Private surprise</h1><p>A surprising, runnable local interaction built together.</p><button type="button" aria-label="Run interaction" aria-pressed="false" onclick="this.setAttribute(\'aria-pressed\',\'true\');document.getElementById(\'result\').textContent=\'Interaction complete\'">Run interaction</button><p id="result" aria-live="polite">Ready to run</p></main></body></html>',
         'utf8'
       )
+      if (seriousInvoiceFixture) {
+        await mkdir(join(options.command.cwd, 'app', 'tests'), { recursive: true })
+        await writeFile(
+          join(options.command.cwd, 'app', 'package.json'),
+          `${JSON.stringify({
+            private: true,
+            scripts: { test: 'node --test tests/acceptance.test.js' }
+          }, null, 2)}\n`,
+          'utf8'
+        )
+        await writeFile(
+          join(options.command.cwd, 'app', 'tests', 'acceptance.test.js'),
+          "const test = require('node:test')\nconst assert = require('node:assert/strict')\nconst { readFileSync } = require('node:fs')\nconst { join } = require('node:path')\n\ntest('offline CSV import and keyboard-first invoice review queue are present', () => {\n  const html = readFileSync(join(__dirname, '..', 'index.html'), 'utf8')\n  assert.match(html, /offline CSV import/i)\n  assert.match(html, /keyboard-first review queue/i)\n  assert.match(html, /accessible invoice dashboard/i)\n})\n",
+          'utf8'
+        )
+      }
       if (this.options.sealedMarkdown) {
         await writeFile(
           join(options.command.cwd, '.duo', 'sealed', 'idea.md'),

@@ -21,6 +21,28 @@ function result(overrides: Partial<ProcessRunResult> = {}): ProcessRunResult {
 }
 
 describe('provider failure classifier', () => {
+  it('keeps a supervisor lease cancellation classified as a stage timeout even when the last tool error mentions classifier availability', () => {
+    expect(classifyProviderFailure({
+      agent: 'claude',
+      result: result({
+        exitCode: null,
+        signal: 'SIGTERM',
+        cancelled: true,
+        cancelReason: 'lease'
+      }),
+      records: [{
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            is_error: true,
+            content: 'The safety classifier is temporarily unavailable, so auto mode cannot determine the safety of Bash.'
+          }]
+        }
+      }]
+    })).toMatchObject({ kind: 'stage-timeout', policy: 'partial', source: 'process' })
+  })
+
   it.each([
     [
       'quota',

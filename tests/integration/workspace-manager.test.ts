@@ -32,9 +32,10 @@ describe('workspace manager', () => {
     await expect(
       readFile(join(result.workspacePath, '.duo', 'private', 'transcript.jsonl'), 'utf8')
     ).resolves.toBe('')
-    await expect(readFile(join(result.workspacePath, 'AGENTS.md'), 'utf8')).resolves.toContain(
-      'equal AI coding agents'
-    )
+    const workspaceInstructions = await readFile(join(result.workspacePath, 'AGENTS.md'), 'utf8')
+    expect(workspaceInstructions).toContain('equal AI coding agents')
+    expect(workspaceInstructions).toMatch(/all generated product source.*inside `app\/`/isu)
+    expect(workspaceInstructions).toMatch(/do not create.*(?:`src\/`|`tests\/`).*workspace root/isu)
     await expect(readFile(join(result.workspacePath, 'CLAUDE.md'), 'utf8')).resolves.toContain(
       '@AGENTS.md'
     )

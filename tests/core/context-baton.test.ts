@@ -2,9 +2,35 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildContextBaton } from '../../src/main/orchestrator/context-baton'
+import { buildContextBaton, buildVerificationDigest } from '../../src/main/orchestrator/context-baton'
 
 describe('deterministic context baton', () => {
+  it('maps failed supervisor checks back to exact sealed requirements for the repair agent', () => {
+    const digest = buildVerificationDigest({
+      summary: 'Supervisor verification found missing evidence.',
+      checks: [
+        { id: 'script:test', outcome: 'passed' },
+        { id: 'brief:constraint-visual', outcome: 'failed' },
+        { id: 'brief-test:constraint-input', outcome: 'failed' },
+        {
+          id: 'browser:compact',
+          outcome: 'failed',
+          label: 'Compact viewport render',
+          detail: '3 severely wrapped visible text elements.'
+        }
+      ],
+      constraints: [
+        { id: 'constraint-visual', sourceText: 'Produce a distinctive cinematic visual direction.' },
+        { id: 'constraint-input', sourceText: 'The primary flow works by keyboard and pointer.' }
+      ]
+    })
+
+    expect(digest).toContain('brief:constraint-visual -> Produce a distinctive cinematic visual direction.')
+    expect(digest).toContain('brief-test:constraint-input -> The primary flow works by keyboard and pointer.')
+    expect(digest).toContain('browser:compact -> Compact viewport render; 3 severely wrapped visible text elements.')
+    expect(digest).not.toContain('script:test')
+  })
+
   it('focuses the next agent without leaking host paths, raw logs, or secrets', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-baton-'))
     await mkdir(join(root, 'app', 'src'), { recursive: true })

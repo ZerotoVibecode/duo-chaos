@@ -18,14 +18,14 @@ function AgentLane({ agent, evidence }: { agent: 'claude' | 'codex'; evidence: A
     <article className={`momentum-agent momentum-${agent}`} data-testid={`momentum-${agent}`}>
       <div className="momentum-agent-head"><i aria-hidden="true" /><strong>{name}</strong><span>Recorded</span></div>
       <div className="momentum-metrics" aria-label={`${name} recorded evidence`}>
-        {evidence.acceptedContributions > 0 && <span className="proof-accepted"><PackageCheck size={12} />{quantity(evidence.acceptedContributions, 'accepted contribution')}</span>}
-        {evidence.acceptedReviews > 0 && <span className="proof-accepted"><ShieldCheck size={12} />{quantity(evidence.acceptedReviews, 'current review')}</span>}
-        {evidence.acceptedContributions === 0 && evidence.continuingContributions > 0 && <span className="proof-continuing"><PackageCheck size={12} />{quantity(evidence.continuingContributions, 'contribution continuing', 'contributions continuing')}</span>}
-        {evidence.blockedContributions > 0 && <span className="proof-blocked"><PackageCheck size={12} />{quantity(evidence.blockedContributions, 'blocked contribution')}</span>}
-        <span><MessageSquareReply size={12} />{quantity(evidence.challenges, 'challenge')}</span>
+        {evidence.acceptedContributions > 0 && <span className="proof-accepted" aria-label={quantity(evidence.acceptedContributions, 'accepted contribution')}><PackageCheck size={12} />{evidence.acceptedContributions}<span className="metric-label-full"> accepted {evidence.acceptedContributions === 1 ? 'contribution' : 'contributions'}</span></span>}
+        {evidence.acceptedReviews > 0 && <span className="proof-accepted" aria-label={quantity(evidence.acceptedReviews, 'current review')}><ShieldCheck size={12} />{evidence.acceptedReviews}<span className="metric-label-full"> current {evidence.acceptedReviews === 1 ? 'review' : 'reviews'}</span></span>}
+        {evidence.acceptedContributions === 0 && evidence.continuingContributions > 0 && <span className="proof-continuing" aria-label={quantity(evidence.continuingContributions, 'contribution continuing', 'contributions continuing')}><PackageCheck size={12} />{evidence.continuingContributions}<span className="metric-label-full"> {evidence.continuingContributions === 1 ? 'contribution continuing' : 'contributions continuing'}</span></span>}
+        {evidence.blockedContributions > 0 && <span className="proof-blocked" aria-label={quantity(evidence.blockedContributions, 'blocked contribution')}><PackageCheck size={12} />{evidence.blockedContributions}<span className="metric-label-full"> blocked {evidence.blockedContributions === 1 ? 'contribution' : 'contributions'}</span></span>}
+        <span aria-label={quantity(evidence.challenges, 'challenge')}><MessageSquareReply size={12} />{evidence.challenges}<span className="metric-label-full"> {evidence.challenges === 1 ? 'challenge' : 'challenges'}</span></span>
         <span aria-label={quantity(evidence.acceptedCalls, 'accepted call')}><ShieldCheck size={12} />{evidence.acceptedCalls} <span className="metric-label-full">accepted {evidence.acceptedCalls === 1 ? 'call' : 'calls'}</span><span className="metric-label-compact">calls</span></span>
-        <span><Hammer size={12} />{quantity(evidence.edits, 'edit')}</span>
-        <span><CheckCircle2 size={12} />{quantity(evidence.tasksDone, 'task')}</span>
+        <span aria-label={quantity(evidence.edits, 'edit')}><Hammer size={12} />{evidence.edits}<span className="metric-label-full"> {evidence.edits === 1 ? 'edit' : 'edits'}</span></span>
+        <span aria-label={quantity(evidence.tasksDone, 'task')}><CheckCircle2 size={12} />{evidence.tasksDone}<span className="metric-label-full"> {evidence.tasksDone === 1 ? 'task' : 'tasks'}</span></span>
         <span aria-label={quantity(evidence.repairSaves, 'repair save')}><Wrench size={12} />{evidence.repairSaves} <span className="metric-label-full">repair {evidence.repairSaves === 1 ? 'save' : 'saves'}</span><span className="metric-label-compact">saves</span></span>
       </div>
       <p>{evidence.latestMove ?? `${name} has no public move on record yet.`}</p>

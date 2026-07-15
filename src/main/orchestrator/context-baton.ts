@@ -25,6 +25,13 @@ export interface BuildContextBatonInput {
   maxCharacters?: number
 }
 
+export interface BuildVerificationDigestInput {
+  summary: string
+  checks: Array<{ id: string; outcome: string; label?: string; detail?: string }>
+  constraints: Array<{ id: string; sourceText: string }>
+  maxCharacters?: number
+}
+
 function portable(path: string): string {
   return path.split(sep).join('/')
 }
@@ -57,6 +64,30 @@ async function appInventory(workspacePath: string, limit = 80): Promise<string[]
 
 function clean(value: string): string {
   return value.replace(/[\r\n\t]+/gu, ' ').replace(/\s{2,}/gu, ' ').trim()
+}
+
+/**
+ * Converts opaque supervisor check IDs into a bounded, private repair baton.
+ * Provider agents need the exact failed requirement, not a generic "missing
+ * evidence" sentence that invites another expensive no-change verification.
+ */
+export function buildVerificationDigest(input: BuildVerificationDigestInput): string {
+  const constraints = new Map(input.constraints.map((constraint) => [constraint.id, clean(constraint.sourceText)]))
+  const failed = input.checks.filter((check) => check.outcome === 'failed').slice(0, 8)
+  const detail = failed.map((check) => {
+    const constraintId = check.id.replace(/^brief(?:-test)?:/u, '')
+    const requirement = constraints.get(constraintId)
+    const evidence = [check.label, check.detail]
+      .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+      .map((value) => clean(value).slice(0, 500))
+      .join('; ')
+    if (requirement) return `${check.id} -> ${requirement}${evidence ? `; ${evidence}` : ''}`
+    return evidence ? `${check.id} -> ${evidence}` : check.id
+  })
+  const value = [clean(input.summary), ...(detail.length ? [`Failed evidence: ${detail.join(' | ')}`] : [])]
+    .filter(Boolean)
+    .join(' ')
+  return value.slice(0, Math.min(2_000, Math.max(500, input.maxCharacters ?? 1_600)))
 }
 
 export async function buildContextBaton(input: BuildContextBatonInput): Promise<string> {

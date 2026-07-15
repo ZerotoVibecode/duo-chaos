@@ -60,8 +60,9 @@ describe('CLI command builder', () => {
       '--skip-git-repo-check',
       '--json',
       '--ephemeral',
-      'Build the next claimed task.'
+      '-'
     ])
+    expect(command.stdin).toBe('Build the next claimed task.')
   })
 
   it('builds Claude stream-json arguments without shell concatenation', () => {
@@ -127,8 +128,14 @@ describe('CLI command builder', () => {
       '--safe-mode',
       '--tools',
       'Read,Glob,Grep,Edit,Write,Bash',
+      '--permission-mode',
+      'acceptEdits',
+      '--allowedTools',
+      'Read,Glob,Grep,Edit,Write,Bash(node --check *),Bash(node.exe --check *),Bash(node --test *),Bash(node.exe --test *),Bash(npm install --ignore-scripts *),Bash(npm.cmd install --ignore-scripts *),Bash(npm ci --ignore-scripts *),Bash(npm.cmd ci --ignore-scripts *),Bash(npm run *),Bash(npm.cmd run *),Bash(npm test *),Bash(npm.cmd test *)',
       '--no-session-persistence'
     ]))
+    expect(command.args).not.toContain('auto')
+    expect(command.args).not.toContain('--dangerously-skip-permissions')
     expect(command.args).not.toContain('--bare')
     expect(command.args).not.toContain('--resume')
   })
@@ -148,6 +155,13 @@ describe('CLI command builder', () => {
     expect(command.args).not.toContain('--safe-mode')
     expect(command.args).toContain('--disable-slash-commands')
     expect(command.args).not.toContain('Read,Glob,Grep,Edit,Write,Bash')
+    expect(command.args).toEqual(expect.arrayContaining([
+      '--permission-mode', 'acceptEdits',
+      '--allowedTools',
+      'Read,Glob,Grep,Edit,Write,Bash(node --check *),Bash(node.exe --check *),Bash(node --test *),Bash(node.exe --test *),Bash(npm install --ignore-scripts *),Bash(npm.cmd install --ignore-scripts *),Bash(npm ci --ignore-scripts *),Bash(npm.cmd ci --ignore-scripts *),Bash(npm run *),Bash(npm.cmd run *),Bash(npm test *),Bash(npm.cmd test *),mcp__*'
+    ]))
+    expect(command.args).not.toContain('auto')
+    expect(command.args).not.toContain('--dangerously-skip-permissions')
     expect(command.args).toEqual(expect.arrayContaining(['--disallowedTools', 'Agent,Task']))
   })
 
@@ -172,6 +186,13 @@ describe('CLI command builder', () => {
     ]))
     expect(claude.args).not.toContain('user,project,local')
     expect(claude.args).not.toContain('--disable-slash-commands')
+    expect(claude.args).toEqual(expect.arrayContaining([
+      '--permission-mode', 'acceptEdits',
+      '--allowedTools',
+      'Read,Glob,Grep,Edit,Write,Bash(node --check *),Bash(node.exe --check *),Bash(node --test *),Bash(node.exe --test *),Bash(npm install --ignore-scripts *),Bash(npm.cmd install --ignore-scripts *),Bash(npm ci --ignore-scripts *),Bash(npm.cmd ci --ignore-scripts *),Bash(npm run *),Bash(npm.cmd run *),Bash(npm test *),Bash(npm.cmd test *),mcp__*'
+    ]))
+    expect(claude.args).not.toContain('auto')
+    expect(claude.args).not.toContain('--dangerously-skip-permissions')
     expect(codex.args).toEqual(expect.arrayContaining([
       '--disable', 'multi_agent', '--disable', 'hooks'
     ]))
@@ -207,6 +228,7 @@ describe('CLI command builder', () => {
     expect(command.args).toContain('--safe-mode')
     expect(command.args).toContain('--disable-slash-commands')
     expect(command.args).toEqual(expect.arrayContaining(['--tools', '']))
+    expect(command.args).not.toContain('--allowedTools')
   })
 
   it('rejects Smart or Broad source toolbelts in unattended Safe execution', () => {
@@ -215,6 +237,37 @@ describe('CLI command builder', () => {
       prompt: 'Use an MCP.', dangerousModeConfirmed: false, extraArgs: [],
       sourcePolicy: { toolPolicy: 'workspace-essential', customizationProfile: 'smart' }
     })).toThrow(/safe.*core|core.*safe/i)
+  })
+
+  it('keeps Safe Claude source work shell-free while still allowing supervised file edits', () => {
+    const command = buildAgentCommand({
+      agent: 'claude', executionMode: 'safe', binary: 'claude', workspacePath: '/tmp/safe-run',
+      prompt: 'Implement the owned source task without running commands.', dangerousModeConfirmed: false,
+      model: 'sonnet', effort: 'low', extraArgs: [],
+      sourcePolicy: { toolPolicy: 'workspace-essential', customizationProfile: 'core' }
+    })
+
+    expect(command.args).toEqual(expect.arrayContaining([
+      '--tools', 'Read,Glob,Grep,Edit,Write',
+      '--allowedTools', 'Read,Glob,Grep,Edit,Write'
+    ]))
+    expect(command.args.join(' ')).not.toMatch(/Bash|mcp__/u)
+  })
+
+  it('does not preapprove arbitrary runtimes, package executors, or lifecycle installs', () => {
+    const command = buildAgentCommand({
+      agent: 'claude', executionMode: 'chaos', binary: 'claude', workspacePath: '/tmp/bounded-run',
+      prompt: 'Implement and verify the owned source task.', dangerousModeConfirmed: false,
+      model: 'opus', effort: 'high', extraArgs: [],
+      sourcePolicy: { toolPolicy: 'workspace-essential', customizationProfile: 'core' }
+    })
+    const allowed = command.args[command.args.indexOf('--allowedTools') + 1]
+
+    expect(allowed).toContain('Bash(node --test *)')
+    expect(allowed).toContain('Bash(npm install --ignore-scripts *)')
+    expect(allowed).not.toContain('Bash(node *)')
+    expect(allowed).not.toMatch(/npx|pnpm|yarn|bun/iu)
+    expect(allowed).not.toContain('Bash(npm *)')
   })
 
   it('ignores legacy extra arguments that could override the visible loadout or permission mode', () => {
@@ -258,8 +311,9 @@ describe('CLI command builder', () => {
       'workspace-write',
       'exec',
       '--json',
-      'Open the broadcast turn.'
+      '-'
     ]))
+    expect(command.stdin).toBe('Open the broadcast turn.')
     expect(command.args).not.toContain('--ephemeral')
     expect(command.args).not.toContain('resume')
     expect(command.args).not.toContain('--last')
@@ -287,8 +341,9 @@ describe('CLI command builder', () => {
       'resume',
       '--json',
       sessionId,
-      'Continue with the selected-effort work lease.'
+      '-'
     ])
+    expect(command.stdin).toBe('Continue with the selected-effort work lease.')
     expect(command.args).toEqual(expect.arrayContaining([
       '--ask-for-approval',
       'never',

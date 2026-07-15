@@ -88,6 +88,95 @@ async function expectBattleBriefingNotClipped(page: Page): Promise<void> {
   expect(metrics.ceilingInside, 'run ceiling should stay inside the battle briefing').toBe(true)
 }
 
+async function expectCompactRunComposition(page: Page): Promise<void> {
+  const geometry = await page.evaluate(() => {
+    const rectangle = (element: Element | null): DOMRect | undefined => element?.getBoundingClientRect()
+    const arena = document.querySelector<HTMLElement>('.broadcast-stage')
+    const rail = rectangle(arena?.querySelector('.exchange-rail') ?? null)
+    const beat = arena?.querySelector<HTMLElement>('.broadcast-beat')
+    const beatRect = rectangle(beat ?? null)
+    const context = rectangle(arena?.querySelector('.broadcast-context') ?? null)
+    const beatChildren = beat
+      ? [...beat.children].map((child) => child.getBoundingClientRect())
+      : []
+    const metricCells = [...document.querySelectorAll<HTMLElement>('.agent-metrics > div')]
+    const evidence = document.querySelector<HTMLElement>('.evidence-momentum')
+    const taskPanel = document.querySelector<HTMLElement>('.task-panel')
+    const taskHeading = taskPanel?.querySelector<HTMLElement>('.panel-heading')
+    const taskRect = taskPanel?.getBoundingClientRect()
+    const taskHeadingRect = taskHeading?.getBoundingClientRect()
+
+    return {
+      arena: arena ? {
+        clientWidth: arena.clientWidth,
+        scrollWidth: arena.scrollWidth,
+        overflowY: getComputedStyle(arena).overflowY
+      } : null,
+      railBeforeBeat: !rail || !beatRect || rail.bottom <= beatRect.top + 1,
+      beatBeforeContext: !beatRect || !context || beatRect.bottom <= context.top + 1,
+      beatContentInside: !beatRect || beatChildren.every((child) => (
+        child.top >= beatRect.top - 1 && child.bottom <= beatRect.bottom + 1
+      )),
+      beatScrollableWhenNeeded: !beat || beat.scrollHeight <= beat.clientHeight + 1 || ['auto', 'scroll'].includes(getComputedStyle(beat).overflowY),
+      metricCells: metricCells.map((cell) => ({
+        clientWidth: cell.clientWidth,
+        scrollWidth: cell.scrollWidth,
+        childrenInside: [...cell.children].filter((child) => {
+          const style = getComputedStyle(child)
+          const rect = child.getBoundingClientRect()
+          return style.display !== 'none' && rect.width > 0 && rect.height > 0
+        }).every((child) => {
+          const cellRect = cell.getBoundingClientRect()
+          const childRect = child.getBoundingClientRect()
+          return childRect.left >= cellRect.left - 1 && childRect.right <= cellRect.right + 1
+        })
+      })),
+      agentCards: [...document.querySelectorAll<HTMLElement>('.agent-card')].map((card) => ({
+        clientWidth: card.clientWidth,
+        scrollWidth: card.scrollWidth,
+        overflowY: getComputedStyle(card).overflowY
+      })),
+      evidence: evidence ? {
+        clientWidth: evidence.clientWidth,
+        scrollWidth: evidence.scrollWidth,
+        clientHeight: evidence.clientHeight,
+        scrollHeight: evidence.scrollHeight,
+        overflowY: getComputedStyle(evidence).overflowY
+      } : null,
+      taskPanel: taskPanel ? {
+        clientWidth: taskPanel.clientWidth,
+        scrollWidth: taskPanel.scrollWidth,
+        overflowY: getComputedStyle(taskPanel).overflowY,
+        headingInside: Boolean(taskRect && taskHeadingRect && taskHeadingRect.top >= taskRect.top - 1 && taskHeadingRect.bottom <= taskRect.bottom + 1)
+      } : null
+    }
+  })
+
+  expect(geometry.arena, 'compact broadcast stage should exist').not.toBeNull()
+  expect(geometry.arena?.scrollWidth ?? 0, 'broadcast stage should not overflow horizontally').toBeLessThanOrEqual((geometry.arena?.clientWidth ?? 0) + 1)
+  expect(geometry.railBeforeBeat, 'exchange rail must end before the broadcast card starts').toBe(true)
+  expect(geometry.beatBeforeContext, 'broadcast card must end before supporting facts start').toBe(true)
+  expect(geometry.beatContentInside || geometry.beatScrollableWhenNeeded, 'broadcast copy must stay inside a readable or scrollable card').toBe(true)
+  expect(geometry.metricCells.length).toBe(6)
+  for (const cell of geometry.metricCells) {
+    expect.soft(cell.scrollWidth, 'agent metric must not overflow its cell').toBeLessThanOrEqual(cell.clientWidth + 1)
+    expect.soft(cell.childrenInside, 'agent metric labels must stay inside their cells').toBe(true)
+  }
+  for (const card of geometry.agentCards) {
+    expect.soft(card.scrollWidth, 'agent card must not clip horizontally').toBeLessThanOrEqual(card.clientWidth + 1)
+    expect.soft(card.overflowY, 'agent card details must remain reachable').toMatch(/auto|scroll/)
+  }
+  expect(geometry.evidence, 'compact evidence panel should exist').not.toBeNull()
+  expect(geometry.evidence?.scrollWidth ?? 0, 'evidence panel must not clip horizontally').toBeLessThanOrEqual((geometry.evidence?.clientWidth ?? 0) + 1)
+  if ((geometry.evidence?.scrollHeight ?? 0) > (geometry.evidence?.clientHeight ?? 0) + 1) {
+    expect(geometry.evidence?.overflowY, 'overflowing evidence must remain scrollable').toMatch(/auto|scroll/)
+  }
+  expect(geometry.taskPanel, 'compact task panel should exist').not.toBeNull()
+  expect(geometry.taskPanel?.scrollWidth ?? 0, 'task panel must not clip horizontally').toBeLessThanOrEqual((geometry.taskPanel?.clientWidth ?? 0) + 1)
+  expect(geometry.taskPanel?.overflowY, 'task details must remain reachable').toMatch(/auto|scroll/)
+  expect(geometry.taskPanel?.headingInside, 'Task storm heading must remain fully inside its panel').toBe(true)
+}
+
 test('fits the complete cockpit when windowed and fills a large display', async () => {
   test.setTimeout(75_000)
   const screenshots = join(process.cwd(), 'test-results', 'visual')
@@ -209,6 +298,7 @@ test('fits the complete cockpit when windowed and fills a large display', async 
       pageWidth: document.documentElement.scrollWidth
     }))
     expect(minimumRunFit.pageWidth).toBeLessThanOrEqual(minimumRunFit.viewportWidth + 1)
+    await expectCompactRunComposition(page)
     await page.screenshot({ path: join(screenshots, '06a-minimum-run.png') })
 
     await page.setViewportSize({ width: 1000, height: 700 })
@@ -252,6 +342,7 @@ test('fits the complete cockpit when windowed and fills a large display', async 
     expect(compactDashboard.shell?.width ?? 0).toBeGreaterThan(compactDashboard.viewportWidth * 0.92)
     expect(compactDashboard.pageHeight).toBeLessThanOrEqual(compactDashboard.viewportHeight + 2)
     expect(compactDashboard.terminal?.bottom ?? 0).toBeGreaterThan(compactDashboard.viewportHeight * 0.88)
+    await expectCompactRunComposition(page)
     await page.screenshot({ path: join(screenshots, '06-windowed-run.png') })
 
     await page.getByRole('button', { name: 'Logs' }).click()

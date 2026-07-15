@@ -203,7 +203,7 @@
 }
 
 @media (max-height: 760px) {
-  .work-side-stack { grid-template-rows: minmax(136px, .72fr) minmax(68px, 1fr); gap: 8px; }
+  .work-side-stack { grid-template-rows: minmax(120px, .74fr) minmax(72px, 1fr); gap: 8px; }
   .evidence-momentum { gap: 2px; padding: 4px 8px; border-radius: 17px; }
   .evidence-heading .eyebrow, .evidence-rule { display: none; }
   .evidence-heading h2 { margin: 0; font-size: 16px; }
@@ -211,10 +211,10 @@
   .momentum-agent { gap: 1px; padding: 3px 5px; }
   .momentum-agent-head span { display: none; }
   .momentum-agent p { display: none; }
-  .momentum-metrics { gap: 2px 5px; }
-  .momentum-metrics > span { padding: 0; background: none; }
+  .momentum-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px 2px; }
+  .momentum-metrics > span { justify-content: center; padding: 0; background: none; }
   .metric-label-full { display: none; }
-  .metric-label-compact { display: inline; }
+  .metric-label-compact { display: none; }
   .momentum-metrics svg { width: 10px; height: 10px; }
   .shared-proof { gap: 2px 6px; }
   .shared-proof span { padding: 0; border: 0; background: none; }

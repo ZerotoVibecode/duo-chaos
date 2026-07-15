@@ -25,7 +25,8 @@ export interface ProviderUsageEvidenceSnapshot {
 export type CompletedCallUsageReason = 'processed-input' | 'output' | 'reasoning'
 
 export interface CompletedCallUsageLimits {
-  processedInputTokens: number
+  effectiveInputTokens: number
+  cachedInputTokenWeight: number
   outputTokens: number
   reasoningTokens: number
 }
@@ -35,6 +36,7 @@ export interface CompletedCallUsageDecision {
   reasons: CompletedCallUsageReason[]
   callId: string
   agent: UsageAgent
+  effectiveInputTokens: number
   totals: ProviderUsageDelta
   limits: CompletedCallUsageLimits
 }
@@ -45,10 +47,27 @@ export interface CompletedCallUsageDecision {
  * unreported tokens. Resume grants a fresh compact call from the durable baton.
  */
 export const DEFAULT_COMPLETED_CALL_USAGE_LIMITS: CompletedCallUsageLimits = Object.freeze({
-  processedInputTokens: 400_000,
+  effectiveInputTokens: 250_000,
+  cachedInputTokenWeight: 0.1,
   outputTokens: 24_000,
   reasoningTokens: 24_000
 })
+
+/**
+ * Provider cache reads remain visible in raw telemetry but contribute only a
+ * conservative fraction to the between-call input guard. Providers report
+ * cached input as part of processed input, so subtract it once before applying
+ * the configured cache weight. Invalid over-reported cache values are clamped.
+ */
+export function cacheWeightedInputTokens(
+  totals: Pick<ProviderUsageDelta, 'processedInputTokens' | 'cachedInputTokens'>,
+  cachedInputTokenWeight = DEFAULT_COMPLETED_CALL_USAGE_LIMITS.cachedInputTokenWeight
+): number {
+  const processed = Math.max(0, totals.processedInputTokens)
+  const cached = Math.min(processed, Math.max(0, totals.cachedInputTokens))
+  const uncached = processed - cached
+  return Math.ceil(uncached + cached * cachedInputTokenWeight)
+}
 
 export function evaluateCompletedCallUsage(
   receipt: ProviderUsageCallReceipt,
@@ -56,7 +75,8 @@ export function evaluateCompletedCallUsage(
 ): CompletedCallUsageDecision | undefined {
   if (!receipt.complete || receipt.source !== 'terminal') return undefined
   const reasons: CompletedCallUsageReason[] = []
-  if (receipt.totals.processedInputTokens > limits.processedInputTokens) reasons.push('processed-input')
+  const effectiveInputTokens = cacheWeightedInputTokens(receipt.totals, limits.cachedInputTokenWeight)
+  if (effectiveInputTokens > limits.effectiveInputTokens) reasons.push('processed-input')
   if (receipt.totals.outputTokens > limits.outputTokens) reasons.push('output')
   if (receipt.totals.reasoningTokens > limits.reasoningTokens) reasons.push('reasoning')
   if (reasons.length === 0) return undefined
@@ -65,6 +85,7 @@ export function evaluateCompletedCallUsage(
     reasons,
     callId: receipt.id,
     agent: receipt.agent,
+    effectiveInputTokens,
     totals: { ...receipt.totals },
     limits: { ...limits }
   }

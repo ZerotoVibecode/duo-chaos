@@ -7,16 +7,20 @@ const MAX_SOURCE_TEXT = 280
 
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'app', 'application', 'be', 'build', 'by', 'create', 'creating', 'do', 'for', 'from',
-  'have', 'i', 'in', 'into', 'is', 'it', 'make', 'me', 'of', 'on', 'or', 'please', 'should', 'something',
+  'fully', 'have', 'i', 'in', 'into', 'is', 'it', 'make', 'me', 'of', 'on', 'or', 'please', 'run', 'should', 'something',
   'that', 'the', 'their', 'them', 'this', 'to', 'tool', 'using', 'very', 'want', 'we', 'website', 'with', 'you'
 ])
 
 const PROCESS_ONLY_PATTERN = /\b(?:agent|argue|challenge weak|claude|codex|debate|decide everything|do not reveal|reveal only|secret|spoiler|yourselves)\b/iu
-const PRODUCT_SIGNAL_PATTERN = /\b(?:accessible|app|audience|browser|content|creator|dashboard|desktop|for\s+\p{L}|local|offline|platform|responsive|tool|useful|website|workflow)\b/iu
+const PRODUCT_SIGNAL_PATTERN = /\b(?:accessible|app|audience|browser|content|creator|dashboard|desktop|for\s+\p{L}|local|locally|offline|platform|responsive|tool|useful|website|workflow)\b/iu
 const RESTRICTION_PATTERN = /\b(?:avoid|do not|don't|must not|never|no|without)\b/iu
 const RESTRICTION_CONTROL_TERMS = new Set([
   'add', 'allow', 'avoid', 'disable', 'do', 'don', 'dont', 'enable', 'include', 'must', 'never', 'no', 'not',
-  'require', 'use', 'without'
+  'require', 'use', 'without',
+  // These layout nouns are too generic to prove a prohibited state by
+  // themselves (for example, "primary controls work" must not be read as
+  // affirming "clipped primary controls"). Keep the failure-bearing terms.
+  'primary', 'control', 'pagelevel'
 ])
 
 export interface QualityBriefConstraint {
@@ -25,6 +29,16 @@ export interface QualityBriefConstraint {
   polarity: 'require' | 'forbid'
   sourceText: string
   coverageTerms: string[]
+  /**
+   * Alternative prohibited phrases derived from a restriction list. Every
+   * term inside one group must be affirmed before that phrase is considered a
+   * violation; any complete group is enough to reject the consensus.
+   *
+   * Example: "without clipped controls or horizontal overflow" becomes
+   * [["clipped"], ["horizontal", "overflow"]]. This keeps an unrelated
+   * positive use of "overflow" from becoming a false violation.
+   */
+  coverageGroups?: string[][]
 }
 
 export interface QualityBriefAcceptanceCheck {
@@ -78,7 +92,8 @@ function normalizedTerm(value: string): string {
 
 function meaningfulTerms(value: string): string[] {
   const terms = value.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? []
-  return [...new Set(terms.map(normalizedTerm).filter((term) => term.length >= 3 && !STOP_WORDS.has(term)))]
+  const expanded = terms.flatMap((term) => term.includes('-') ? [term, ...term.split('-')] : [term])
+  return [...new Set(expanded.map(normalizedTerm).filter((term) => term.length >= 3 && !STOP_WORDS.has(term)))]
 }
 
 function sourceSegments(humanBrief: string): string[] {
@@ -90,6 +105,21 @@ function sourceSegments(humanBrief: string): string[] {
     .split(/(?:\n+|[.!?;]+|,\s+(?=(?:but|and)\s+)|\s+and\s+(?=(?:it\s+)?(?:must|needs?|should|works?|feels?|has|supports?)\b))/giu)
     .map(normalizedText)
     .filter((segment) => segment.length >= 3)
+}
+
+function splitMixedRestriction(segment: string): string[] {
+  const marker = segment.search(RESTRICTION_PATTERN)
+  if (marker <= 0) return [segment]
+  const positive = normalizedText(
+    segment.slice(0, marker).replace(/\b(?:and|but|or|with)\s*$/iu, '')
+  )
+  const restriction = normalizedText(segment.slice(marker))
+  // A sentence such as "fit cleanly ... without clipped controls" contains
+  // two independent contracts. Treating the whole sentence as a prohibition
+  // makes the positive requirement contradict itself at consensus time.
+  return meaningfulTerms(positive).length >= 1 && meaningfulTerms(restriction).length >= 1
+    ? [positive, restriction]
+    : [segment]
 }
 
 function constraintKind(segment: string): QualityBriefConstraint['kind'] {
@@ -106,6 +136,17 @@ function restrictionTerms(segment: string): string[] {
     .filter((term) => !RESTRICTION_CONTROL_TERMS.has(term))
 }
 
+function restrictionCoverageGroups(segment: string): string[][] {
+  const marker = segment.search(RESTRICTION_PATTERN)
+  const restriction = normalizedText(marker >= 0 ? segment.slice(marker) : segment)
+    .replace(/^(?:avoid|do not|don't|must not|never|no|without)\b\s*/iu, '')
+  const groups = restriction
+    .split(/\s*,\s*|\s+\b(?:and|or)\b\s+/giu)
+    .map((item) => meaningfulTerms(item).filter((term) => !RESTRICTION_CONTROL_TERMS.has(term)))
+    .filter((terms) => terms.length > 0)
+  return groups.length > 0 ? groups : [restrictionTerms(segment)]
+}
+
 function shouldBindSegment(segment: string, index: number): boolean {
   if (PROCESS_ONLY_PATTERN.test(segment) && !PRODUCT_SIGNAL_PATTERN.test(segment)) return false
   if (index === 0) return true
@@ -120,17 +161,24 @@ function constraintId(index: number, sourceText: string): string {
 
 function compileConstraints(humanBrief: string): QualityBriefConstraint[] {
   const constraints: QualityBriefConstraint[] = []
-  for (const [index, segment] of sourceSegments(humanBrief).entries()) {
+  const segments = sourceSegments(humanBrief).flatMap(splitMixedRestriction)
+  for (const [index, segment] of segments.entries()) {
     if (!shouldBindSegment(segment, index)) continue
     const polarity = RESTRICTION_PATTERN.test(segment) ? 'forbid' as const : 'require' as const
-    const coverageTerms = polarity === 'forbid' ? restrictionTerms(segment) : meaningfulTerms(segment)
+    const coverageGroups = polarity === 'forbid' ? restrictionCoverageGroups(segment) : undefined
+    const coverageTerms = polarity === 'forbid'
+      ? [...new Set((coverageGroups ?? []).flat())]
+      : meaningfulTerms(segment)
     if (coverageTerms.length === 0) continue
     constraints.push({
       id: constraintId(constraints.length, segment),
       kind: constraintKind(segment),
       polarity,
       sourceText: segment.slice(0, MAX_SOURCE_TEXT),
-      coverageTerms: coverageTerms.slice(0, 12)
+      coverageTerms: coverageTerms.slice(0, 12),
+      ...(coverageGroups
+        ? { coverageGroups: coverageGroups.slice(0, 12).map((group) => group.slice(0, 12)) }
+        : {})
     })
     if (constraints.length >= MAX_CONSTRAINTS) break
   }
@@ -152,7 +200,7 @@ function qualityBar(): string[] {
   return [
     'The product has a distinctive, intentional direction instead of a generic template.',
     'The primary user journey is complete, understandable, and useful for its stated audience.',
-    'The result is responsive and accessible through keyboard-safe controls where interaction exists.',
+    'The result is readable in compact and full-screen desktop layouts and accessible through keyboard-safe controls where interaction exists. Mobile layout is required only when the human brief asks for it.',
     'The app is runnable from the generated workspace with truthful launch instructions.',
     'Critical behavior is verified with deterministic checks plus a real user-journey smoke test.',
     'No requirement is silently replaced merely because a different idea is easier to build.'
@@ -180,7 +228,7 @@ function acceptanceChecks(constraints: QualityBriefConstraint[]): QualityBriefAc
     },
     {
       id: 'acceptance-quality',
-      description: 'The final visual and interaction pass is intentional, readable, responsive, and non-generic.',
+      description: 'The final visual and interaction pass is intentional, non-generic, and readable in compact and full-screen desktop layouts; mobile is required only when requested.',
       constraintIds: []
     }
   )
@@ -220,15 +268,21 @@ function consensusTerms(input: ConsensusQualityInput): Set<string> {
   return new Set(meaningfulTerms([input.appName, input.idea, input.summary, input.spec].join('\n')))
 }
 
-function forbiddenTermIsAffirmative(term: string, input: ConsensusQualityInput): boolean {
-  const text = normalizedText([input.idea, input.summary, input.spec].join(' ')).toLocaleLowerCase()
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
-  const matches = [...text.matchAll(new RegExp(`\\b${escaped}\\b`, 'giu'))]
-  return matches.some((match) => {
-    const prefix = text.slice(Math.max(0, (match.index ?? 0) - 120), match.index)
-    const activeClause = prefix.split(/[.!?;]|\b(?:but|however|instead|yet)\b/iu).at(-1) ?? prefix
-    return !RESTRICTION_PATTERN.test(activeClause)
-  })
+function affirmativeConsensusClauses(input: ConsensusQualityInput): Array<Set<string>> {
+  return [input.idea, input.summary, input.spec]
+    .join('\n')
+    .split(/(?:\r?\n+|[.!?;]+|\b(?:but|however|instead|yet|while)\b)/giu)
+    .map(normalizedText)
+    .filter((clause) => clause.length > 0 && !RESTRICTION_PATTERN.test(clause))
+    .map((clause) => new Set(meaningfulTerms(clause)))
+}
+
+function forbiddenGroupIsAffirmative(
+  group: string[],
+  clauses: Array<Set<string>>
+): boolean {
+  const terms = [...new Set(group.map(normalizedTerm).filter((term) => term.length >= 3))]
+  return terms.length > 0 && clauses.some((clause) => terms.every((term) => clause.has(term)))
 }
 
 export function assessConsensusAgainstQualityBrief(
@@ -236,11 +290,15 @@ export function assessConsensusAgainstQualityBrief(
   consensus: ConsensusQualityInput
 ): ConsensusQualityAssessment {
   const terms = consensusTerms(consensus)
+  const affirmativeClauses = affirmativeConsensusClauses(consensus)
   const violations: string[] = []
   const coveredConstraintIds: string[] = []
   for (const constraint of brief.privateContract.hardConstraints) {
     if (constraint.polarity === 'forbid') {
-      const violated = constraint.coverageTerms.some((term) => forbiddenTermIsAffirmative(term, consensus))
+      const groups = constraint.coverageGroups?.filter((group) => group.length > 0)
+      const violated = groups && groups.length > 0
+        ? groups.some((group) => forbiddenGroupIsAffirmative(group, affirmativeClauses))
+        : constraint.coverageTerms.some((term) => forbiddenGroupIsAffirmative([term], affirmativeClauses))
       if (violated) {
         violations.push(`Consensus conflicts with hard constraint ${constraint.id}.`)
       } else {

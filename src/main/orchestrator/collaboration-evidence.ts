@@ -1,6 +1,8 @@
 import type { DuoEvent, DuoTask } from '@shared/types'
 import {
   receiptCompletesOwnedContribution,
+  receiptEligibleForProofPromotion,
+  survivingContributionCandidates,
   type ContributionReceipt,
   type ContributionVerification
 } from './contribution-receipt'
@@ -40,8 +42,30 @@ export interface BuildReviewReceiptInput {
   sourceChanged: boolean
 }
 
+interface ReviewAcceptanceOptions {
+  allowPromotedTarget?: boolean
+  /**
+   * True only when the supervisor-owned verification receipt passed for the
+   * exact current app revision. Agent-authored claims must never set this.
+   */
+  independentlyVerified?: boolean
+  /** All immutable contribution receipts, used to prove the review turn made no source change. */
+  reviewerTurnReceipts?: ContributionReceipt[]
+}
+
 function validFingerprint(value: string): boolean {
   return /^sha256:[a-z0-9-]{3,}$/u.test(value)
+}
+
+function isOpponentReviewEvidence(
+  event: DuoEvent,
+  reviewer: CollaboratingAgent,
+  targetAgent: CollaboratingAgent,
+  round: number
+): boolean {
+  return event.round === round && event.agent === reviewer && event.targetAgent === targetAgent &&
+    event.publicText.trim().length > 0 &&
+    (event.type === 'agent.dispatch' || event.type === 'opinion' || event.type === 'conflict')
 }
 
 /**
@@ -52,12 +76,14 @@ function validFingerprint(value: string): boolean {
 export function buildReviewReceipt(input: BuildReviewReceiptInput): ReviewReceipt | undefined {
   const target = input.targetContribution
   const targetAgent: CollaboratingAgent = input.reviewer === 'claude' ? 'codex' : 'claude'
-  if (!target || target.agent !== targetAgent || !receiptCompletesOwnedContribution(target, input.events)) return undefined
+  if (!target || target.agent !== targetAgent || target.round >= input.round || (
+    !receiptCompletesOwnedContribution(target, input.events) &&
+    !receiptEligibleForProofPromotion(target, input.events)
+  )) return undefined
   if (!input.reviewedFingerprint || !validFingerprint(input.reviewedFingerprint)) return undefined
-  const evidenceEventIds = input.events.filter((event) =>
-    event.round === input.round && event.agent === input.reviewer && event.publicText.trim().length > 0 &&
-    (event.type === 'agent.dispatch' || event.type === 'opinion' || event.type === 'conflict')
-  ).map((event) => event.id)
+  const evidenceEventIds = input.events
+    .filter((event) => isOpponentReviewEvidence(event, input.reviewer, targetAgent, input.round))
+    .map((event) => event.id)
   if (evidenceEventIds.length === 0) return undefined
   const disposition: ReviewDisposition = input.accepted && input.verification === 'passed'
     ? input.sourceChanged ? 'changes-applied' : 'accepted'
@@ -87,21 +113,86 @@ export function reviewAcceptsCurrentRevision(
   contributions: ContributionReceipt[],
   currentRevision: number,
   currentFingerprint: string | undefined,
-  supervisorEvents: DuoEvent[]
+  supervisorEvents: DuoEvent[],
+  options: ReviewAcceptanceOptions = {}
 ): boolean {
   if (!currentFingerprint || review.schemaVersion !== 1) return false
   const target = contributions.find((receipt) => receipt.id === review.targetContributionId)
   const events = new Map(supervisorEvents.map((event) => [event.id, event]))
   const reviewEvidenceMatches = review.evidenceEventIds.length > 0 && review.evidenceEventIds.every((id) => {
     const event = events.get(id)
-    return event?.agent === review.reviewer && event.round === review.round && event.publicText.trim().length > 0 &&
-      (event.type === 'agent.dispatch' || event.type === 'opinion' || event.type === 'conflict')
+    return event !== undefined && isOpponentReviewEvidence(
+      event,
+      review.reviewer,
+      review.targetAgent,
+      review.round
+    )
   })
-  return review.accepted && (review.disposition === 'accepted' || review.disposition === 'changes-applied') &&
-    review.verification === 'passed' && reviewEvidenceMatches &&
+  const exactNoSourceDelta = options.independentlyVerified === true &&
+    options.reviewerTurnReceipts?.some((receipt) =>
+      receipt.runId === review.runId && receipt.turnId === review.turnId &&
+      receipt.round === review.round && receipt.agent === review.reviewer && receipt.accepted &&
+      !receipt.sourceChanged && receipt.baseRevision === currentRevision &&
+      receipt.resultRevision === currentRevision && receipt.baseFingerprint === currentFingerprint &&
+      receipt.resultFingerprint === currentFingerprint
+    ) === true
+  const reviewVerificationPassed = review.verification === 'passed' &&
+    (review.disposition === 'accepted' || review.disposition === 'changes-applied')
+  // A review turn can finish before the final supervisor verifier runs. Close
+  // only that verification gap when a supervisor-owned exact-current pass and
+  // an immutable no-delta turn receipt prove the reviewer did not change what
+  // it reviewed. This also recovers legacy `changes-requested` receipts whose
+  // disposition represented missing turn-local verification, not a rejection.
+  const supervisorClosedNoDeltaReview = exactNoSourceDelta &&
+    (review.disposition === 'accepted' || review.disposition === 'changes-requested')
+  return review.accepted && (reviewVerificationPassed || supervisorClosedNoDeltaReview) && reviewEvidenceMatches &&
     review.reviewedRevision === currentRevision && review.reviewedFingerprint === currentFingerprint &&
     target !== undefined && target.agent === review.targetAgent && target.agent !== review.reviewer &&
-    receiptCompletesOwnedContribution(target, supervisorEvents)
+    review.round > target.round && (
+      receiptCompletesOwnedContribution(target, supervisorEvents) ||
+      (options.allowPromotedTarget === true && receiptEligibleForProofPromotion(target, supervisorEvents))
+    )
+}
+
+/**
+ * Promotes an accepted material edit only after the exact current descendant
+ * has both independent supervisor verification and a passed opponent review.
+ * The original receipt remains immutable, preserving the distinction between
+ * work-turn evidence and later final-artifact proof.
+ */
+export function promotedSurvivingContributionReceipts(
+  receipts: ContributionReceipt[],
+  reviews: ReviewReceipt[],
+  currentRevision: number,
+  currentFingerprint: string | undefined,
+  supervisorEvents: DuoEvent[],
+  options: { independentlyVerified: boolean }
+): ContributionReceipt[] {
+  const candidates = survivingContributionCandidates(
+    receipts,
+    currentRevision,
+    currentFingerprint,
+    supervisorEvents
+  )
+  if (!options.independentlyVerified) {
+    return candidates.filter((receipt) => receiptCompletesOwnedContribution(receipt, supervisorEvents))
+  }
+  return candidates.filter((receipt) =>
+    receiptCompletesOwnedContribution(receipt, supervisorEvents) || reviews.some((review) =>
+      review.targetContributionId === receipt.id && reviewAcceptsCurrentRevision(
+        review,
+        candidates,
+        currentRevision,
+        currentFingerprint,
+        supervisorEvents,
+        {
+          allowPromotedTarget: true,
+          independentlyVerified: true,
+          reviewerTurnReceipts: receipts
+        }
+      )
+    )
+  )
 }
 
 export function parseReviewReceiptsJsonl(content: string, expectedRunId: string): ReviewReceipt[] {

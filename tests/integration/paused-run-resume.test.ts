@@ -6,6 +6,10 @@ import {
   RunOrchestrator as BaseRunOrchestrator,
   type ProcessRunnerPort
 } from '../../src/main/orchestrator/run-orchestrator'
+import {
+  DurableRunStateStore,
+  type DurableRunManifest
+} from '../../src/main/persistence/durable-run-state'
 import type { ProcessRunOptions, ProcessRunResult } from '../../src/main/process/process-runner'
 import { defaultSettings } from '../../src/main/settings/settings-store'
 
@@ -296,9 +300,22 @@ describe('durable paused-run recovery', () => {
     await restored.waitForSettled(started.runId)
     const resumedJournal = (await readFile(journalPath, 'utf8')).trim().split(/\r?\n/u)
       .slice(journalLengthBeforeResume)
-      .map((line) => JSON.parse(line) as { state?: { status?: string; cursor?: { stage?: string } } })
+      .map((line) => JSON.parse(line) as {
+        state?: {
+          status?: string
+          cursor?: { stage?: string }
+          retries?: Array<{ idempotencyKey?: string; attempts?: number; lastReason?: string }>
+        }
+      })
     const firstRunningRecord = resumedJournal.find((record) => record.state?.status === 'running')
     expect(firstRunningRecord?.state?.cursor?.stage).toBe('recovery')
+    expect(firstRunningRecord?.state?.retries).toHaveLength(1)
+    expect(firstRunningRecord?.state?.retries?.[0]).toMatchObject({
+      attempts: 1,
+      lastReason: 'provider-protocol'
+    })
+    expect(firstRunningRecord?.state?.retries?.[0]?.idempotencyKey)
+      .toMatch(/^recovery-resume:[a-f0-9]{32}$/u)
     expect(restored.getSnapshot(started.runId)).toMatchObject({
       status: 'paused',
       pause: { reason: 'quality-repair', resumable: true }
@@ -394,6 +411,136 @@ describe('durable paused-run recovery', () => {
       pause: { reason: 'quality-repair', resumable: true }
     })
     expect(new Set(runner.calls)).toEqual(new Set(['claude', 'codex']))
+  })
+
+  it('does not reopen a final quality-repair stop after restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-final-quality-repair-'))
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'duo-final-quality-repair-runtime-'))
+    const runner = new RecoverableQuotaRunner()
+    runner.rejectQuota = false
+    const first = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await first.start(request(root))
+    await first.waitForSettled(started.runId)
+    expect(first.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: true }
+    })
+
+    const manifest = JSON.parse(
+      await readFile(join(runtimeRoot, started.runId, 'run-manifest.json'), 'utf8')
+    ) as DurableRunManifest
+    expect(manifest.pause?.resumable).toBe(true)
+    const finalManifest: DurableRunManifest = {
+      ...manifest,
+      revision: manifest.revision + 1,
+      updatedAt: new Date(Date.parse(manifest.updatedAt) + 1_000).toISOString(),
+      pause: manifest.pause ? { ...manifest.pause, resumable: false } : undefined
+    }
+    const durableStore = new DurableRunStateStore(join(runtimeRoot, started.runId), {
+      runId: started.runId,
+      workspaceId: started.runId
+    })
+    await durableStore.persist(finalManifest)
+    const callsBeforeRestart = runner.calls.length
+
+    const restored = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+    await expect(restored.restore()).resolves.toBe(1)
+    expect(restored.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: false }
+    })
+    await expect(restored.resume(started.runId)).rejects.toThrow(/not paused in a resumable state/iu)
+    expect(runner.calls).toHaveLength(callsBeforeRestart)
+  })
+
+  it('recovers legacy quality-repair finality from the supervisor event instead of a stale run mirror', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-legacy-final-quality-repair-'))
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'duo-legacy-final-quality-repair-runtime-'))
+    const runner = new RecoverableQuotaRunner()
+    runner.rejectQuota = false
+    const first = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await first.start(request(root))
+    await first.waitForSettled(started.runId)
+    expect(first.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: true }
+    })
+    const runtimePath = join(runtimeRoot, started.runId)
+    const manifest = JSON.parse(await readFile(join(runtimePath, 'run-manifest.json'), 'utf8')) as DurableRunManifest
+    if (!manifest.pause) throw new Error('Expected a durable quality-repair pause.')
+    const legacyPause = { ...manifest.pause }
+    delete legacyPause.resumable
+    const legacyManifest: DurableRunManifest = {
+      ...manifest,
+      revision: manifest.revision + 1,
+      updatedAt: new Date(Date.parse(manifest.updatedAt) + 2_000).toISOString(),
+      pause: legacyPause
+    }
+    const timelinePath = join(runtimePath, 'public', 'timeline.jsonl')
+    const pauseEvents = (await readFile(timelinePath, 'utf8')).trim().split(/\r?\n/u)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((event) => event.type === 'run.paused' && event.topic === 'quality-repair')
+    const priorPauseEvent = pauseEvents.at(-1)
+    if (!priorPauseEvent) throw new Error('Expected a supervisor quality-repair pause event.')
+    await appendFile(timelinePath, `${JSON.stringify({
+      ...priorPauseEvent,
+      id: 'legacy-final-quality-repair-stop',
+      timestamp: legacyManifest.updatedAt,
+      metadata: {
+        ...(typeof priorPauseEvent.metadata === 'object' && priorPauseEvent.metadata !== null
+          ? priorPauseEvent.metadata
+          : {}),
+        pauseReason: 'quality-repair',
+        resumable: false
+      }
+    })}\n`, 'utf8')
+    const durableStore = new DurableRunStateStore(runtimePath, {
+      runId: started.runId,
+      workspaceId: started.runId
+    })
+    await durableStore.persist(legacyManifest)
+    // Simulate the historical crash window: run.json still says resumable=true.
+    const staleMirror = JSON.parse(await readFile(join(runtimePath, 'run.json'), 'utf8')) as {
+      pause?: { resumable?: boolean }
+    }
+    expect(staleMirror.pause?.resumable).toBe(true)
+
+    const restored = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+    await expect(restored.restore()).resolves.toBe(1)
+    expect(restored.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'quality-repair', resumable: false }
+    })
   })
 
   it('self-heals missing pre-skill policy directories before resuming a legacy paused battle', async () => {

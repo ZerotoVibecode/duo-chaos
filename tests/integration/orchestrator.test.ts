@@ -614,7 +614,7 @@ describe('simulation orchestration', () => {
       .map((command) => command.stdin ?? command.args.at(-1) ?? '')
     expect(resumedPrompts).not.toHaveLength(0)
     expect(resumedPrompts.every((prompt) => Number(prompt.match(/Round:\s*(\d+)/)?.[1] ?? 0) >= 8)).toBe(true)
-    expect(resumedPrompts.join('\n')).toMatch(/Reserved quality repair|Review .*reserved repair/i)
+    expect(resumedPrompts.join('\n')).toMatch(/Reserved quality (?:repair|review)|Review .*reserved repair/i)
   })
 })
 

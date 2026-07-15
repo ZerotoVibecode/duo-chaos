@@ -73,68 +73,82 @@ export const DOM_QUALITY_INSPECTION = `
   const candidates = Array.from(document.querySelectorAll('button:not([disabled]), a[href], input:not([type="hidden"]):not([type="file"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [role="button"]:not([aria-disabled="true"]), [tabindex]:not([tabindex="-1"])'))
     .filter(visible)
   const accessible = candidates.filter((element) => labelText(element).length > 0)
-  const interactionCandidate = candidates.find((element) => !element.matches('a[href]')) || candidates[0]
+  const interactionCandidates = [
+    ...candidates.filter((element) => !element.matches('a[href]')),
+    ...candidates.filter((element) => element.matches('a[href]'))
+  ].slice(0, 3)
   let interactionAttempted = false
   let interactionSucceeded = false
+  let interactionAttemptCount = 0
+  let interactionSuccessCount = 0
   const interactionObservedChanges = new Set()
-  if (interactionCandidate) {
+  const fingerprint = (value) => {
+    const text = String(value || '')
+    const stride = Math.max(1, Math.ceil(text.length / 100000))
+    let hash = 2166136261
+    for (let index = 0; index < text.length; index += stride) {
+      hash ^= text.charCodeAt(index)
+      hash = Math.imul(hash, 16777619)
+    }
+    return String(text.length) + ':' + String(hash >>> 0)
+  }
+  const state = (activeCandidate) => {
+    // Exclude the control being driven. Assigning an input's native value is
+    // an action performed by this probe, not proof that the app observed it.
+    const controls = Array.from(document.querySelectorAll('input, select, textarea, button, [role="button"]'))
+      .filter((element) => element !== activeCandidate)
+      .slice(0, 128)
+      .map((element) => ({
+        value: 'value' in element ? String(element.value) : '',
+        checked: 'checked' in element ? Boolean(element.checked) : false,
+        selectedIndex: 'selectedIndex' in element ? Number(element.selectedIndex) : -1,
+        disabled: 'disabled' in element ? Boolean(element.disabled) : false
+      }))
+    const aria = Array.from(document.querySelectorAll('*'))
+      .slice(0, 512)
+      .map((element) => Array.from(element.attributes)
+        .filter((item) => item.name.startsWith('aria-') || item.name === 'hidden' || item.name === 'open' || item.name === 'data-state')
+        .map((item) => item.name + '=' + item.value)
+        .join('|'))
+      .join('||')
+    const canvases = Array.from(document.querySelectorAll('canvas'))
+      .slice(0, 4)
+      .map((canvas) => {
+        try { return fingerprint(canvas.toDataURL('image/png')) } catch { return 'unavailable' }
+      })
+    return {
+      url: window.location.href,
+      dom: fingerprint(document.body?.innerHTML || ''),
+      text: fingerprint(document.body?.innerText || document.body?.textContent || ''),
+      controls: fingerprint(JSON.stringify(controls)),
+      aria: fingerprint(aria),
+      canvas: fingerprint(canvases.join('|'))
+    }
+  }
+  const recordStateChanges = (beforeState, afterState, changes) => {
+    if (afterState.url !== beforeState.url) changes.add('navigation')
+    if (afterState.controls !== beforeState.controls) changes.add('value')
+    if (afterState.aria !== beforeState.aria) changes.add('aria')
+    if (afterState.canvas !== beforeState.canvas) changes.add('canvas')
+    if (afterState.dom !== beforeState.dom || afterState.text !== beforeState.text) changes.add('dom')
+  }
+  for (const interactionCandidate of interactionCandidates) {
+    if (!interactionCandidate?.isConnected || !visible(interactionCandidate)) continue
     interactionAttempted = true
-
-    const fingerprint = (value) => {
-      const text = String(value || '')
-      const stride = Math.max(1, Math.ceil(text.length / 100000))
-      let hash = 2166136261
-      for (let index = 0; index < text.length; index += stride) {
-        hash ^= text.charCodeAt(index)
-        hash = Math.imul(hash, 16777619)
-      }
-      return String(text.length) + ':' + String(hash >>> 0)
-    }
-    const state = () => {
-      const controls = Array.from(document.querySelectorAll('input, select, textarea, button, [role="button"]'))
-        .slice(0, 128)
-        .map((element) => ({
-          value: 'value' in element ? String(element.value) : '',
-          checked: 'checked' in element ? Boolean(element.checked) : false,
-          selectedIndex: 'selectedIndex' in element ? Number(element.selectedIndex) : -1,
-          disabled: 'disabled' in element ? Boolean(element.disabled) : false
-        }))
-      const aria = Array.from(document.querySelectorAll('*'))
-        .slice(0, 512)
-        .map((element) => Array.from(element.attributes)
-          .filter((item) => item.name.startsWith('aria-') || item.name === 'hidden' || item.name === 'open' || item.name === 'data-state')
-          .map((item) => item.name + '=' + item.value)
-          .join('|'))
-        .join('||')
-      const canvases = Array.from(document.querySelectorAll('canvas'))
-        .slice(0, 4)
-        .map((canvas) => {
-          try { return fingerprint(canvas.toDataURL('image/png')) } catch { return 'unavailable' }
-        })
-      return {
-        url: window.location.href,
-        dom: fingerprint(document.body?.innerHTML || ''),
-        text: fingerprint(document.body?.innerText || document.body?.textContent || ''),
-        controls: fingerprint(JSON.stringify(controls)),
-        aria: fingerprint(aria),
-        canvas: fingerprint(canvases.join('|'))
-      }
-    }
-    const recordStateChanges = (beforeState, afterState, changes) => {
-      if (afterState.url !== beforeState.url) changes.add('navigation')
-      if (afterState.controls !== beforeState.controls) changes.add('value')
-      if (afterState.aria !== beforeState.aria) changes.add('aria')
-      if (afterState.canvas !== beforeState.canvas) changes.add('canvas')
-      if (afterState.dom !== beforeState.dom || afterState.text !== beforeState.text) changes.add('dom')
-    }
-    const baselineStart = state()
+    interactionAttemptCount += 1
+    const observedChanges = new Set()
+    const baselineStart = state(interactionCandidate)
     await new Promise((resolve) => setTimeout(resolve, 100))
-    const before = state()
+    const before = state(interactionCandidate)
     const ambientChanges = new Set()
     recordStateChanges(baselineStart, before, ambientChanges)
     const observer = new MutationObserver((records) => {
       for (const record of records) {
-        interactionObservedChanges.add(record.type === 'attributes' && record.attributeName?.startsWith('aria-') ? 'aria' : 'dom')
+        const nativeMutation = record.target === interactionCandidate &&
+          record.type === 'attributes' &&
+          ['value', 'checked', 'selected'].includes(record.attributeName || '')
+        if (nativeMutation) continue
+        observedChanges.add(record.type === 'attributes' && record.attributeName?.startsWith('aria-') ? 'aria' : 'dom')
       }
     })
     if (document.body) observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
@@ -165,23 +179,42 @@ export const DOM_QUALITY_INSPECTION = `
 
     for (let attempt = 0; attempt < 7; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 50))
-      const after = state()
-      recordStateChanges(before, after, interactionObservedChanges)
-      if (interactionObservedChanges.size > 0) break
+      const after = state(interactionCandidate)
+      recordStateChanges(before, after, observedChanges)
+      if (observedChanges.size > 0) break
     }
     observer.disconnect()
-    for (const ambientChange of ambientChanges) interactionObservedChanges.delete(ambientChange)
-    interactionSucceeded = interactionObservedChanges.size > 0
+    for (const ambientChange of ambientChanges) observedChanges.delete(ambientChange)
+    if (observedChanges.size > 0) interactionSuccessCount += 1
+    for (const observedChange of observedChanges) interactionObservedChanges.add(observedChange)
   }
+  interactionSucceeded = interactionSuccessCount > 0
   const bodyText = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim()
+  const severeTextWrapCount = Array.from(document.querySelectorAll('body *')).filter((element) => {
+    if (!visible(element) || element.closest('svg, canvas') || element.matches('input, select, textarea, button')) return false
+    const text = (element.textContent || '').replace(/\\s+/g, ' ').trim()
+    if (text.replace(/\\s+/g, '').length < 8) return false
+    const visibleTextChild = Array.from(element.children).some((child) => visible(child) && (child.textContent || '').trim().length > 0)
+    if (visibleTextChild) return false
+    const rect = element.getBoundingClientRect()
+    const style = window.getComputedStyle(element)
+    const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.2
+    if (!Number.isFinite(lineHeight) || lineHeight <= 0) return false
+    const lines = Math.max(1, Math.round(rect.height / lineHeight))
+    const averageCharactersPerLine = text.replace(/\\s+/g, '').length / lines
+    return lines >= 4 && averageCharactersPerLine < 4
+  }).length
   return {
     visibleTextCharacters: bodyText.length,
     mainLandmark: Boolean(document.querySelector('main, [role="main"]')),
     horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 2,
+    severeTextWrapCount,
     interactiveElementCount: candidates.length,
     accessibleInteractiveElementCount: accessible.length,
     interactionAttempted,
     interactionSucceeded,
+    interactionAttemptCount,
+    interactionSuccessCount,
     interactionObservedChanges: Array.from(interactionObservedChanges).sort()
   }
 })()
@@ -275,10 +308,13 @@ interface DomQualityEvidence {
   visibleTextCharacters: number
   mainLandmark: boolean
   horizontalOverflow: boolean
+  severeTextWrapCount: number
   interactiveElementCount: number
   accessibleInteractiveElementCount: number
   interactionAttempted: boolean
   interactionSucceeded: boolean
+  interactionAttemptCount: number
+  interactionSuccessCount: number
   interactionObservedChanges: string[]
 }
 
@@ -432,10 +468,13 @@ export const captureArtifactQualityEvidence: SupervisorBrowserEvidencePort['capt
       visibleTextCharacters: dom.visibleTextCharacters,
       mainLandmark: dom.mainLandmark,
       horizontalOverflow: dom.horizontalOverflow,
+      severeTextWrapCount: dom.severeTextWrapCount,
       interactiveElementCount: dom.interactiveElementCount,
       accessibleInteractiveElementCount: dom.accessibleInteractiveElementCount,
       interactionAttempted: dom.interactionAttempted,
       interactionSucceeded: dom.interactionSucceeded,
+      interactionAttemptCount: dom.interactionAttemptCount,
+      interactionSuccessCount: dom.interactionSuccessCount,
       interactionObservedChanges: dom.interactionObservedChanges,
       consoleErrors: captured.consoleErrors,
       pageErrors: captured.pageErrors

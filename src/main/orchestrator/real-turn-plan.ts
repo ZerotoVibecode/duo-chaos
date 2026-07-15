@@ -141,21 +141,31 @@ export function buildQualityRepairTurns(
   const evidence = missingEvidence.length > 0
     ? missingEvidence.join('; ')
     : 'final independent release proof'
+  const reviewOnly = missingEvidence.length > 0 && missingEvidence.every((item) =>
+    / exact-current cross-review$/iu.test(item.trim())
+  )
   const prefix = `quality-repair-${String(index).padStart(2, '0')}`
   return [
     {
       id: `${prefix}-${first}-repair`,
       agent: first,
-      kind: 'repair',
-      phase: 'round.repair',
-      goal: `Reserved quality repair ${String(index)}. Close only these missing evidence categories: ${evidence}. Inspect the preserved workspace and opponent handoff, make a bounded substantive correction when source proof is missing, verify it directly, and do not replay completed work.`
+      // An exact-current review gap is evidence work, not implementation
+      // work. Using a review lease keeps a correct source tree unchanged and
+      // avoids asking the acceptance gate for artificial repair evidence.
+      kind: reviewOnly ? 'review' : 'repair',
+      phase: reviewOnly ? 'round.verify' : 'round.repair',
+      goal: reviewOnly
+        ? `Reserved quality review ${String(index)}. Close only these missing evidence categories: ${evidence}. Review the opponent's accepted contribution against the exact preserved revision and file an explicit accepted or blocking verdict. No source edit is required or desired unless the review finds a concrete release defect; do not replay completed work.`
+        : `Reserved quality repair ${String(index)}. Close only these missing evidence categories: ${evidence}. Inspect the preserved workspace and opponent handoff, make a bounded substantive correction when source proof is missing, verify it directly, and do not replay completed work.`
     },
     {
       id: `${prefix}-${second}-review`,
       agent: second,
       kind: 'review',
       phase: 'round.verify',
-      goal: `Review ${name(first)}'s reserved repair against the sealed quality brief and the current preserved revision. Close the remaining evidence categories, repair only a concrete release blocker, run direct verification, and write a ready reveal packet only when the proof is complete.`,
+      goal: reviewOnly
+        ? `Review ${name(first)}'s exact-current verdict against the sealed quality brief and preserved revision. File the reciprocal accepted or blocking review without changing correct source, and write a ready reveal packet only when trusted supervisor proof is complete.`
+        : `Review ${name(first)}'s reserved repair against the sealed quality brief and the current preserved revision. Close the remaining evidence categories, repair only a concrete release blocker, run direct verification, and write a ready reveal packet only when the proof is complete.`,
       revealCandidate: true
     }
   ]

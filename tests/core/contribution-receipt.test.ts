@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   buildContributionReceipt,
   contributionBalance,
+  mergeContributionReceiptClosure,
   parseContributionReceiptsJsonl,
   receiptCompletesOwnedContribution,
+  receiptEligibleForProofPromotion,
   survivingContributionReceipts
 } from '../../src/main/orchestrator/contribution-receipt'
 import type { DuoEvent, DuoTask } from '../../src/shared/types'
@@ -34,6 +36,55 @@ function dispatch(agent: 'claude' | 'codex', round = 5, replyTo = 'opponent-disp
 }
 
 describe('diff-backed contribution receipts', () => {
+  it('merges a resumed no-delta closure into the same logical material turn', () => {
+    const handoff = dispatch('claude')
+    const material = buildContributionReceipt({
+      runId: 'run-receipt', round: 5, turnId: 'turn-5', agent: 'claude', kind: 'code',
+      tasks, events: [handoff],
+      diff: { changed: true, files: ['app/src/ui.tsx'], fileCount: 1, insertions: 80, deletions: 4, truncated: false },
+      verification: 'unknown', accepted: true,
+      baseRevision: 0, resultRevision: 1,
+      baseFingerprint: 'sha256:base', resultFingerprint: 'sha256:claude'
+    })
+    const closure = buildContributionReceipt({
+      runId: 'run-receipt', round: 5, turnId: 'turn-5', agent: 'claude', kind: 'code',
+      tasks, events: [handoff],
+      diff: { changed: false, files: [], fileCount: 0, insertions: 0, deletions: 0, truncated: false },
+      verification: 'passed', accepted: true,
+      baseRevision: 1, resultRevision: 1,
+      baseFingerprint: 'sha256:claude', resultFingerprint: 'sha256:claude'
+    })
+
+    const merged = mergeContributionReceiptClosure(material, closure)
+    expect(merged).toMatchObject({
+      id: material.id,
+      sourceChanged: true,
+      status: 'complete',
+      verification: 'passed',
+      accepted: true,
+      baseRevision: 0,
+      resultRevision: 1,
+      baseFingerprint: 'sha256:base',
+      resultFingerprint: 'sha256:claude',
+      files: ['app/src/ui.tsx']
+    })
+    expect(merged.unresolvedRisks).toEqual([])
+    expect(receiptCompletesOwnedContribution(merged, [handoff])).toBe(true)
+  })
+
+  it('does not merge an unrelated or source-changing capsule into a prior turn transition', () => {
+    const material = buildContributionReceipt({
+      runId: 'run-receipt', round: 5, turnId: 'turn-5', agent: 'claude', kind: 'code',
+      tasks, events: [dispatch('claude')],
+      diff: { changed: true, files: ['app/src/ui.tsx'], fileCount: 1, insertions: 80, deletions: 4, truncated: false },
+      verification: 'unknown', accepted: true,
+      baseRevision: 0, resultRevision: 1,
+      baseFingerprint: 'sha256:base', resultFingerprint: 'sha256:claude'
+    })
+    const unrelated = { ...material, id: 'other', turnId: 'other' }
+    expect(mergeContributionReceiptClosure(material, unrelated)).toBe(unrelated)
+  })
+
   it('accepts a meaningful owned contribution only when task, source, verification, and handoff all agree', () => {
     const receipt = buildContributionReceipt({
       runId: 'run-receipt', round: 5, turnId: 'turn-5', agent: 'claude', kind: 'code',
@@ -57,6 +108,24 @@ describe('diff-backed contribution receipts', () => {
       acceptanceSatisfied: true
     })])
     expect(receiptCompletesOwnedContribution(receipt, [dispatch('claude')])).toBe(true)
+  })
+
+  it('matches a preserved pre-canonical task boundary against the bounded app diff', () => {
+    const receipt = buildContributionReceipt({
+      runId: 'run-receipt', round: 5, turnId: 'turn-legacy-boundary', agent: 'claude', kind: 'code',
+      tasks: [{ ...tasks[0]!, privateFiles: ['src/**'] }], events: [dispatch('claude')],
+      diff: { changed: true, files: ['app/src/ui.tsx'], fileCount: 1, insertions: 80, deletions: 4, truncated: false },
+      verification: 'passed', accepted: true,
+      baseRevision: 0, resultRevision: 1,
+      baseFingerprint: 'sha256:base', resultFingerprint: 'sha256:claude'
+    })
+
+    expect(receipt.status).toBe('complete')
+    expect(receipt.taskProof[0]).toMatchObject({
+      expectedFiles: ['app/src/**'],
+      touchedFiles: ['app/src/ui.tsx'],
+      boundaryMatched: true
+    })
   })
 
   it('keeps a contribution continuing when its source delta misses the owned task boundary', () => {
@@ -88,6 +157,31 @@ describe('diff-backed contribution receipts', () => {
     expect(receipt.status).toBe('continuing')
     expect(receipt.unresolvedRisks).toContain('owned-task-incomplete')
     expect(receiptCompletesOwnedContribution(receipt, [dispatch('claude')])).toBe(false)
+  })
+
+  it('marks a completed material edit as promotion-eligible when only final verification is pending', () => {
+    const handoff = dispatch('claude')
+    const receipt = buildContributionReceipt({
+      runId: 'run-receipt', round: 5, turnId: 'turn-promotion', agent: 'claude', kind: 'code',
+      tasks, events: [handoff],
+      diff: { changed: true, files: ['app/src/ui.tsx'], fileCount: 1, insertions: 24, deletions: 1, truncated: false },
+      verification: 'unknown', accepted: true,
+      baseRevision: 0, resultRevision: 1,
+      baseFingerprint: 'sha256:base', resultFingerprint: 'sha256:claude'
+    })
+
+    expect(receipt.status).toBe('continuing')
+    expect(receipt.unresolvedRisks).toEqual(expect.arrayContaining([
+      'owned-task-acceptance-unproven',
+      'verification-missing'
+    ]))
+    expect(receiptCompletesOwnedContribution(receipt, [handoff])).toBe(false)
+    expect(receiptEligibleForProofPromotion(receipt, [handoff])).toBe(true)
+    expect(receiptEligibleForProofPromotion(receipt, [])).toBe(false)
+    expect(receiptEligibleForProofPromotion({
+      ...receipt,
+      taskProof: receipt.taskProof.map((proof) => ({ ...proof, boundaryMatched: false }))
+    }, [handoff])).toBe(false)
   })
 
   it('credits the completed material task without requiring every owned task to finish in one turn', () => {

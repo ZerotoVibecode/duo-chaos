@@ -205,14 +205,14 @@ describe('provider-reported usage telemetry', () => {
     })
   })
 
-  it('requests a between-call checkpoint from exact excessive terminal usage', () => {
+  it('requests a between-call checkpoint from excessive cache-weighted terminal input', () => {
     const tracker = new RunUsageTracker()
     tracker.beginCall('codex', 'codex-work-heavy')
     tracker.ingest('codex', JSON.stringify({
       type: 'turn.completed',
       usage: {
-        input_tokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.processedInputTokens + 1,
-        cached_input_tokens: 300_000,
+        input_tokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.effectiveInputTokens + 1,
+        cached_input_tokens: 0,
         output_tokens: 8_000,
         reasoning_output_tokens: 2_000
       }
@@ -225,14 +225,62 @@ describe('provider-reported usage telemetry', () => {
       reasons: ['processed-input'],
       callId: 'codex-work-heavy',
       agent: 'codex',
+      effectiveInputTokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.effectiveInputTokens + 1,
       totals: {
-        processedInputTokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.processedInputTokens + 1,
-        cachedInputTokens: 300_000,
+        processedInputTokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.effectiveInputTokens + 1,
+        cachedInputTokens: 0,
         outputTokens: 8_000,
         reasoningTokens: 2_000,
         calls: 1
       },
       limits: DEFAULT_COMPLETED_CALL_USAGE_LIMITS
+    })
+  })
+
+  it('keeps cache-heavy terminal telemetry exact without treating cache reads as full guard pressure', () => {
+    const tracker = new RunUsageTracker()
+    tracker.beginCall('claude', 'claude-cache-heavy')
+    tracker.ingest('claude', JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      usage: {
+        input_tokens: 20,
+        cache_creation_input_tokens: 49_980,
+        cache_read_input_tokens: 900_000,
+        output_tokens: 10_000
+      }
+    }), true, 'claude-cache-heavy')
+    tracker.finishCall('claude', 'claude-cache-heavy', 'complete')
+
+    const [receipt] = tracker.evidenceSnapshot().calls
+    expect(receipt?.totals).toMatchObject({
+      processedInputTokens: 950_000,
+      cachedInputTokens: 900_000,
+      outputTokens: 10_000
+    })
+    expect(evaluateCompletedCallUsage(receipt!)).toBeUndefined()
+  })
+
+  it('preserves independent output and reasoning guards when cache-weighted input stays ordinary', () => {
+    const receipt = {
+      id: 'codex-output-heavy',
+      agent: 'codex' as const,
+      status: 'complete' as const,
+      complete: true,
+      source: 'terminal' as const,
+      totals: {
+        processedInputTokens: 950_000,
+        cachedInputTokens: 900_000,
+        outputTokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.outputTokens + 1,
+        reasoningTokens: DEFAULT_COMPLETED_CALL_USAGE_LIMITS.reasoningTokens + 1,
+        calls: 1
+      }
+    }
+
+    expect(evaluateCompletedCallUsage(receipt)).toMatchObject({
+      reasons: ['output', 'reasoning'],
+      effectiveInputTokens: 140_000,
+      totals: receipt.totals
     })
   })
 

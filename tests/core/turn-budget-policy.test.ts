@@ -3,6 +3,7 @@ import {
   DEFAULT_TURN_BUDGET_POLICY,
   extendStageDeadlineForPause,
   remainingStageLeaseSeconds,
+  resolveResumeStageLeaseSeconds,
   resolveStageBudgetSeconds,
   validateTurnBudgetPolicy
 } from '../../src/main/orchestrator/turn-budget'
@@ -13,14 +14,14 @@ describe('broadcast turn budget policy', () => {
       workLeaseSeconds: 7_200,
       runTimeoutSeconds: 86_400,
       verdictSeconds: 180,
-      recoverySeconds: 120
+      recoverySeconds: 600
     })
     expect(DEFAULT_TURN_BUDGET_POLICY.dialogueSeconds).toBeLessThanOrEqual(600)
 
     expect(resolveStageBudgetSeconds('dialogue', DEFAULT_TURN_BUDGET_POLICY, 86_400)).toBeLessThanOrEqual(600)
     expect(resolveStageBudgetSeconds('opening', DEFAULT_TURN_BUDGET_POLICY, 86_400)).toBeLessThanOrEqual(600)
     expect(resolveStageBudgetSeconds('verdict', DEFAULT_TURN_BUDGET_POLICY, 86_400)).toBe(180)
-    expect(resolveStageBudgetSeconds('recovery', DEFAULT_TURN_BUDGET_POLICY, 86_400)).toBe(120)
+    expect(resolveStageBudgetSeconds('recovery', DEFAULT_TURN_BUDGET_POLICY, 86_400)).toBe(600)
     expect(resolveStageBudgetSeconds('work', DEFAULT_TURN_BUDGET_POLICY, 86_400)).toBe(7_200)
   })
 
@@ -36,7 +37,7 @@ describe('broadcast turn budget policy', () => {
     expect(() => validateTurnBudgetPolicy({ ...maximum, dialogueSeconds: 601 })).toThrow(/dialogue/i)
     expect(() => validateTurnBudgetPolicy({ ...maximum, workLeaseSeconds: 28_801 })).toThrow(/work|lease/i)
     expect(() => validateTurnBudgetPolicy({ ...maximum, verdictSeconds: 181 })).toThrow(/verdict/i)
-    expect(() => validateTurnBudgetPolicy({ ...maximum, recoverySeconds: 121 })).toThrow(/recovery/i)
+    expect(() => validateTurnBudgetPolicy({ ...maximum, recoverySeconds: 601 })).toThrow(/recovery/i)
     expect(() => validateTurnBudgetPolicy({ ...maximum, runTimeoutSeconds: 86_401 })).toThrow(/run|ceiling|timeout/i)
   })
 
@@ -56,5 +57,12 @@ describe('broadcast turn budget policy', () => {
     expect(resumedDeadline).toBe('2026-07-13T13:10:00.000Z')
     expect(remainingStageLeaseSeconds(resumedDeadline, Date.parse('2026-07-13T13:04:00.000Z'))).toBe(360)
     expect(resolveStageBudgetSeconds('work', DEFAULT_TURN_BUDGET_POLICY, 10_000, 360)).toBe(360)
+  })
+
+  it('grants a fresh bounded contract-recovery lease on explicit resume', () => {
+    expect(resolveResumeStageLeaseSeconds('recovery', 0, DEFAULT_TURN_BUDGET_POLICY)).toBe(600)
+    expect(resolveResumeStageLeaseSeconds('recovery', 45, DEFAULT_TURN_BUDGET_POLICY)).toBe(600)
+    expect(resolveResumeStageLeaseSeconds('work', 0, DEFAULT_TURN_BUDGET_POLICY)).toBe(0)
+    expect(resolveResumeStageLeaseSeconds('dialogue', 0, DEFAULT_TURN_BUDGET_POLICY)).toBe(0)
   })
 })

@@ -85,7 +85,7 @@ const healthyAgents = () => Promise.resolve([
 ])
 
 describe('structured dialogue recovery', () => {
-  it('rejects a spoiler leak and repairs the capsule in the same round without failing the run', async () => {
+  it('redacts a spoiler leak deterministically without spending a second provider turn', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-structured-recovery-'))
     const runner = new UnsafeThenRecoveredDialogueRunner()
     const orchestrator = new RunOrchestrator({
@@ -116,12 +116,13 @@ describe('structured dialogue recovery', () => {
     expect(firstActiveAgent).toBeDefined()
     expect(runner.calls.slice(0, 2)).toEqual([
       { agent: firstActiveAgent, round: 1, stage: 'dialogue' },
-      { agent: firstActiveAgent, round: 1, stage: 'recovery' }
+      { agent: firstActiveAgent === 'claude' ? 'codex' : 'claude', round: 2, stage: 'dialogue' }
     ])
-    expect(snapshot?.events.some((event) => event.topic === 'dialogue-contract-rejected')).toBe(true)
+    expect(runner.calls.some((call) => call.stage === 'recovery')).toBe(false)
+    expect(snapshot?.events.some((event) => event.topic === 'dialogue-contract-rejected')).toBe(false)
     expect(snapshot?.events.some((event) => event.type === 'run.failed')).toBe(false)
-    // This fixture intentionally stops after two dialogue turns. The rejected
-    // capsule is recovered without failing the run, but no implementation or
+    // This fixture intentionally stops after two dialogue turns. The leaked
+    // noun is redacted locally without a second provider call, but no implementation or
     // release evidence exists, so the durable quality gate must remain paused.
     expect(snapshot).toMatchObject({
       status: 'paused',

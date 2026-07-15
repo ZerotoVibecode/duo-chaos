@@ -22,7 +22,10 @@ describe('CLI health check', () => {
       label: 'Codex',
       command: 'definitely-missing-duo-command',
       args: ['--version'],
-      timeoutMs: 500
+      // Coverage instrumentation can delay the Windows spawn error path by
+      // more than 500 ms on a busy runner. Keep this comfortably below the
+      // real CLI health-check ceiling while still asserting ENOENT itself.
+      timeoutMs: 3_000
     })
     expect(health.available).toBe(false)
     expect(health.detail).toMatch(/not found|ENOENT/i)

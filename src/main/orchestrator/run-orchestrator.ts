@@ -84,6 +84,7 @@ import { buildSimulationScript, SIMULATION_ARTIFACT_HTML } from './simulation-sc
 import {
   buildReviewReceipt,
   hasCompletedOwnedTask,
+  promotedSurvivingContributionReceipts,
   reviewAcceptsCurrentRevision,
   type ReviewReceipt
 } from './collaboration-evidence'
@@ -96,6 +97,7 @@ import {
 import {
   extendStageDeadlineForPause,
   remainingStageLeaseSeconds,
+  resolveResumeStageLeaseSeconds,
   resolveStageBudgetSeconds,
   type TurnBudgetPolicy
 } from './turn-budget'
@@ -103,6 +105,11 @@ import { composeTurnStagePrompt } from './turn-prompts'
 import { RunUsageTracker, evaluateCompletedCallUsage } from './usage-telemetry'
 import { resolveStageEffortDecision } from './stage-effort-policy'
 import { WorkLeaseGuard } from './work-lease-guard'
+import { containsStructuredWorkspaceActivity } from './structured-output-activity'
+import {
+  recordExplicitRecoveryResume,
+  recoveryResumeAuditKey
+} from './recovery-resume-audit'
 import { selectTurnCapabilities } from './capability-broker'
 import {
   compileQualityBrief,
@@ -112,11 +119,13 @@ import {
 } from './quality-brief'
 import {
   buildContributionReceipt,
+  mergeContributionReceiptClosure,
   receiptCompletesOwnedContribution,
-  survivingContributionReceipts,
+  receiptEligibleForProofPromotion,
+  survivingContributionCandidates,
   type ContributionReceipt
 } from './contribution-receipt'
-import { buildContextBaton } from './context-baton'
+import { buildContextBaton, buildVerificationDigest } from './context-baton'
 import { repinUnavailableProvider } from './resume-loadout'
 import { StageEventLedger } from './stage-event-ledger'
 import { SupervisorVerifier, type SupervisorVerifierPort } from './supervisor-verifier'
@@ -148,6 +157,15 @@ import {
 } from './recovery-capsule'
 
 const SUPERVISOR_VERIFICATION_GRACE_MS = 600_000
+
+function dialogueRecoveryReason(error: DialogueCapsuleError): string {
+  if (/binding quality brief/iu.test(error.message)) return 'consensus-quality-contract'
+  if (/pitch provenance|supervisor-recorded pitch provenance|previously pitched candidate/iu.test(error.message)) {
+    return 'consensus-provenance'
+  }
+  if (/workspace tool activity/iu.test(error.message)) return 'structured-tool-activity'
+  return 'invalid-dialogue-contract'
+}
 
 interface RunOrchestratorOptions {
   getSettings: () => Promise<AppSettings>
@@ -202,6 +220,8 @@ interface RunSession {
   taskContracts: DuoTask[]
   contributionReceipts: ContributionReceipt[]
   reviewReceipts: ReviewReceipt[]
+  /** Minimal private event identities required to validate durable equality proof. */
+  collaborationProofEvents: DuoEvent[]
   usageTracker: RunUsageTracker
   runDeadlineMs: number
   activeSinceMs: number
@@ -230,6 +250,8 @@ interface RunSession {
   workLeaseContinuations: Map<string, number>
   qualityRepairAttempts: number
   qualityRepairMissingEvidence: string[]
+  /** Human-authorized retry audit. It is diagnostic and never a hard recovery cap. */
+  retries: DurableRunManifest['retries']
 }
 
 interface ExecutedTurnStage {
@@ -339,6 +361,14 @@ function createDirectorEvent(
     severity: 'low',
     ...additions
   }
+}
+
+function mergeSupervisorEvidenceEvents(...groups: DuoEvent[][]): DuoEvent[] {
+  const events = new Map<string, DuoEvent>()
+  for (const group of groups) {
+    for (const event of group) events.set(event.id, event)
+  }
+  return [...events.values()]
 }
 
 function customizationFor(
@@ -919,6 +949,7 @@ export class RunOrchestrator {
       taskContracts: [],
       contributionReceipts: [],
       reviewReceipts: [],
+      collaborationProofEvents: [],
       usageTracker: new RunUsageTracker(),
       runDeadlineMs: this.nowMs() + request.runTimeoutSeconds * 1_000,
       activeSinceMs: this.nowMs(),
@@ -934,7 +965,8 @@ export class RunOrchestrator {
       providerPressure: {},
       workLeaseContinuations: new Map(),
       qualityRepairAttempts: 0,
-      qualityRepairMissingEvidence: []
+      qualityRepairMissingEvidence: [],
+      retries: []
     }
     this.sessions.set(runId, session)
     this.publishSnapshot(session)
@@ -1172,6 +1204,22 @@ export class RunOrchestrator {
         acknowledgedAt: new Date().toISOString()
       }
     }
+    const recoveryResumeAudit = session.resumeStage === 'recovery'
+      ? recordExplicitRecoveryResume(session.retries, {
+          idempotencyKey: recoveryResumeAuditKey({
+            runId: session.snapshot.runId,
+            turnId: session.snapshot.turnStage?.turnId ??
+              session.turnPlan[session.activeTurnIndex]?.id ??
+              `turn-${String(session.activeTurnIndex)}`,
+            originStage: session.resumeRecoveryOriginStage,
+            reasonCategory: session.resumeRecoveryReasons?.slice().sort().join('|') ||
+              session.snapshot.pause?.reason
+          }),
+          reason: session.snapshot.pause?.reason ?? 'provider-protocol',
+          updatedAt: new Date(now).toISOString()
+        })
+      : undefined
+    if (recoveryResumeAudit) session.retries = recoveryResumeAudit.records
     session.snapshot.status = 'running'
     session.snapshot.phase = session.resumePhase ?? session.turnPlan[session.activeTurnIndex]?.phase ?? 'reveal.ready'
     session.snapshot.finishedAt = undefined
@@ -1190,6 +1238,10 @@ export class RunOrchestrator {
       'run.resumed',
       adoptedWorkspaceDrift
         ? 'The recovered source was adopted as a new Git boundary. Verification is stale, so the same logical turn will reconcile it before the battle advances.'
+        : recoveryResumeAudit?.advisory
+          ? `Contract-only recovery resume ${String(recoveryResumeAudit.attempts)} is starting from the same preserved boundary. No automatic retry loop or source replay is running; inspect provider compatibility if the narrow contract fails again.`
+        : recoveryResumeAudit
+          ? 'Contract-only recovery resumed from the same preserved boundary. The bounded recovery lease cannot edit source or replay accepted implementation.'
         : resumesUsageGuard
           ? 'The exact provider-usage checkpoint was acknowledged. One fresh compact call may continue from the durable baton; completed work will not be replayed.'
         : resumesExhaustedWorkCapsule
@@ -1201,6 +1253,10 @@ export class RunOrchestrator {
         severity: 'high',
         topic: adoptedWorkspaceDrift
           ? 'workspace-adopted'
+          : recoveryResumeAudit?.advisory
+            ? 'recovery-resume-advisory'
+          : recoveryResumeAudit
+            ? 'recovery-resumed'
           : resumesUsageGuard
             ? 'usage-guard-resumed'
           : resumesExhaustedWorkCapsule
@@ -1213,10 +1269,23 @@ export class RunOrchestrator {
           adoptedWorkspaceDrift,
           resumesUsageGuard,
           resumesExhaustedWorkCapsule,
-          resumesQualityRepair
+          resumesQualityRepair,
+          ...(recoveryResumeAudit
+            ? {
+                recoveryResumeAttempts: recoveryResumeAudit.attempts,
+                recoveryResumeAdvisory: recoveryResumeAudit.advisory,
+                automaticRetry: false,
+                sourceReplay: false
+              }
+            : {})
         }
       }
     ))
+    if (recoveryResumeAudit) {
+      // Persist the human-authorized recovery audit before launching the child.
+      // A host crash must not erase the diagnostic attempt count.
+      await this.persistRunState(session)
+    }
     this.launchSessionRunner(session, git, true)
     return this.publicSnapshot(session)
   }
@@ -1308,29 +1377,58 @@ export class RunOrchestrator {
           tasks = []
         }
         const proofStore = new SupervisorProofStore(runtimePath)
-        const [contributionReceipts, reviewReceipts, taskContracts] = await Promise.all([
+        const [
+          contributionReceipts,
+          reviewReceipts,
+          taskContracts,
+          verificationReceipt
+        ] = await Promise.all([
           proofStore.readContributionReceipts(runId),
           proofStore.readReviewReceipts(runId),
-          proofStore.readTaskContracts(runId)
+          proofStore.readTaskContracts(runId),
+          proofStore.readLatestVerificationReceipt(runId)
         ])
+        const requiredCollaborationEventIds = [...new Set([
+          ...contributionReceipts.flatMap((receipt) => receipt.handoffEventIds),
+          ...reviewReceipts.flatMap((receipt) => receipt.evidenceEventIds)
+        ])]
+        const collaborationProofEvents = await proofStore.readCollaborationProofEvents(
+          runId,
+          requiredCollaborationEventIds
+        )
         tasks = mergeBoardWithTaskContracts(tasks, taskContracts)
+        const qualityEvidenceEvents = mergeSupervisorEvidenceEvents(events, collaborationProofEvents)
+        // The manifest field is only a restart cache. Re-establish verification
+        // from supervisor-owned private proof so a stale or edited cache cannot
+        // unlock current-revision collaboration evidence.
+        const restoredVerifiedRevision = verificationReceipt?.outcome === 'passed' &&
+          verificationReceipt.revision === manifest.evidence.appRevision
+          ? verificationReceipt.revision
+          : -1
         // Manifest agent sets are only a cache from older builds. Reconstruct
         // quality proof from revision-bound receipts so stale append-only flags
         // cannot survive a later edit or an interrupted upgrade.
-        const survivingContributions = survivingContributionReceipts(
+        const survivingContributions = promotedSurvivingContributionReceipts(
           contributionReceipts,
+          reviewReceipts,
           manifest.evidence.appRevision,
           manifest.git.appFingerprint,
-          events
+          qualityEvidenceEvents,
+          { independentlyVerified: restoredVerifiedRevision === manifest.evidence.appRevision }
         )
         const acceptedCodeAgents = new Set(survivingContributions.map((receipt) => receipt.agent))
         const acceptedReviewAgents = new Set(reviewReceipts
           .filter((receipt) => reviewAcceptsCurrentRevision(
             receipt,
             survivingContributions,
-              manifest.evidence.appRevision,
-              manifest.git.appFingerprint,
-              events
+            manifest.evidence.appRevision,
+            manifest.git.appFingerprint,
+            qualityEvidenceEvents,
+            {
+              allowPromotedTarget: true,
+              independentlyVerified: restoredVerifiedRevision === manifest.evidence.appRevision,
+              reviewerTurnReceipts: contributionReceipts
+            }
           ))
           .map((receipt) => receipt.reviewer))
         const interrupted = !revealReady && manifest.status !== 'paused' && !workspaceDrift
@@ -1353,6 +1451,25 @@ export class RunOrchestrator {
           ? new Date().toISOString()
           : manifest.pause?.pausedAt ?? manifest.updatedAt
         const provider = manifest.pause?.agent
+        const legacyPause = record(legacy.pause)
+        const legacyResumable = typeof legacyPause.resumable === 'boolean'
+          ? legacyPause.resumable
+          : undefined
+        const legacyPauseEvent = [...events].reverse().find((event) =>
+          event.type === 'run.paused' && event.agent === 'director' && event.topic === reason &&
+          event.metadata?.pauseReason === reason && typeof event.metadata.resumable === 'boolean'
+        )
+        const legacyEventResumable = typeof legacyPauseEvent?.metadata?.resumable === 'boolean'
+          ? legacyPauseEvent.metadata.resumable
+          : undefined
+        // Host interruption and workspace adoption are always explicit recovery
+        // checkpoints. Otherwise preserve the durable finality bit. Older
+        // quality-repair manifests may consult the supervisor-owned run mirror;
+        // if neither record has the bit, fail closed instead of reopening a paid
+        // repair loop that may already have reached its stop condition.
+        const restoredResumable = interrupted || workspaceDrift
+          ? true
+          : manifest.pause?.resumable ?? legacyEventResumable ?? legacyResumable ?? reason !== 'quality-repair'
         const pause: RunPauseSnapshot = {
           reason,
           ...(provider ? { provider } : {}),
@@ -1363,11 +1480,13 @@ export class RunOrchestrator {
               : reason === 'provider-quota' || reason === 'usage-pressure'
               ? `${provider === 'claude' ? 'Claude' : provider === 'codex' ? 'Codex' : 'A provider'} reached a usage boundary. The balanced battle remains preserved.`
               : reason === 'quality-repair'
-                ? 'The artifact is preserved and sealed. Reserved quality repair is waiting for explicit Resume.'
+                ? restoredResumable
+                  ? 'The artifact is preserved and sealed. Reserved quality repair is waiting for explicit Resume.'
+                  : 'The artifact is preserved and sealed. The quality-repair stop condition is final for this battle.'
                 : 'The battle is preserved at a recoverable provider boundary.',
           pausedAt,
           ...(manifest.pause?.resetAt ? { resetAt: manifest.pause.resetAt } : {}),
-          resumable: true,
+          resumable: restoredResumable,
           round: activeRound,
           stage: manifest.cursor.stage,
           ...(reason === 'quality-repair' && qualityRepairMissingEvidence.length > 0
@@ -1378,7 +1497,9 @@ export class RunOrchestrator {
             : reason === 'provider-quota' || reason === 'usage-pressure'
               ? 'Resume when usage is available again.'
               : reason === 'quality-repair'
-                ? 'Resume the reserved quality-repair pair, or explicitly reveal the preserved partial artifact.'
+                ? restoredResumable
+                  ? 'Resume the reserved quality-repair pair, or explicitly reveal the preserved partial artifact.'
+                  : 'Reveal the preserved partial artifact, or return to the prompt. No additional provider call will run from this checkpoint.'
               : 'Resume the same preserved turn.'
         }
         let resolveSettled: () => void = () => undefined
@@ -1487,6 +1608,7 @@ export class RunOrchestrator {
           taskContracts,
           contributionReceipts,
           reviewReceipts,
+          collaborationProofEvents,
           usageTracker: new RunUsageTracker({
             claude: { ...manifest.usage.claude, largestRawLineBytes: 0 },
             codex: { ...manifest.usage.codex, largestRawLineBytes: 0 }
@@ -1508,7 +1630,7 @@ export class RunOrchestrator {
           durableRevision: manifest.revision,
           providerSessions: { ...manifest.providerSessions },
           appEvidenceRevision: manifest.evidence.appRevision,
-          verifiedAppEvidenceRevision: manifest.evidence.verifiedAppRevision,
+          verifiedAppEvidenceRevision: restoredVerifiedRevision,
           ...(manifest.git.head ? { gitHead: manifest.git.head } : {}),
           ...(manifest.git.appFingerprint ? { appFingerprint: manifest.git.appFingerprint } : {}),
           quotaConstrainedAgents: new Set(!revealReady && provider ? [provider] : []),
@@ -1517,7 +1639,8 @@ export class RunOrchestrator {
             ? [[`${restoredTurnStage.turnId}:work`, restoredTurnStage.continuationCount]]
             : []),
           qualityRepairAttempts,
-          qualityRepairMissingEvidence
+          qualityRepairMissingEvidence,
+          retries: [...manifest.retries]
         }
         this.sessions.set(runId, session)
         await this.loadRedactionDictionary(session)
@@ -1923,7 +2046,8 @@ export class RunOrchestrator {
       appEvidenceRevision: session.appEvidenceRevision,
       verifiedAppEvidenceRevision: session.verifiedAppEvidenceRevision,
       qualityRepairAttempts: session.qualityRepairAttempts,
-      qualityRepairMissingEvidence: session.qualityRepairMissingEvidence
+      qualityRepairMissingEvidence: session.qualityRepairMissingEvidence,
+      retries: session.retries
     })
     if (signature === session.lastStateSignature) return
     session.durableRevision += 1
@@ -2126,7 +2250,7 @@ export class RunOrchestrator {
       },
       usage: { claude: usageOf('claude'), codex: usageOf('codex') },
       ...(session.snapshot.usageGuard ? { usageGuard: session.snapshot.usageGuard } : {}),
-      retries: [],
+      retries: [...session.retries],
       ...(session.qualityRepairAttempts > 0
         ? {
             qualityRepair: {
@@ -2144,6 +2268,7 @@ export class RunOrchestrator {
               ...(session.snapshot.pause.provider ? { agent: session.snapshot.pause.provider } : {}),
               pausedAt: session.snapshot.pause.pausedAt,
               ...(session.snapshot.pause.resetAt ? { resetAt: session.snapshot.pause.resetAt } : {}),
+              resumable: session.snapshot.pause.resumable,
               ...(!allowedPauseReason.has(pauseReason) ? { detailCode: pauseReason } : {})
             }
           }
@@ -2651,7 +2776,7 @@ export class RunOrchestrator {
       dialogueSeconds: 600,
       workLeaseSeconds: session.request.turnTimeoutSeconds,
       verdictSeconds: 180,
-      recoverySeconds: 120,
+      recoverySeconds: 600,
       runTimeoutSeconds: session.request.runTimeoutSeconds
     }
   }
@@ -2695,7 +2820,7 @@ export class RunOrchestrator {
       await this.persistRunState(session)
       const measured = pendingUsageGuard.totals
       const exactDetail = measured
-        ? `The completed call reported ${String(measured.processedInputTokens)} processed input, ${String(measured.cachedInputTokens)} cached input, ${String(measured.outputTokens)} output, and ${String(measured.reasoningTokens)} reasoning tokens.`
+        ? `The completed call reported ${String(measured.processedInputTokens)} processed input, ${String(measured.cachedInputTokens)} cached input, ${String(measured.outputTokens)} output, and ${String(measured.reasoningTokens)} reasoning tokens.${pendingUsageGuard.effectiveInputTokens === undefined ? '' : ` Cache-weighted input pressure was ${String(pendingUsageGuard.effectiveInputTokens)} tokens.`}`
         : pendingUsageGuard.utilization !== undefined
           ? `The provider reported ${String(Math.round(pendingUsageGuard.utilization * 100))}% utilization.`
           : 'The provider reported usage pressure.'
@@ -2735,12 +2860,17 @@ export class RunOrchestrator {
       session.workLeaseContinuations.set(`${turn.id}:work`, continuationCount)
     }
     const initialInferenceSteps = resumeStartsFreshCapsule ? 0 : sameStageReceipt?.inferenceSteps ?? 0
+    const policy = this.stagePolicy(session)
     const restoredStageSeconds = sameStageReceipt && session.resumeStage === stage
-      ? remainingStageLeaseSeconds(sameStageReceipt.deadlineAt, this.nowMs())
+      ? resolveResumeStageLeaseSeconds(
+          stage,
+          remainingStageLeaseSeconds(sameStageReceipt.deadlineAt, this.nowMs()),
+          policy
+        )
       : undefined
     const budgetSeconds = resolveStageBudgetSeconds(
       stage,
-      this.stagePolicy(session),
+      policy,
       this.remainingRunSeconds(session),
       restoredStageSeconds
     )
@@ -2786,9 +2916,41 @@ export class RunOrchestrator {
         (inMemoryPrivateIsCurrent ? opponent?.id ?? durablePrivateHandoff?.id : opponent?.id ?? durablePrivateHandoff?.id)
     const quotaHandoffFrom = [...session.quotaConstrainedAgents].find((agent) => agent !== turn.agent)
     const leanContribution = session.planVersion === 'lean-collaboration-v2' && stage === 'work'
-    const latestVerificationDigest = [...session.snapshot.events].reverse().find((event) =>
-      event.type === 'build.failed' || event.type === 'build.passed'
-    )?.publicText
+    const durableVerification = await session.proofStore.readLatestVerificationReceipt(session.snapshot.runId)
+    const latestVerificationEvent = durableVerification
+      ? undefined
+      : [...session.snapshot.events].reverse().find((event) =>
+          (event.type === 'build.failed' || event.type === 'build.passed') &&
+          event.topic === 'supervisor-verification'
+        )
+    const verificationEvidence = durableVerification ?? (latestVerificationEvent
+      ? {
+          summary: latestVerificationEvent.privateText ?? latestVerificationEvent.publicText,
+          checks: (Array.isArray(latestVerificationEvent.metadata?.checks)
+            ? latestVerificationEvent.metadata.checks
+            : []).flatMap((value) => {
+              const check = record(value)
+              return typeof check.id === 'string' && typeof check.outcome === 'string'
+                ? [{
+                    id: check.id,
+                    outcome: check.outcome,
+                    ...(typeof check.label === 'string' ? { label: check.label } : {}),
+                    ...(typeof check.detail === 'string' ? { detail: check.detail } : {})
+                  }]
+                : []
+            })
+        }
+      : undefined)
+    const latestVerificationDigest = verificationEvidence
+      ? buildVerificationDigest({
+          summary: verificationEvidence.summary,
+          checks: verificationEvidence.checks,
+          constraints: session.qualityBrief.privateContract.hardConstraints.map((constraint) => ({
+            id: constraint.id,
+            sourceText: constraint.sourceText
+          }))
+        })
+      : undefined
     const relevantDecisionDelta = session.snapshot.events
       .filter((event) => event.type === 'decision')
       .slice(-3)
@@ -2826,6 +2988,13 @@ export class RunOrchestrator {
         ? { stack: [...new Set(contextBaton.match(/\b(?:typescript|tsx|react|vite|electron|html|css|javascript)\b/giu)?.map((value) => value.toLowerCase()) ?? [])] }
         : {})
     })
+    const pitchCatalog = structuredDialogueStage && turn.phase === 'round.consensus'
+      ? (await session.proofStore.readPitches(session.snapshot.runId)).map((pitch) => ({
+          pitchId: pitch.pitchId,
+          agent: pitch.agent,
+          title: pitch.title
+        }))
+      : undefined
     const postConsensusSourceContext = turn.kind === 'code' || turn.kind === 'review' ||
       turn.kind === 'verify' || turn.kind === 'repair'
     const prompt = composeTurnStagePrompt({
@@ -2843,6 +3012,7 @@ export class RunOrchestrator {
       finalTurn: Boolean(turn.revealCandidate || turn.kind === 'repair' || round === session.turnPlan.length),
       ...(leanContribution ? { leanContribution: true } : {}),
       ...(contextBaton ? { contextBaton } : {}),
+      ...(pitchCatalog?.length ? { pitchCatalog } : {}),
       capabilityShortlist: capabilitySelection.promptContract,
       ...(postConsensusSourceContext
         ? {
@@ -3127,7 +3297,7 @@ export class RunOrchestrator {
         void this.persistRunState(session).catch(() => undefined)
       }
       const quota = parseCliQuotaSignal(line)
-      if (quota?.status === 'allowed_warning') {
+      if (quota?.status === 'allowed_warning' && (quota.utilization ?? 0) >= 0.82) {
         session.providerPressure[turn.agent] = quota
         session.snapshot.usageGuard = {
           status: 'pending',
@@ -3164,7 +3334,7 @@ export class RunOrchestrator {
       } else if (activity?.metadata?.verificationFailed === true) {
         lastVerificationOutcome = { sequence: lineSequence, outcome: 'failed' }
       }
-      if (structuredOutput && (activity?.category === 'command' || activity?.category === 'file')) {
+      if (structuredOutput && containsStructuredWorkspaceActivity(decoded, structuredOutputSchema)) {
         structuredToolActivity = true
       }
       if (activity && activityBudget.accept(activity)) this.enqueueEvent(session, activity)
@@ -3207,6 +3377,7 @@ export class RunOrchestrator {
             trigger: 'completed-call-usage',
             reasons: usageDecision.reasons,
             triggeredAt: new Date().toISOString(),
+            effectiveInputTokens: usageDecision.effectiveInputTokens,
             totals: {
               processedInputTokens: usageDecision.totals.processedInputTokens,
               cachedInputTokens: usageDecision.totals.cachedInputTokens,
@@ -3265,6 +3436,9 @@ export class RunOrchestrator {
       }
       if (structuredRecovery && !recoveryCapsule) {
         recoveryCapsule = extractRecoveryCapsuleFromCliLine(turn.agent, replayEnvelope)
+      }
+      if (structuredOutput && containsStructuredWorkspaceActivity(replayRecords, structuredOutputSchema)) {
+        structuredToolActivity = true
       }
       if (session.usageTracker.ingest(turn.agent, replayEnvelope, true, activeProcessId)) this.publishSnapshot(session)
     }
@@ -3346,6 +3520,7 @@ export class RunOrchestrator {
         : [...stageProviderText, ...undecodedStdoutText]
     })
     let rejectedDialogueContract = false
+    let rejectedDialogueReason: string | undefined
     let rejectedRecoveryContract = false
     if (structuredDialogue && dialogueCapsule) {
       try {
@@ -3363,12 +3538,15 @@ export class RunOrchestrator {
           supervisorProvenance = resolveConsensusProvenance({
             runId: session.snapshot.runId,
             appName: validatedCapsule.consensus.appName,
+            humanBrief: session.request.prompt,
             qualityBriefFingerprint: session.qualityBrief.fingerprint,
+            selectedSourcePitchIds: validatedCapsule.consensus.sourcePitchIds,
             pitches: immutablePitches
           })
           if (!supervisorProvenance || !validateConsensusProvenance({
             record: supervisorProvenance,
             runId: session.snapshot.runId,
+            humanBrief: session.request.prompt,
             qualityBriefFingerprint: session.qualityBrief.fingerprint,
             immutablePitches
           })) {
@@ -3453,6 +3631,7 @@ export class RunOrchestrator {
       } catch (error) {
         if (!(error instanceof DialogueCapsuleError)) throw error
         rejectedDialogueContract = true
+        rejectedDialogueReason = dialogueRecoveryReason(error)
         dialogueCapsule = undefined
       }
     }
@@ -3490,7 +3669,11 @@ export class RunOrchestrator {
           session,
           'decision',
           `${agentName}'s structured exchange failed the privacy or turn contract. One narrow tool-free correction is required.`,
-          { severity: 'high', topic: 'dialogue-contract-rejected', metadata: { stage, kind: turn.kind } }
+          {
+            severity: 'high',
+            topic: 'dialogue-contract-rejected',
+            metadata: { stage, kind: turn.kind, reason: rejectedDialogueReason ?? 'invalid-dialogue-contract' }
+          }
         )
       )
     }
@@ -3599,9 +3782,7 @@ export class RunOrchestrator {
     const acceptanceResult = providerFailure?.kind === 'contract-invalid'
       ? { ...result, exitCode: 0, signal: null, timedOut: false, cancelled: false }
       : result
-    const assessment = quotaRejected
-      ? { accepted: false, outcome: 'timeboxed' as const, reasons: ['provider-quota-rejected'] }
-      : assessTurnAcceptance({
+    const assessedTurn = assessTurnAcceptance({
       agent: turn.agent,
       round,
       stage,
@@ -3626,10 +3807,23 @@ export class RunOrchestrator {
       // implementation. Preserve that evidence and let the turn loop skip the
       // duplicate work lease instead of suspending a healthy run.
       forbidsSourceChange: stage === 'dialogue' || stage === 'verdict' || stage === 'recovery'
-      })
+    })
+    const assessment: TurnAcceptance = quotaRejected
+      ? { accepted: false, outcome: 'timeboxed', reasons: ['provider-quota-rejected'] }
+      : rejectedDialogueContract
+        ? {
+            accepted: false,
+            outcome: 'recovery-required',
+            reasons: [
+              rejectedDialogueReason ?? 'invalid-dialogue-contract',
+              ...assessedTurn.reasons.filter((reason) => reason !== rejectedDialogueReason)
+            ]
+          }
+        : assessedTurn
     let contributionReceipt: ContributionReceipt | undefined
     if (stage === 'work') {
       const diff = await git.summarizeAppChanges(session.workspace.workspacePath)
+      const qualityEvidenceEvents = this.qualityEvidenceEvents(session, stageEvents)
       const verification = protocolBuildFailed || latestStageVerification?.outcome === 'failed' ||
         streamedVerificationForRevision === 'failed'
         ? 'failed' as const
@@ -3647,7 +3841,7 @@ export class RunOrchestrator {
         // multiple fresh calls. Preserve a valid reply-linked handoff already
         // recorded for this exact agent + round instead of demanding that the
         // resumed closure call duplicate it.
-        events: [...session.snapshot.events, ...stageEvents],
+        events: qualityEvidenceEvents,
         diff,
         verification,
         accepted: assessment.outcome === 'accepted',
@@ -3657,8 +3851,18 @@ export class RunOrchestrator {
         resultFingerprint: appStateAfter ?? ''
       })
       const priorReceiptIndex = session.contributionReceipts.findIndex((receipt) => receipt.id === contributionReceipt?.id)
-      if (priorReceiptIndex >= 0) session.contributionReceipts[priorReceiptIndex] = contributionReceipt
-      else session.contributionReceipts.push(contributionReceipt)
+      if (priorReceiptIndex >= 0) {
+        contributionReceipt = mergeContributionReceiptClosure(
+          session.contributionReceipts[priorReceiptIndex]!,
+          contributionReceipt
+        )
+        session.contributionReceipts[priorReceiptIndex] = contributionReceipt
+      } else session.contributionReceipts.push(contributionReceipt)
+      await this.retainCollaborationProofEvents(
+        session,
+        contributionReceipt.handoffEventIds,
+        qualityEvidenceEvents
+      )
       await session.proofStore.appendContributionReceipt(contributionReceipt)
       await this.emitEvent(session, createDirectorEvent(
         session,
@@ -3695,11 +3899,11 @@ export class RunOrchestrator {
         }
       ))
 
-      const currentBeforeTurn = survivingContributionReceipts(
+      const currentBeforeTurn = survivingContributionCandidates(
         session.contributionReceipts.filter((receipt) => receipt.id !== contributionReceipt?.id),
         appRevisionBefore,
         appStateBefore,
-        [...session.snapshot.events, ...stageEvents]
+        this.qualityEvidenceEvents(session, stageEvents)
       )
       const targetContribution = currentBeforeTurn
         .filter((receipt) => receipt.agent === opponentAgent)
@@ -3715,7 +3919,7 @@ export class RunOrchestrator {
             targetContribution,
             reviewedRevision: session.appEvidenceRevision,
             reviewedFingerprint: appStateAfter,
-            events: [...session.snapshot.events, ...stageEvents],
+            events: this.qualityEvidenceEvents(session, stageEvents),
             verification,
             accepted: assessment.outcome === 'accepted',
             sourceChanged: durableSourceChanged
@@ -3725,6 +3929,11 @@ export class RunOrchestrator {
         const priorReviewIndex = session.reviewReceipts.findIndex((receipt) => receipt.id === reviewReceipt.id)
         if (priorReviewIndex >= 0) session.reviewReceipts[priorReviewIndex] = reviewReceipt
         else session.reviewReceipts.push(reviewReceipt)
+        await this.retainCollaborationProofEvents(
+          session,
+          reviewReceipt.evidenceEventIds,
+          this.qualityEvidenceEvents(session, stageEvents)
+        )
         await session.proofStore.appendReviewReceipt(reviewReceipt)
         await this.emitEvent(session, createDirectorEvent(
           session,
@@ -3846,7 +4055,11 @@ export class RunOrchestrator {
     }
     if (
       session.planVersion === 'lean-collaboration-v2' && stage === 'work' && turn.kind === 'code' &&
-      executed.contributionReceipt && !receiptCompletesOwnedContribution(executed.contributionReceipt, session.snapshot.events) &&
+      executed.contributionReceipt && !receiptCompletesOwnedContribution(
+        executed.contributionReceipt,
+        this.qualityEvidenceEvents(session)
+      ) &&
+      !receiptEligibleForProofPromotion(executed.contributionReceipt, this.qualityEvidenceEvents(session)) &&
       !executed.quotaRejected && executed.failure === undefined
     ) {
       const continuationKey = `${turn.id}:completion`
@@ -4275,6 +4488,7 @@ export class RunOrchestrator {
     const qualityProvenanceMatches = provenance !== undefined && validateConsensusProvenance({
       record: provenance,
       runId: session.snapshot.runId,
+      humanBrief: session.request.prompt,
       qualityBriefFingerprint: session.qualityBrief.fingerprint,
       immutablePitches
     })
@@ -4287,6 +4501,7 @@ export class RunOrchestrator {
       timeoutMs: SUPERVISOR_VERIFICATION_GRACE_MS,
       abortSignal: session.controller.signal,
       qualityContract: {
+        missionProfile: session.request.missionProfile ?? 'surprise',
         consensusProvenance: {
           verified: qualityProvenanceMatches,
           ...(qualityProvenanceMatches
@@ -4296,8 +4511,10 @@ export class RunOrchestrator {
         criteria: session.qualityBrief.privateContract.hardConstraints.map((constraint) => ({
           id: constraint.id,
           label: constraint.sourceText,
+          kind: constraint.kind,
           polarity: constraint.polarity,
-          evidenceTerms: constraint.coverageTerms
+          evidenceTerms: constraint.coverageTerms,
+          ...(constraint.coverageGroups ? { evidenceGroups: constraint.coverageGroups } : {})
         }))
       }
     })
@@ -4357,7 +4574,7 @@ export class RunOrchestrator {
     }
     session.supervisorVerificationAttempt = { revision: session.appEvidenceRevision, passed }
     session.verifiedAppEvidenceRevision = passed ? session.appEvidenceRevision : -1
-    await this.emitEvent(session, createDirectorEvent(
+    const verificationEvent = createDirectorEvent(
       session,
       passed ? 'build.passed' : 'build.failed',
       passed
@@ -4371,10 +4588,30 @@ export class RunOrchestrator {
         metadata: {
           revision: session.appEvidenceRevision,
           supervisorVerified: passed,
-          checks: result.checks.map((check) => ({ id: check.id, outcome: check.outcome }))
+          checks: result.checks.map((check) => ({
+            id: check.id,
+            outcome: check.outcome,
+            label: check.label,
+            ...(typeof record(check).detail === 'string' ? { detail: record(check).detail } : {})
+          }))
         }
       }
-    ))
+    )
+    await this.emitEvent(session, verificationEvent)
+    await session.proofStore.writeVerificationReceipt({
+      version: 1,
+      runId: session.snapshot.runId,
+      revision: session.appEvidenceRevision,
+      outcome: passed ? 'passed' : 'failed',
+      summary: verificationEvent.privateText ?? verificationEvent.publicText,
+      checks: result.checks.map((check) => ({
+        id: check.id,
+        outcome: check.outcome,
+        label: check.label,
+        ...(typeof record(check).detail === 'string' ? { detail: String(record(check).detail) } : {})
+      })),
+      recordedAt: verificationEvent.timestamp
+    })
     await this.persistRunState(session)
     return passed
   }
@@ -4613,6 +4850,31 @@ export class RunOrchestrator {
     return session.snapshot.tasks.filter((task) => contractIds.has(task.id))
   }
 
+  private qualityEvidenceEvents(session: RunSession, extra: DuoEvent[] = []): DuoEvent[] {
+    return mergeSupervisorEvidenceEvents(
+      session.snapshot.events,
+      extra,
+      session.collaborationProofEvents
+    )
+  }
+
+  private async retainCollaborationProofEvents(
+    session: RunSession,
+    eventIds: string[],
+    candidates: DuoEvent[]
+  ): Promise<void> {
+    const required = new Set(eventIds)
+    if (required.size === 0) return
+    const selected = candidates.filter((event) => required.has(event.id))
+    if (new Set(selected.map((event) => event.id)).size !== required.size) {
+      throw new Error('Supervisor collaboration proof could not be bound to every referenced event id.')
+    }
+    session.collaborationProofEvents = await session.proofStore.recordCollaborationProofEvents(
+      session.snapshot.runId,
+      selected
+    )
+  }
+
   private async seriousMissionContractSatisfied(session: RunSession): Promise<boolean> {
     if ((session.request.missionProfile ?? 'surprise') !== 'serious') return true
     return await validateSeriousMissionContract(
@@ -4623,11 +4885,14 @@ export class RunOrchestrator {
   }
 
   private refreshCurrentQualityEvidence(session: RunSession, fingerprint = session.appFingerprint): void {
-    const contributions = survivingContributionReceipts(
+    const qualityEvidenceEvents = this.qualityEvidenceEvents(session)
+    const contributions = promotedSurvivingContributionReceipts(
       session.contributionReceipts,
+      session.reviewReceipts,
       session.appEvidenceRevision,
       fingerprint,
-      session.snapshot.events
+      qualityEvidenceEvents,
+      { independentlyVerified: this.hasCurrentVerification(session) }
     )
     session.acceptedCodeAgents = new Set(contributions.map((receipt) => receipt.agent))
     session.acceptedReviewAgents = new Set(session.reviewReceipts
@@ -4636,7 +4901,12 @@ export class RunOrchestrator {
         contributions,
         session.appEvidenceRevision,
         fingerprint,
-        session.snapshot.events
+        qualityEvidenceEvents,
+        {
+          allowPromotedTarget: true,
+          independentlyVerified: this.hasCurrentVerification(session),
+          reviewerTurnReceipts: session.contributionReceipts
+        }
       ))
       .map((receipt) => receipt.reviewer))
   }

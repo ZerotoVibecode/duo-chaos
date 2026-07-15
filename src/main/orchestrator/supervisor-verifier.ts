@@ -1,4 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises'
+import { devNull } from 'node:os'
 import { dirname, extname, join, relative } from 'node:path'
 import { captureArtifactQualityEvidence } from '@main/preview/electron-artifact-capture'
 import { ProcessRunner, type ProcessRunOptions, type ProcessRunResult } from '@main/process/process-runner'
@@ -11,6 +12,7 @@ export interface SupervisorVerificationCheck {
   id: string
   label: string
   outcome: 'passed' | 'failed' | 'skipped'
+  detail?: string
   exitCode?: number | null
   timedOut?: boolean
 }
@@ -26,10 +28,14 @@ export interface SupervisorBrowserViewportEvidence {
   visibleTextCharacters: number
   mainLandmark: boolean
   horizontalOverflow: boolean
+  /** Visible prose collapsed into near one-character columns. */
+  severeTextWrapCount?: number
   interactiveElementCount: number
   accessibleInteractiveElementCount: number
   interactionAttempted: boolean
   interactionSucceeded: boolean
+  interactionAttemptCount?: number
+  interactionSuccessCount?: number
   interactionObservedChanges?: string[]
   consoleErrors: string[]
   pageErrors: string[]
@@ -52,11 +58,27 @@ export interface SupervisorBrowserEvidencePort {
 export interface SupervisorQualityCriterion {
   id: string
   label: string
+  kind?: 'required-outcome' | 'audience' | 'platform' | 'capability' | 'restriction'
   polarity: 'require' | 'forbid'
   evidenceTerms: string[]
+  /** Alternative prohibited phrases; every term in one group must be affirmed. */
+  evidenceGroups?: string[][]
+}
+
+const QUALITATIVE_BROWSER_CRITERION = /\b(?:meaningful|distinctive|cinematic|cohesive|polished|deliberate|generic|decorative|premium|beautiful|good[-\s]?looking|visually\s+appealing|modern|futuristic|clean|elegant|sleek|professional)\b/iu
+const VISUAL_BROWSER_CRITERION = /\b(?:visual(?:\s+direction)?|design|interface|ui|aesthetic|style|layout|motion|animation|look|feel|atmosphere|art\s+direction|website|site|page|dashboard|app|product|screen)\b/iu
+
+function qualitativeBrowserCriterion(criterion: SupervisorQualityCriterion): boolean {
+  // Only subjective visual taste can be judged from rendered browser health.
+  // `required-outcome` is a provenance category, not permission to skip the
+  // outcome-specific artifact/behavior contract.
+  return criterion.polarity === 'require' &&
+    QUALITATIVE_BROWSER_CRITERION.test(criterion.label) &&
+    VISUAL_BROWSER_CRITERION.test(criterion.label)
 }
 
 export interface SupervisorQualityContract {
+  missionProfile?: 'surprise' | 'serious'
   consensusProvenance: {
     verified: boolean
     evidenceHandle?: string
@@ -106,6 +128,11 @@ const RESTRICTION_CONTROL_TERMS = new Set([
   'add', 'allow', 'avoid', 'disable', 'do', 'don', 'dont', 'enable', 'include', 'must', 'never', 'no', 'not',
   'require', 'use', 'without'
 ])
+const BEHAVIOR_CRITERION_PATTERN = /\b(?:accept|add|calculate|copy|create|delete|download|drag|drop|edit|export|filter|generate|import|interact|interaction|load|login|open|persist|play|remove|save|search|share|sort|submit|support|toggle|upload|works?|workflow)\b/iu
+const TEST_ASSERTION_PATTERN = /\b(?:assert(?:\.[A-Za-z][\w]*)?|expect)\s*\(|\b(?:toBe|toEqual|toMatch|toContain|toHaveProperty|toStrictEqual)\s*\(/u
+const TEST_DECLARATION_PATTERN = /\b(?:describe|it|test)\s*\(/u
+const TEST_EVIDENCE_MAX_FILES = 128
+const TEST_EVIDENCE_MAX_BYTES = 1_000_000
 
 interface DirectArtifact {
   path: string
@@ -162,6 +189,27 @@ async function directArtifact(appPath: string): Promise<DirectArtifact | undefin
 
 function nonInteractiveTest(script: string): boolean {
   return /\b(?:vitest\s+run|jest\b|node\s+--test|playwright\s+test|mocha\b|ava\b)/i.test(script)
+}
+
+function automatedTestCommands(
+  scriptName: string,
+  scripts: Record<string, unknown>,
+  visited = new Set<string>()
+): string[] {
+  if (visited.has(scriptName)) return []
+  visited.add(scriptName)
+  const command = scripts[scriptName]
+  if (typeof command !== 'string' || !command.trim()) return []
+  const commands = nonInteractiveTest(command) ? [command] : []
+  const delegatedScripts = [...command.matchAll(/\b(?:npm(?:\.cmd)?|pnpm|yarn|bun)\s+(?:run\s+)?([\w:-]+)/giu)]
+    .map((match) => match[1])
+    .filter((name): name is string => Boolean(name) && name !== scriptName)
+  for (const name of delegatedScripts) commands.push(...automatedTestCommands(name, scripts, new Set(visited)))
+  return [...new Set(commands)]
+}
+
+function commandRunsAutomatedTests(scriptName: string, scripts: Record<string, unknown>): boolean {
+  return automatedTestCommands(scriptName, scripts).length > 0
 }
 
 function verificationScripts(scripts: Record<string, unknown>): string[] {
@@ -276,6 +324,11 @@ interface ArtifactConstraintEvidence {
   fileCount: number
 }
 
+interface AutomatedTestEvidence {
+  text: string
+  fileCount: number
+}
+
 function stripNonBehavioralSource(value: string): string {
   return value
     .replace(/<!--[\s\S]*?-->/gu, ' ')
@@ -292,15 +345,22 @@ function normalizedArtifactTerm(value: string): string {
 }
 
 function artifactTerms(value: string): Set<string> {
-  return new Set((value.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? [])
+  const expanded = value.replace(/([\p{Ll}\d])([\p{Lu}])/gu, '$1 $2')
+  return new Set((expanded.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? [])
     .map(normalizedArtifactTerm)
     .filter((term) => term.length >= 3))
 }
 
 function artifactAffirmativelyContains(value: string, term: string): boolean {
   const normalized = value.normalize('NFKC').toLocaleLowerCase()
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
-  return [...normalized.matchAll(new RegExp(`\\b${escaped}\\b`, 'giu'))].some((match) => {
+  const target = normalizedArtifactTerm(term)
+  const matches = [...normalized.matchAll(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu)]
+    .filter((match) => {
+      const surface = match[0]
+      const variants = surface.includes('-') ? [surface, ...surface.split('-')] : [surface]
+      return variants.some((variant) => normalizedArtifactTerm(variant) === target)
+    })
+  return matches.some((match) => {
     const prefix = normalized.slice(Math.max(0, (match.index ?? 0) - 120), match.index)
     const activeClause = prefix.split(/[.!?;]|\b(?:but|however|instead|yet)\b/iu).at(-1) ?? prefix
     return !/\b(?:avoid|disable|do not|don't|must not|never|no|without)\b/iu.test(activeClause)
@@ -349,9 +409,102 @@ async function collectArtifactConstraintEvidence(appPath: string): Promise<Artif
   return { text: contents.join('\n'), fileCount }
 }
 
+function testEvidencePath(relativePath: string): boolean {
+  return /(?:^|\/)(?:tests?|__tests__)(?:\/|$)/iu.test(relativePath) ||
+    /\.(?:spec|test)\.[^.]+$/iu.test(relativePath)
+}
+
+function globSelectorMatches(relativePath: string, selector: string): boolean {
+  const normalizedPath = relativePath.replace(/\\/gu, '/').toLocaleLowerCase()
+  const normalizedSelector = selector.replace(/^['"]|['"]$/gu, '').replace(/\\/gu, '/').toLocaleLowerCase()
+    .replace(/^\.\//u, '')
+  const escaped = normalizedSelector.replace(/[.+^${}()|[\]\\]/gu, '\\$&')
+    .replace(/\*\*/gu, 'DOUBLESTARPLACEHOLDER')
+    .replace(/\*/gu, '[^/]*')
+    .replace(/\?/gu, '[^/]')
+    .replace(/DOUBLESTARPLACEHOLDER/gu, '.*')
+  return new RegExp(`(?:^|/)${escaped}$`, 'u').test(normalizedPath)
+}
+
+function testSourceSelected(relativePath: string, commands: string[]): boolean {
+  return commands.some((command) => {
+    const selectors = [...command.matchAll(/(?:^|\s)(["']?)([^\s"']*(?:(?:tests?|__tests__)[/\\]|\.(?:spec|test)\.[cm]?[jt]sx?|[*?][^\s"']*\.[cm]?[jt]sx?)[^\s"']*)\1/giu)]
+      .map((match) => match[2])
+      .filter((value): value is string => Boolean(value))
+    return selectors.length === 0 || selectors.some((selector) => globSelectorMatches(relativePath, selector))
+  })
+}
+
+async function collectAutomatedTestEvidence(appPath: string, executedCommands: string[]): Promise<AutomatedTestEvidence> {
+  const contents: string[] = []
+  let totalBytes = 0
+  let fileCount = 0
+  const visit = async (directory: string): Promise<void> => {
+    if (fileCount >= TEST_EVIDENCE_MAX_FILES || totalBytes >= TEST_EVIDENCE_MAX_BYTES) return
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name))
+    for (const entry of entries) {
+      if (fileCount >= TEST_EVIDENCE_MAX_FILES || totalBytes >= TEST_EVIDENCE_MAX_BYTES) break
+      if (entry.isSymbolicLink()) continue
+      const absolutePath = join(directory, entry.name)
+      const relativePath = relative(appPath, absolutePath).replace(/\\/gu, '/')
+      if (entry.isDirectory()) {
+        if (!ARTIFACT_EVIDENCE_EXCLUDED_DIRECTORIES.has(entry.name) || /^(?:tests?|__tests__)$/iu.test(entry.name)) {
+          await visit(absolutePath)
+        }
+        continue
+      }
+      const extension = extname(entry.name).toLocaleLowerCase()
+      if (!entry.isFile() || !ARTIFACT_EVIDENCE_EXTENSIONS.has(extension) || !testEvidencePath(relativePath) ||
+        !testSourceSelected(relativePath, executedCommands)) continue
+      const remaining = TEST_EVIDENCE_MAX_BYTES - totalBytes
+      const raw = await smallText(absolutePath, remaining)
+      if (!raw) continue
+      const source = stripNonBehavioralSource(raw)
+      if (!TEST_DECLARATION_PATTERN.test(source) || !TEST_ASSERTION_PATTERN.test(source)) continue
+      totalBytes += Buffer.byteLength(raw, 'utf8')
+      fileCount += 1
+      contents.push(source)
+    }
+  }
+  await visit(appPath)
+  return { text: contents.join('\n'), fileCount }
+}
+
+function seriousBehaviorProofChecks(
+  contract: SupervisorQualityContract | undefined,
+  testEvidence: AutomatedTestEvidence
+): SupervisorVerificationCheck[] {
+  if (contract?.missionProfile !== 'serious') return []
+  const testTerms = artifactTerms(testEvidence.text)
+  return contract.criteria
+    .filter((criterion) => criterion.polarity === 'require' && BEHAVIOR_CRITERION_PATTERN.test(
+      `${criterion.label} ${criterion.evidenceTerms.join(' ')}`
+    ))
+    .slice(0, 64)
+    .map((criterion) => {
+      const evidenceTerms = [...new Set(criterion.evidenceTerms
+        .map(normalizedArtifactTerm)
+        .filter((term) => term.length >= 3 && !RESTRICTION_CONTROL_TERMS.has(term)))]
+      const matchedTerms = evidenceTerms.filter((term) => testTerms.has(term))
+      const requiredMatches = Math.min(2, Math.max(1, Math.ceil(evidenceTerms.length * 0.4)))
+      return {
+        id: `brief-test:${criterionId(criterion.id)}`,
+        label: `Automated behavior proof: ${criterion.label.trim().slice(0, 150) || 'brief acceptance criterion'}`,
+        outcome: testEvidence.fileCount > 0 && matchedTerms.length >= requiredMatches ? 'passed' : 'failed'
+      }
+    })
+}
+
 function briefChecks(
   contract: SupervisorQualityContract | undefined,
-  artifactEvidence: ArtifactConstraintEvidence
+  artifactEvidence: ArtifactConstraintEvidence,
+  deferQualitativeToBrowser = false
 ): SupervisorVerificationCheck[] {
   if (!contract) return []
   const provenancePassed = contract.consensusProvenance?.verified === true &&
@@ -363,6 +516,14 @@ function briefChecks(
   }]
   const terms = artifactTerms(artifactEvidence.text)
   for (const criterion of contract.criteria.slice(0, 64)) {
+    if (deferQualitativeToBrowser && qualitativeBrowserCriterion(criterion)) {
+      checks.push({
+        id: `brief:${criterionId(criterion.id)}`,
+        label: `Rendered quality proof: ${criterion.label.trim().slice(0, 150) || 'brief quality criterion'}`,
+        outcome: 'skipped'
+      })
+      continue
+    }
     const evidenceTerms = [...new Set(criterion.evidenceTerms
       .map(normalizedArtifactTerm)
       .filter((term) => term.length >= 3 && (
@@ -370,8 +531,17 @@ function briefChecks(
       )))].slice(0, 16)
     const matchedTerms = evidenceTerms.filter((term) => terms.has(term))
     const requiredMatches = Math.min(3, Math.max(1, Math.ceil(evidenceTerms.length * 0.4)))
+    const evidenceGroups = (criterion.evidenceGroups ?? [])
+      .map((group) => [...new Set(group
+        .map(normalizedArtifactTerm)
+        .filter((term) => term.length >= 3 && !RESTRICTION_CONTROL_TERMS.has(term)))])
+      .filter((group) => group.length > 0)
+      .slice(0, 16)
+    const prohibitedChoiceAffirmed = evidenceGroups.length > 0
+      ? evidenceGroups.some((group) => group.every((term) => artifactAffirmativelyContains(artifactEvidence.text, term)))
+      : evidenceTerms.some((term) => artifactAffirmativelyContains(artifactEvidence.text, term))
     const artifactBacked = criterion.polarity === 'forbid'
-      ? evidenceTerms.length > 0 && !evidenceTerms.some((term) => artifactAffirmativelyContains(artifactEvidence.text, term))
+      ? evidenceTerms.length > 0 && !prohibitedChoiceAffirmed
       : evidenceTerms.length > 0 && matchedTerms.length >= requiredMatches
     checks.push({
       id: `brief:${criterionId(criterion.id)}`,
@@ -394,7 +564,8 @@ function browserChecks(
 ): SupervisorVerificationCheck[] {
   const checks: SupervisorVerificationCheck[] = []
   const byViewport = new Map(evidence.viewports.map((viewport) => [viewport.id, viewport]))
-  for (const id of ['compact', 'full'] as const) {
+  const requiredViewportIds: SupervisorBrowserViewportId[] = ['compact', 'full']
+  for (const id of requiredViewportIds) {
     const viewport = byViewport.get(id)
     const required = REQUIRED_VIEWPORTS[id]
     const passed = Boolean(
@@ -405,26 +576,46 @@ function browserChecks(
       viewport.height >= required.height &&
       viewport.visibleTextCharacters > 0 &&
       viewport.mainLandmark &&
-      !viewport.horizontalOverflow
+      !viewport.horizontalOverflow &&
+      (viewport.severeTextWrapCount ?? 0) === 0
     )
-    checks.push({ id: `browser:${id}`, label: `${id === 'compact' ? 'Compact' : 'Full-screen'} viewport render`, outcome: passed ? 'passed' : 'failed' })
+    const label = id === 'compact' ? 'Compact' : 'Full-screen'
+    const defects = [
+      ...(!viewport ? ['viewport evidence missing'] : []),
+      ...(viewport?.horizontalOverflow ? ['page-level horizontal overflow'] : []),
+      ...((viewport?.severeTextWrapCount ?? 0) > 0
+        ? [`${String(viewport?.severeTextWrapCount)} severely wrapped visible text elements`]
+        : [])
+    ]
+    checks.push({
+      id: `browser:${id}`,
+      label: `${label} viewport render`,
+      outcome: passed ? 'passed' : 'failed',
+      ...(defects.length ? { detail: defects.join('; ') } : {})
+    })
   }
 
-  const allViewports = [...byViewport.values()]
-  const consoleHealthy = allViewports.length === 2 && allViewports.every((viewport) =>
+  const requiredViewports = requiredViewportIds
+    .map((id) => byViewport.get(id))
+    .filter((viewport): viewport is SupervisorBrowserViewportEvidence => Boolean(viewport))
+  const consoleHealthy = requiredViewports.length === requiredViewportIds.length && requiredViewports.every((viewport) =>
     viewport.consoleErrors.length === 0 && viewport.pageErrors.length === 0
   )
   checks.push({ id: 'browser:console', label: 'Browser console and page health', outcome: consoleHealthy ? 'passed' : 'failed' })
 
-  const accessibilityPassed = allViewports.length === 2 && allViewports.every((viewport) =>
+  const accessibilityPassed = requiredViewports.length === requiredViewportIds.length && requiredViewports.every((viewport) =>
     viewport.accessibleInteractiveElementCount === viewport.interactiveElementCount
   )
   checks.push({ id: 'browser:accessibility', label: 'Rendered controls have accessible names', outcome: accessibilityPassed ? 'passed' : 'failed' })
 
-  const interactiveViewports = allViewports.filter((viewport) => viewport.interactiveElementCount > 0)
-  const interactionPassed = interactiveViewports.every((viewport) =>
-    viewport.interactionAttempted && viewport.interactionSucceeded
-  )
+  const interactiveViewports = requiredViewports.filter((viewport) => viewport.interactiveElementCount > 0)
+  const interactionPassed = interactiveViewports.every((viewport) => {
+    const requiredAttempts = Math.min(2, viewport.interactiveElementCount)
+    const attemptCount = viewport.interactionAttemptCount ?? (viewport.interactionAttempted ? 1 : 0)
+    const successCount = viewport.interactionSuccessCount ?? (viewport.interactionSucceeded ? 1 : 0)
+    return viewport.interactionAttempted && viewport.interactionSucceeded &&
+      attemptCount >= requiredAttempts && successCount >= 1
+  })
   checks.push({
     id: 'browser:interaction',
     label: 'Rendered interaction smoke',
@@ -483,8 +674,8 @@ export class SupervisorVerifier implements SupervisorVerifierPort {
         id: `supervisor-${script}-${Date.now().toString(36)}`,
         command: { bin: request.npmPath, args: ['run', script], cwd: request.appPath },
         timeoutMs: timeoutPerCheck,
-        stdoutPath: process.platform === 'win32' ? 'NUL' : '/dev/null',
-        stderrPath: process.platform === 'win32' ? 'NUL' : '/dev/null',
+        stdoutPath: devNull,
+        stderrPath: devNull,
         abortSignal: request.abortSignal,
         onLine: () => undefined
       })
@@ -506,19 +697,43 @@ export class SupervisorVerifier implements SupervisorVerifierPort {
       }
     }
 
+    let automatedTestEvidence: AutomatedTestEvidence = { text: '', fileCount: 0 }
+    if (request.qualityContract?.missionProfile === 'serious') {
+      const executedTestCommands = scriptsToRun.flatMap((script) => automatedTestCommands(script, scripts))
+      automatedTestEvidence = await collectAutomatedTestEvidence(request.appPath, executedTestCommands)
+      if (request.abortSignal?.aborted) return cancelled()
+      const automatedTestsPassed = automatedTestEvidence.fileCount > 0 &&
+        scriptsToRun.some((script) => commandRunsAutomatedTests(script, scripts))
+      checks.push({
+        id: 'script:automated-tests',
+        label: 'Meaningful non-interactive automated tests',
+        outcome: automatedTestsPassed ? 'passed' : 'failed'
+      })
+      if (!automatedTestsPassed) {
+        return {
+          outcome: 'failed',
+          summary: 'A serious build requires an executed non-interactive test runner with assertion-bearing test source.',
+          checks
+        }
+      }
+    }
+
     const artifactConstraintEvidence = await collectArtifactConstraintEvidence(request.appPath)
     if (request.abortSignal?.aborted) return cancelled()
-    const contractChecks = briefChecks(request.qualityContract, artifactConstraintEvidence)
-    checks.push(...contractChecks)
-    if (contractChecks.some((check) => check.outcome === 'failed')) {
+    const artifact = await directArtifact(request.appPath)
+    const qualitativeBrowserCriteria = request.qualityContract?.criteria.filter(qualitativeBrowserCriterion) ?? []
+    const deferQualitativeToBrowser = Boolean(artifact && this.browserPort && qualitativeBrowserCriteria.length > 0)
+    const contractChecks = briefChecks(request.qualityContract, artifactConstraintEvidence, deferQualitativeToBrowser)
+    const behaviorProofChecks = seriousBehaviorProofChecks(request.qualityContract, automatedTestEvidence)
+    checks.push(...contractChecks, ...behaviorProofChecks)
+    if ([...contractChecks, ...behaviorProofChecks].some((check) => check.outcome === 'failed')) {
       return {
         outcome: 'failed',
-        summary: 'Supervisor verification found missing evidence for the frozen quality brief.',
+        summary: 'Supervisor verification found missing implementation or automated behavior evidence for the frozen quality brief.',
         checks
       }
     }
 
-    const artifact = await directArtifact(request.appPath)
     const buildScriptExpectedOutput = isBrowserPackage && typeof scripts.build === 'string' && Boolean(scripts.build.trim())
     if (isBrowserPackage && (!artifact || (buildScriptExpectedOutput && artifact.path === 'index.html'))) {
       checks.push({ id: 'browser:artifact', label: 'Built browser artifact discovery', outcome: 'failed' })
@@ -586,6 +801,13 @@ export class SupervisorVerifier implements SupervisorVerifierPort {
         }
         const interactionRequired = /<(?:script\b|button\b|input\b|select\b|textarea\b|a\b[^>]*\bhref\s*=|[^>]+\brole\s*=\s*(?:"button"|'button'|button))/i.test(artifact.content)
         const renderedChecks = browserChecks(browserEvidence, interactionRequired)
+        if (deferQualitativeToBrowser) {
+          renderedChecks.push({
+            id: 'browser:qualitative-contract',
+            label: 'Rendered proof for qualitative quality requirements',
+            outcome: renderedChecks.every((check) => check.outcome !== 'failed') ? 'passed' : 'failed'
+          })
+        }
         checks.push(...renderedChecks)
         if (renderedChecks.some((check) => check.outcome === 'failed')) {
           return {

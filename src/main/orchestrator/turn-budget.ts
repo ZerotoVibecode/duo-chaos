@@ -12,7 +12,7 @@ export const TURN_BUDGET_LIMITS = {
   dialogueSeconds: 600,
   workLeaseSeconds: 28_800,
   verdictSeconds: 180,
-  recoverySeconds: 120,
+  recoverySeconds: 600,
   runTimeoutSeconds: 86_400
 } as const
 
@@ -20,7 +20,7 @@ export const DEFAULT_TURN_BUDGET_POLICY: TurnBudgetPolicy = {
   dialogueSeconds: 600,
   workLeaseSeconds: 7_200,
   verdictSeconds: 180,
-  recoverySeconds: 120,
+  recoverySeconds: 600,
   runTimeoutSeconds: 86_400
 }
 
@@ -72,6 +72,29 @@ export function remainingStageLeaseSeconds(deadlineAt: string, nowMs: number): n
   const deadlineMs = Date.parse(deadlineAt)
   if (!Number.isFinite(deadlineMs) || !Number.isFinite(nowMs)) return 0
   return Math.max(0, Math.floor((deadlineMs - nowMs) / 1_000))
+}
+
+/**
+ * Contract recovery contains no source work and is only reached after a
+ * completed provider call missed the broadcast contract. If that tiny lease
+ * is rejected or expires as the battle is durably paused, an explicit Resume
+ * needs one fresh bounded recovery window; a partial remainder may be too short
+ * even to start the replacement provider call. Recovery cannot change source
+ * and remains capped at ten minutes. Premium high-effort models can take more
+ * than two minutes to assemble a large schema-valid consensus capsule, so the
+ * recovery ceiling matches the normal dialogue ceiling. Source-work and normal
+ * dialogue leases remain exact and cannot be renewed by this helper.
+ */
+export function resolveResumeStageLeaseSeconds(
+  stage: TurnStageName,
+  remainingStageSeconds: number,
+  policy: TurnBudgetPolicy
+): number {
+  validateTurnBudgetPolicy(policy)
+  const remaining = Number.isFinite(remainingStageSeconds)
+    ? Math.max(0, Math.floor(remainingStageSeconds))
+    : 0
+  return stage === 'recovery' ? policy.recoverySeconds : remaining
 }
 
 export function extendStageDeadlineForPause(

@@ -24,6 +24,25 @@ describe('next-run safety and presentation contracts', () => {
     expect.soft(command.args).not.toContain(prompt)
   })
 
+  it('delivers long Codex prompts through stdin so Windows command length cannot suspend a run', () => {
+    const prompt = `Return one schema-constrained pitch.\n${'binding quality requirement '.repeat(2_000)}`
+    const command = buildAgentCommand({
+      agent: 'codex',
+      executionMode: 'chaos',
+      binary: 'codex',
+      workspacePath: 'C:\\DuoChaos\\workspaces\\stdin-contract',
+      prompt,
+      dangerousModeConfirmed: false,
+      model: 'gpt-5.6-terra',
+      effort: 'high',
+      extraArgs: []
+    }) as AgentCommand & { stdin?: string }
+
+    expect.soft(command.stdin).toBe(prompt)
+    expect.soft(command.args).not.toContain(prompt)
+    expect.soft(command.args.at(-1)).toBe('-')
+  })
+
   it('repairs common UTF-8 mojibake before agent dialogue reaches the renderer', () => {
     const event = normalizeEvent(
       {

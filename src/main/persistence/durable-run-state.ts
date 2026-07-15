@@ -150,9 +150,12 @@ export const durableRunManifestSchema = z.object({
     acknowledgedAt: timestampSchema.optional(),
     utilization: z.number().min(0).max(1).optional(),
     resetAt: timestampSchema.optional(),
+    effectiveInputTokens: z.number().int().nonnegative().optional(),
     totals: usageSchema.omit({ reportedCostUsd: true }).optional(),
     limits: z.object({
-      processedInputTokens: z.number().int().positive(),
+      processedInputTokens: z.number().int().positive().optional(),
+      effectiveInputTokens: z.number().int().positive().optional(),
+      cachedInputTokenWeight: z.number().min(0).max(1).optional(),
       outputTokens: z.number().int().positive(),
       reasoningTokens: z.number().int().positive()
     }).strict().optional()
@@ -176,6 +179,9 @@ export const durableRunManifestSchema = z.object({
     agent: agentSchema.optional(),
     pausedAt: timestampSchema,
     resetAt: timestampSchema.optional(),
+    // Optional for manifests written before restart-safe pause finality was
+    // introduced. New manifests always persist the exact UI/runtime decision.
+    resumable: z.boolean().optional(),
     detailCode: z.string().trim().min(1).max(128).optional()
   }).strict().optional(),
   eventCursor: z.object({

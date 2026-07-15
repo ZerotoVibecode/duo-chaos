@@ -29,6 +29,46 @@ async function plantEmbeddedGit(workspacePath: string): Promise<void> {
 }
 
 describe('git checkpoints', () => {
+  it('keeps an externally stored supervisor repository isolated inside a parent Git worktree', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'duo-git-parent-worktree-'))
+    await execFileAsync('git', ['init', '-b', 'main', '.'], { cwd: parent })
+    await writeFile(join(parent, 'owner.txt'), 'parent repository\n', 'utf8')
+    await execFileAsync('git', [
+      '-c', 'user.name=Parent Test',
+      '-c', 'user.email=parent@example.invalid',
+      'add', 'owner.txt'
+    ], { cwd: parent })
+    await execFileAsync('git', [
+      '-c', 'user.name=Parent Test',
+      '-c', 'user.email=parent@example.invalid',
+      'commit', '--no-gpg-sign', '-m', 'parent baseline'
+    ], { cwd: parent })
+    const parentHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: parent })).stdout.trim()
+
+    const workspacePath = join(parent, 'ignored-benchmark', 'duo-run-nested')
+    await mkdir(join(workspacePath, 'app'), { recursive: true })
+    const metadataRoot = await mkdtemp(join(tmpdir(), 'duo-git-nested-meta-'))
+    const git = new GitManager('git', metadataRoot)
+    await expect(git.initialize(workspacePath)).resolves.toMatchObject({ ok: true })
+    await writeFile(join(workspacePath, 'app', 'index.html'), '<!doctype html><title>Nested proof</title>', 'utf8')
+
+    await expect(git.summarizeAppChanges(workspacePath)).resolves.toMatchObject({
+      changed: true,
+      files: ['app/index.html'],
+      fileCount: 1
+    })
+    await expect(git.appStateFingerprint(workspacePath)).resolves.toMatch(/^sha256:/u)
+    await expect(git.checkpoint(workspacePath, 'feat: nested supervisor proof')).resolves.toMatchObject({ ok: true })
+    await expect(stat(join(workspacePath, '.git'))).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const parentHeadAfter = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: parent })).stdout.trim()
+    expect(parentHeadAfter).toBe(parentHead)
+    const parentTree = (await execFileAsync('git', ['ls-tree', '-r', '--name-only', 'HEAD'], { cwd: parent })).stdout
+    expect(parentTree.trim()).toBe('owner.txt')
+    const supervisorTree = await supervisorGit(metadataRoot, workspacePath, ['ls-tree', '-r', '--name-only', 'HEAD'])
+    expect(supervisorTree.stdout.trim()).toBe('app/index.html')
+  })
+
   it('initializes a generated workspace and records a local checkpoint', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-git-test-'))
     const git = new GitManager('git')

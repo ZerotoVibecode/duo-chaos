@@ -44,6 +44,41 @@ describe('serious mission contract', () => {
     expect(analyzeSeriousAgentSpecification(brief, `Write something unrelated in enough words to appear substantial but never address invoice review or CSV input. This deliberately avoids the requested product terms and offers no testable criteria.\n\nAcceptance checks\n- Show a decorative landing screen after startup.\n- Keep a generic button visible on the page.`).valid).toBe(false)
   })
 
+  it('accepts a clearly labeled acceptance list even when the heading follows the plan inline', () => {
+    const brief = 'Build an accessible invoice dashboard with offline CSV review.'
+    const plan = `Implement the requested accessible invoice dashboard as a local-first review queue. Parse CSV input deterministically, persist offline state, and expose keyboard-safe invoice actions. Acceptance checks:\n- Import a valid CSV while the app remains offline.\n- Review every invoice action using only the keyboard.`
+    const analysis = analyzeSeriousAgentSpecification(brief, plan)
+
+    expect(analysis.valid).toBe(true)
+    expect(analysis.acceptanceChecks.some((check) => /valid CSV/i.test(check))).toBe(true)
+    expect(analysis.acceptanceChecks.some((check) => /keyboard/i.test(check))).toBe(true)
+  })
+
+  it('accepts schema-produced inline bullets after an explicit acceptance heading', () => {
+    const brief = 'Build an accessible task garden with offline JSON import and keyboard controls.'
+    const plan = `Implement a polished local-first task garden with deterministic task plants, validated JSON import, offline persistence, visible keyboard focus, and accessible controls. Acceptance checks: - Import valid JSON while offline and show a clear error for malformed JSON. - Add and complete a task using only the keyboard with visible focus.`
+    const analysis = analyzeSeriousAgentSpecification(brief, plan)
+
+    expect(analysis.valid).toBe(true)
+    expect(analysis.acceptanceChecks).toHaveLength(2)
+    expect(analysis.acceptanceChecks[0]).toMatch(/valid JSON while offline/iu)
+    expect(analysis.acceptanceChecks[1]).toMatch(/only the keyboard/iu)
+  })
+
+  it('does not treat negated or example prose as the binding acceptance heading', () => {
+    const brief = 'Build an accessible invoice dashboard with offline CSV review.'
+    const bullets = '- Import a valid CSV while the app remains offline.\n- Review every invoice action using only the keyboard.'
+
+    expect(analyzeSeriousAgentSpecification(
+      brief,
+      `This proposal explains the dashboard in enough detail to exceed the length boundary, but explicitly has no acceptance checks:\n${bullets}`
+    ).valid).toBe(false)
+    expect(analyzeSeriousAgentSpecification(
+      brief,
+      `This proposal explains a hypothetical dashboard and shows non-binding copy for illustration. Example acceptance checks:\n${bullets}`
+    ).valid).toBe(false)
+  })
+
   it('rejects a missing or altered binding chain', async () => {
     const sealedPath = await mkdtemp(join(tmpdir(), 'duo-serious-contract-tamper-'))
     const brief = 'Build the requested serious product without changing its purpose.'

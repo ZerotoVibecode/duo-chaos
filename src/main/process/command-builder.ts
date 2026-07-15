@@ -45,6 +45,46 @@ export class CommandBuildError extends Error {
 }
 
 const EXACT_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const CLAUDE_FILE_TOOLS = [
+  'Read',
+  'Glob',
+  'Grep',
+  'Edit',
+  'Write'
+] as const
+
+const CLAUDE_BOUNDED_BUILD_TOOLS = [
+  'Bash(node --check *)',
+  'Bash(node.exe --check *)',
+  'Bash(node --test *)',
+  'Bash(node.exe --test *)',
+  'Bash(npm install --ignore-scripts *)',
+  'Bash(npm.cmd install --ignore-scripts *)',
+  'Bash(npm ci --ignore-scripts *)',
+  'Bash(npm.cmd ci --ignore-scripts *)',
+  'Bash(npm run *)',
+  'Bash(npm.cmd run *)',
+  'Bash(npm test *)',
+  'Bash(npm.cmd test *)'
+] as const
+
+function claudeSourceAllowedTools(
+  executionMode: Exclude<ExecutionMode, 'simulation'>,
+  customizationProfile: CustomizationProfile
+): string {
+  const tools: string[] = [...CLAUDE_FILE_TOOLS]
+  // Safe is deliberately shell-free. Chaos retains only the package/test
+  // commands needed to build inside the generated workspace; arbitrary Node
+  // programs, package executors, and alternate package managers are not
+  // preapproved. Native Windows does not provide Claude's OS Bash sandbox.
+  if (executionMode !== 'safe') tools.push(...CLAUDE_BOUNDED_BUILD_TOOLS)
+  // Smart/Broad are enabled only after the human explicitly trusts the local
+  // CLI capability configuration. Headless acceptEdits does not autoapprove
+  // MCP tools, so preapprove that configured namespace without returning to
+  // the upstream auto classifier that previously caused retry storms.
+  if (customizationProfile !== 'core') tools.push('mcp__*')
+  return tools.join(',')
+}
 
 function assertSession(input: BuildAgentCommandInput): void {
   const session = input.session
@@ -139,14 +179,14 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
       // established the trust boundary instead of requiring a local .git.
       '--skip-git-repo-check',
       ...(input.session?.mode === 'resume'
-        ? ['resume', '--json', ...extraArgs, input.session.id, input.prompt]
+        ? ['resume', '--json', ...extraArgs, input.session.id, '-']
         : [
           ...(dialoguePolicy ? ['--ignore-user-config', '--ignore-rules'] : []),
           '--json',
           ...(input.session?.mode === 'start' ? [] : ['--ephemeral']),
           ...(dialoguePolicy ? ['--output-schema', dialoguePolicy.outputSchemaPath] : []),
           ...extraArgs,
-          prompt
+          '-'
         ])
     ]
     return {
@@ -161,14 +201,24 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
         'exec',
         ...executionArgs
       ],
-      cwd: input.workspacePath
+      cwd: input.workspacePath,
+      stdin: prompt
     }
   }
 
   const permissionMode =
     input.executionMode === 'yolo-sandbox'
       ? ['--dangerously-skip-permissions']
-      : ['--permission-mode', input.executionMode === 'safe' ? 'acceptEdits' : 'auto']
+      : [
+          '--permission-mode',
+          sourcePolicy?.toolPolicy === 'workspace-essential' || input.executionMode === 'safe'
+            ? 'acceptEdits'
+            : 'auto'
+        ]
+  const preapprovedSourceTools =
+    sourcePolicy?.toolPolicy === 'workspace-essential' && input.executionMode !== 'yolo-sandbox'
+      ? ['--allowedTools', claudeSourceAllowedTools(input.executionMode, customizationProfile)]
+      : []
   const sessionArgs = input.session?.mode === 'resume'
     ? ['--resume', input.session.id]
     : input.session?.mode === 'start'
@@ -208,10 +258,11 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
       '--prompt-suggestions',
       'false',
       ...permissionMode,
+      ...preapprovedSourceTools,
       ...sessionArgs,
       ...(dialoguePolicy ? ['--tools', '', '--json-schema', JSON.stringify(dialoguePolicy.outputSchema)] : []),
       ...(sourcePolicy?.toolPolicy === 'workspace-essential' && lockedClaudeContext
-        ? ['--tools', 'Read,Glob,Grep,Edit,Write,Bash']
+        ? ['--tools', input.executionMode === 'safe' ? 'Read,Glob,Grep,Edit,Write' : 'Read,Glob,Grep,Edit,Write,Bash']
         : []),
       ...(model ? ['--model', model] : []),
       ...(effort ? ['--effort', effort] : []),

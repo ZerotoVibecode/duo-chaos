@@ -115,6 +115,22 @@ describe('real-mode turn plan', () => {
     expect(turns[1]?.goal).toMatch(/current preserved revision/i)
   })
 
+  it('does not demand performative source edits for exact-current review-only gaps', () => {
+    const turns = buildQualityRepairTurns('duo-run-review-only-b', 1, [
+      'Codex exact-current cross-review'
+    ])
+
+    expect(turns).toHaveLength(2)
+    expect(turns[0]).toMatchObject({
+      agent: 'codex',
+      kind: 'review',
+      phase: 'round.verify'
+    })
+    expect(turns[0]?.goal).toMatch(/no source edit is required or desired/i)
+    expect(turns[0]?.goal).toMatch(/accepted or blocking verdict/i)
+    expect(turns[1]?.goal).toMatch(/without changing correct source/i)
+  })
+
   it('bounds paid quality repair and stops when a full pair produces no new evidence', () => {
     expect(decideQualityRepair({
       completedAttempts: 0,

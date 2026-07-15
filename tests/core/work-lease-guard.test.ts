@@ -5,6 +5,19 @@ function assistant(id: string, content: unknown[] = []): Record<string, unknown>
   return { type: 'assistant', message: { id, content } }
 }
 
+function toolUse(id: string, name = 'Bash'): Record<string, unknown> {
+  return { type: 'tool_use', id, name }
+}
+
+function toolResult(id: string, content: string, isError = true): Record<string, unknown> {
+  return {
+    type: 'user',
+    message: {
+      content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }]
+    }
+  }
+}
+
 describe('Claude internal work lease guard', () => {
   it('requests graceful finalization after the soft boundary without cancelling productive work', () => {
     const guard = new ClaudeWorkLeaseGuard(3)
@@ -141,6 +154,128 @@ describe('Claude internal work lease guard', () => {
       progressBoundaries: 0,
       durableToolBoundary: false
     })
+  })
+
+  it('timeboxes two identical safety-classifier denials before they can burn the full lease', () => {
+    const guard = new ClaudeWorkLeaseGuard(20)
+    guard.observe([assistant('write', [toolUse('write-1', 'Write')])])
+    guard.observe([toolResult('write-1', 'Saved source.', false)])
+
+    guard.observe([assistant('verify-1', [toolUse('bash-1')])])
+    const first = guard.observe([toolResult(
+      'bash-1',
+      'claude-opus is temporarily unavailable, so auto mode cannot determine the safety of Bash right now.'
+    )])
+    expect(first.recommendation).toBe('continue')
+
+    guard.observe([assistant('verify-2', [toolUse('bash-2')])])
+    expect(guard.observe([toolResult(
+      'bash-2',
+      'claude-opus is temporarily unavailable, so auto mode cannot determine the safety of Bash right now.'
+    )])).toMatchObject({
+      recommendation: 'cancel-idle',
+      shouldTimebox: true,
+      pendingTools: 0,
+      progressBoundaries: 1,
+      durableToolBoundary: true
+    })
+  })
+
+  it('timeboxes three distinct permission-classifier denials in one uninterrupted retry series', () => {
+    const guard = new ClaudeWorkLeaseGuard(20)
+    const failures = [
+      'The safety classifier is temporarily unavailable for Bash.',
+      'Auto mode cannot determine whether PowerShell is safe right now.',
+      'Tool use was denied by the permission policy.'
+    ]
+
+    failures.forEach((failure, index) => {
+      const id = `blocked-${String(index)}`
+      guard.observe([assistant(`m-${String(index)}`, [toolUse(id, index === 1 ? 'PowerShell' : 'Bash')])])
+      const result = guard.observe([toolResult(id, failure)])
+      expect(result.shouldTimebox).toBe(index === failures.length - 1)
+    })
+  })
+
+  it('does not count a replayed tool result twice', () => {
+    const guard = new ClaudeWorkLeaseGuard(20)
+    const denial = toolResult(
+      'bash-1',
+      'Auto mode cannot determine the safety of Bash because the classifier is unavailable.'
+    )
+    guard.observe([assistant('m-1', [toolUse('bash-1')])])
+    expect(guard.observe([denial]).shouldTimebox).toBe(false)
+    expect(guard.observe([denial]).shouldTimebox).toBe(false)
+
+    guard.observe([assistant('m-2', [toolUse('bash-2')])])
+    expect(guard.observe([toolResult(
+      'bash-2',
+      'Auto mode cannot determine the safety of Bash because the classifier is unavailable.'
+    )]).shouldTimebox).toBe(true)
+  })
+
+  it('resets a sub-threshold denial series after the blocked command family succeeds', () => {
+    const guard = new ClaudeWorkLeaseGuard(20)
+    const denial = 'Auto mode cannot determine the safety of Bash because the classifier is unavailable.'
+
+    guard.observe([assistant('m-1', [toolUse('bash-1')])])
+    expect(guard.observe([toolResult('bash-1', denial)]).shouldTimebox).toBe(false)
+    guard.observe([assistant('m-2', [toolUse('bash-ok')])])
+    expect(guard.observe([toolResult('bash-ok', 'Tests passed.', false)]).shouldTimebox).toBe(false)
+    guard.observe([assistant('m-3', [toolUse('bash-2')])])
+    expect(guard.observe([toolResult('bash-2', denial)]).shouldTimebox).toBe(false)
+  })
+
+  it('does not let read-only progress hide a still-repeating command classifier failure', () => {
+    const guard = new ClaudeWorkLeaseGuard(20)
+    const denial = 'Auto mode cannot determine the safety of Bash because the classifier is unavailable.'
+    guard.observe([assistant('m-1', [toolUse('bash-1')])])
+    guard.observe([toolResult('bash-1', denial)])
+    guard.observe([assistant('m-2', [toolUse('read-1', 'Read')])])
+    guard.observe([toolResult('read-1', 'Read source.', false)])
+    guard.observe([assistant('m-3', [toolUse('bash-2')])])
+
+    expect(guard.observe([toolResult('bash-2', denial)]).shouldTimebox).toBe(true)
+  })
+
+  it('waits for unrelated in-flight tools before acting on a denial-loop timebox', () => {
+    const guard = new ClaudeWorkLeaseGuard(20)
+    const denial = 'Auto mode cannot determine the safety of Bash because the classifier is unavailable.'
+    guard.observe([assistant('m-1', [toolUse('bash-1'), toolUse('read-1', 'Read')])])
+    guard.observe([toolResult('bash-1', denial)])
+    guard.observe([assistant('m-2', [toolUse('bash-2')])])
+
+    expect(guard.observe([toolResult('bash-2', denial)])).toMatchObject({
+      recommendation: 'continue',
+      shouldTimebox: false,
+      pendingTools: 1
+    })
+    expect(guard.observe([toolResult('read-1', 'Read complete.', false)])).toMatchObject({
+      recommendation: 'cancel-idle',
+      shouldTimebox: true,
+      pendingTools: 0
+    })
+  })
+
+  it('leaves ordinary command failures to the normal idle lease policy', () => {
+    const guard = new ClaudeWorkLeaseGuard(20)
+    for (let index = 0; index < 4; index += 1) {
+      const id = `test-${String(index)}`
+      guard.observe([assistant(`m-${String(index)}`, [toolUse(id)])])
+      expect(guard.observe([toolResult(id, 'npm test failed: one assertion did not match.')]).shouldTimebox).toBe(false)
+    }
+  })
+
+  it('does not mistake repeated filesystem EACCES errors for a permission-classifier outage', () => {
+    const guard = new ClaudeWorkLeaseGuard(20)
+    for (let index = 0; index < 4; index += 1) {
+      const id = `locked-${String(index)}`
+      guard.observe([assistant(`locked-message-${String(index)}`, [toolUse(id)])])
+      expect(guard.observe([toolResult(
+        id,
+        "EACCES: permission denied, open 'C:\\\\workspace\\\\app\\\\locked.json'"
+      )]).shouldTimebox).toBe(false)
+    }
   })
 })
 

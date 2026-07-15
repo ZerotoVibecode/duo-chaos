@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { devNull, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ProcessRunOptions, ProcessRunResult } from '../../src/main/process/process-runner'
@@ -26,6 +26,8 @@ function passingBrowserEvidence(): SupervisorBrowserEvidencePort {
           accessibleInteractiveElementCount: 1,
           interactionAttempted: true,
           interactionSucceeded: true,
+          interactionAttemptCount: 1,
+          interactionSuccessCount: 1,
           consoleErrors: [],
           pageErrors: []
         },
@@ -42,6 +44,8 @@ function passingBrowserEvidence(): SupervisorBrowserEvidencePort {
           accessibleInteractiveElementCount: 1,
           interactionAttempted: true,
           interactionSucceeded: true,
+          interactionAttemptCount: 1,
+          interactionSuccessCount: 1,
           consoleErrors: [],
           pageErrors: []
         }
@@ -137,6 +141,30 @@ describe('supervisor verifier', () => {
     expect(result.checks).toContainEqual(expect.objectContaining({ id: 'browser:interaction', outcome: 'failed' }))
   })
 
+  it('requires the browser smoke to exercise multiple controls when they are available', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-multi-control-smoke-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Interactive proof</title></head><body><main><button type="button">First</button><button type="button">Second</button><button type="button">Third</button></main></body></html>', 'utf8')
+    const browserPort = passingBrowserEvidence()
+    vi.mocked(browserPort.capture).mockResolvedValue({
+      viewports: [
+        { id: 'compact', width: 900, height: 640, screenshotCaptured: true, imageDataUrl: 'data:image/png;base64,YQ==', visibleTextCharacters: 18, mainLandmark: true, horizontalOverflow: false, interactiveElementCount: 3, accessibleInteractiveElementCount: 3, interactionAttempted: true, interactionSucceeded: true, interactionAttemptCount: 1, interactionSuccessCount: 1, consoleErrors: [], pageErrors: [] },
+        { id: 'full', width: 1600, height: 900, screenshotCaptured: true, imageDataUrl: 'data:image/png;base64,Yg==', visibleTextCharacters: 18, mainLandmark: true, horizontalOverflow: false, interactiveElementCount: 3, accessibleInteractiveElementCount: 3, interactionAttempted: true, interactionSucceeded: true, interactionAttemptCount: 1, interactionSuccessCount: 1, consoleErrors: [], pageErrors: [] }
+      ]
+    })
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, browserPort).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'browser:interaction',
+      outcome: 'failed'
+    }))
+  })
+
   it('rejects browser evidence with viewport overflow or console failures', async () => {
     const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-browser-quality-'))
     await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Proof</title></head><body><main><button>Begin</button></main></body></html>', 'utf8')
@@ -145,9 +173,9 @@ describe('supervisor verifier', () => {
       entryPath: join(appPath, 'index.html'),
       resourceRoot: appPath
     })
-    const compactEvidence = evidence.viewports[0]
+    const compactEvidence = evidence.viewports.find((viewport) => viewport.id === 'compact')
     if (!compactEvidence) throw new Error('Missing compact browser evidence fixture.')
-    evidence.viewports[0] = {
+    evidence.viewports[evidence.viewports.findIndex((viewport) => viewport.id === 'compact')] = {
       ...compactEvidence,
       horizontalOverflow: true,
       consoleErrors: ['Uncaught TypeError']
@@ -165,6 +193,65 @@ describe('supervisor verifier', () => {
       expect.objectContaining({ id: 'browser:compact', outcome: 'failed' }),
       expect.objectContaining({ id: 'browser:console', outcome: 'failed' })
     ]))
+  })
+
+  it('rejects a windowed layout that fits the viewport but collapses text into character columns', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-compact-wrap-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Proof</title></head><body><main><button>Begin</button></main></body></html>', 'utf8')
+    const browserPort = passingBrowserEvidence()
+    const evidence = await browserPort.capture({
+      entryPath: join(appPath, 'index.html'),
+      resourceRoot: appPath
+    })
+    const compactEvidence = evidence.viewports.find((viewport) => viewport.id === 'compact')
+    if (!compactEvidence) throw new Error('Missing compact browser evidence fixture.')
+    compactEvidence.severeTextWrapCount = 3
+    vi.mocked(browserPort.capture).mockResolvedValue(evidence)
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, browserPort).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'browser:compact',
+      outcome: 'failed',
+      detail: '3 severely wrapped visible text elements'
+    }))
+  })
+
+  it('blocks reveal when native browser module loading rejects a CSS import by MIME type', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-css-module-mime-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Proof</title></head><body><main><button>Begin</button></main></body></html>', 'utf8')
+    const browserPort = passingBrowserEvidence()
+    const evidence = await browserPort.capture({
+      entryPath: join(appPath, 'index.html'),
+      resourceRoot: appPath
+    })
+    const compactEvidence = evidence.viewports.find((viewport) => viewport.id === 'compact')
+    if (!compactEvidence) throw new Error('Missing compact browser evidence fixture.')
+    evidence.viewports[evidence.viewports.findIndex((viewport) => viewport.id === 'compact')] = {
+      ...compactEvidence,
+      consoleErrors: [
+        'Failed to load module script: Expected a JavaScript-or-Wasm module script but the server responded with a MIME type of text/css.'
+      ]
+    }
+    vi.mocked(browserPort.capture).mockResolvedValue(evidence)
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, browserPort).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'browser:console',
+      outcome: 'failed'
+    }))
+    expect(result.summary).toMatch(/console defect/i)
   })
 
   it('can enforce supervisor-owned brief evidence without guessing from marketing copy', async () => {
@@ -255,6 +342,197 @@ describe('supervisor verifier', () => {
     ]))
   })
 
+  it('requires an executed non-interactive test runner for a serious quality contract', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-serious-tests-required-'))
+    await mkdir(join(appPath, 'tests'))
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({
+      scripts: {
+        check: 'node check.js',
+        test: 'node --test tests/*.test.js'
+      }
+    }), 'utf8')
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Creator report</title></head><body><main><h1>Creator report</h1><button type="button">Export CSV report</button></main></body></html>', 'utf8')
+    await writeFile(join(appPath, 'tests', 'math.test.js'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("math", () => assert.equal(1 + 1, 2))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-15T00:00:00.000Z',
+        finishedAt: '2026-07-15T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'csv-export',
+          label: 'Exports a creator-ready CSV report',
+          polarity: 'require',
+          evidenceTerms: ['export', 'creator', 'csv', 'report']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'script:automated-tests',
+      outcome: 'failed'
+    }))
+    expect(processPort.run).toHaveBeenCalledTimes(1)
+    expect(processPort.run).toHaveBeenCalledWith(expect.objectContaining({
+      command: { bin: 'npm', args: ['run', 'check'], cwd: appPath },
+      stdoutPath: devNull,
+      stderrPath: devNull
+    }))
+  })
+
+  it('accepts serious test evidence when the executed check delegates to a real test runner', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-serious-tests-passed-'))
+    await mkdir(join(appPath, 'tests'))
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({
+      scripts: {
+        check: 'npm run test && node check.js',
+        test: 'node --test tests/*.test.js'
+      }
+    }), 'utf8')
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Creator report</title></head><body><main><h1>Creator report</h1><button type="button">Export CSV report</button></main></body></html>', 'utf8')
+    await writeFile(join(appPath, 'tests', 'export.test.js'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("exports creator CSV report", () => assert.match(exportCreatorCsvReport(), /csv/))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-15T00:00:00.000Z',
+        finishedAt: '2026-07-15T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'csv-export',
+          label: 'Exports a creator-ready CSV report',
+          polarity: 'require',
+          evidenceTerms: ['export', 'creator', 'csv', 'report']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('passed')
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'script:automated-tests',
+      outcome: 'passed'
+    }))
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'brief-test:csv-export',
+      outcome: 'passed'
+    }))
+  })
+
+  it('rejects an unrelated passing test as proof of a serious behavior criterion', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-serious-unrelated-test-'))
+    await mkdir(join(appPath, 'tests'))
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({
+      scripts: { test: 'node --test tests/*.test.js' }
+    }), 'utf8')
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Creator report</title></head><body><main><h1>Creator report</h1><button type="button">Export CSV report</button></main></body></html>', 'utf8')
+    await writeFile(join(appPath, 'tests', 'math.test.js'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("math", () => assert.equal(1 + 1, 2))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-15T00:00:00.000Z',
+        finishedAt: '2026-07-15T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'csv-export',
+          label: 'Exports a creator-ready CSV report',
+          polarity: 'require',
+          evidenceTerms: ['export', 'creator', 'csv', 'report']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'script:automated-tests',
+      outcome: 'passed'
+    }))
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'brief-test:csv-export',
+      outcome: 'failed'
+    }))
+  })
+
+  it('ignores a matching serious test file when the executed command selects a different test', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-serious-unexecuted-test-'))
+    await mkdir(join(appPath, 'tests'))
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({
+      scripts: { test: 'node --test tests/math.test.js' }
+    }), 'utf8')
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Creator report</title></head><body><main><h1>Creator report</h1><button type="button">Export CSV report</button></main></body></html>', 'utf8')
+    await writeFile(join(appPath, 'tests', 'math.test.js'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("math", () => assert.equal(1 + 1, 2))\n', 'utf8')
+    await writeFile(join(appPath, 'tests', 'export.test.js'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("exports creator CSV report", () => assert.match("creator CSV export report", /export/))\n', 'utf8')
+    const processPort: SupervisorProcessPort = { run: vi.fn().mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      cancelled: false,
+      startedAt: '2026-07-15T00:00:00.000Z',
+      finishedAt: '2026-07-15T00:00:01.000Z'
+    }) }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'csv-export',
+          label: 'Exports a creator-ready CSV report',
+          polarity: 'require',
+          evidenceTerms: ['export', 'creator', 'csv', 'report']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'script:automated-tests',
+      outcome: 'passed'
+    }))
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'brief-test:csv-export',
+      outcome: 'failed'
+    }))
+  })
+
   it('keeps sealed consensus provenance as an independent release check', async () => {
     const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-provenance-separated-'))
     await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Creator report</title></head><body><main><h1>Creator report</h1><button>Export CSV</button></main></body></html>', 'utf8')
@@ -302,6 +580,43 @@ describe('supervisor verifier', () => {
 
     expect(result.outcome).toBe('failed')
     expect(result.checks).toContainEqual(expect.objectContaining({ id: 'brief:local-only', outcome: 'failed' }))
+  })
+
+  it('verifies prohibited phrase groups without rejecting unrelated words or morphology', async () => {
+    const compliantPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-phrase-group-ok-'))
+    await writeFile(join(compliantPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Local layout</title></head><body><main><h1>Local-first layout</h1><p>The garden uses an overflow chip and no remote fonts.</p></main></body></html>', 'utf8')
+    const criteria = [{
+      id: 'layout-network',
+      label: 'No horizontal overflow or remote fonts',
+      polarity: 'forbid' as const,
+      evidenceTerms: ['horizontal', 'overflow', 'remote', 'fonts'],
+      evidenceGroups: [['horizontal', 'overflow'], ['remote', 'fonts']]
+    }]
+
+    const compliant = await new SupervisorVerifier({ run: vi.fn() }, passingBrowserEvidence()).verify({
+      appPath: compliantPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria
+      }
+    })
+
+    const violatingPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-phrase-group-bad-'))
+    await writeFile(join(violatingPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Remote layout</title></head><body><main><h1>Remote layout</h1><p>The page loads a remote font and enables horizontal overflow.</p></main></body></html>', 'utf8')
+    const violating = await new SupervisorVerifier({ run: vi.fn() }, passingBrowserEvidence()).verify({
+      appPath: violatingPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria
+      }
+    })
+
+    expect(compliant.checks).toContainEqual(expect.objectContaining({ id: 'brief:layout-network', outcome: 'passed' }))
+    expect(violating.checks).toContainEqual(expect.objectContaining({ id: 'brief:layout-network', outcome: 'failed' }))
   })
 
   it('ignores restriction markers while distinguishing compliant and affirmative prohibited source', async () => {
@@ -365,6 +680,82 @@ describe('supervisor verifier', () => {
 
     expect(result.outcome).toBe('failed')
     expect(result.checks).toContainEqual(expect.objectContaining({ id: 'brief:csv-export', outcome: 'failed' }))
+  })
+
+  it('does not let a healthy generic browser artifact satisfy a specific required outcome', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-required-outcome-'))
+    await writeFile(
+      join(appPath, 'index.html'),
+      '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Healthy shell</title></head><body><main><h1>Healthy shell</h1><button>Continue</button></main></body></html>',
+      'utf8'
+    )
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'encrypted-backup',
+          kind: 'required-outcome',
+          label: 'Produce a downloadable encrypted backup archive',
+          polarity: 'require',
+          evidenceTerms: ['downloadable', 'encrypted', 'backup', 'archive']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'brief:encrypted-backup',
+      outcome: 'failed'
+    }))
+    expect(result.checks).not.toContainEqual(expect.objectContaining({
+      id: 'browser:qualitative-contract',
+      outcome: 'passed'
+    }))
+  })
+
+  it('routes qualitative browser requirements to rendered proof instead of brittle source wording', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-rendered-quality-'))
+    await writeFile(
+      join(appPath, 'index.html'),
+      '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Garden</title></head><body><main><h1>Garden</h1><button>Plant task</button></main></body></html>',
+      'utf8'
+    )
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [
+          {
+            id: 'visual-quality',
+            kind: 'required-outcome',
+            label: 'Produce a distinctive, cinematic, cohesive visual direction rather than a generic dashboard',
+            polarity: 'require',
+            evidenceTerms: ['distinctive', 'cinematic', 'cohesive', 'visual', 'generic']
+          },
+          {
+            id: 'common-visual-language',
+            kind: 'required-outcome',
+            label: 'Build a good-looking modern website',
+            polarity: 'require',
+            evidenceTerms: ['good', 'looking', 'modern', 'website']
+          }
+        ]
+      }
+    })
+
+    expect(result.outcome).toBe('passed')
+    expect(result.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'brief:visual-quality', outcome: 'skipped' }),
+      expect.objectContaining({ id: 'brief:common-visual-language', outcome: 'skipped' }),
+      expect.objectContaining({ id: 'browser:qualitative-contract', outcome: 'passed' })
+    ]))
   })
 
   it('refuses to mark a browser artifact ready when browser proof is unavailable', async () => {

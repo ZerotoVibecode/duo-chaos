@@ -118,13 +118,88 @@ describe('orchestrator usage snapshots', () => {
     expect(runner.calls[1]).not.toBe(firstAgent)
     expect(orchestrator.getSnapshot(started.runId)?.pause?.reason).not.toBe('usage-pressure')
   })
+
+  it('does not arm a provider-warning usage guard below 82 percent utilization', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-provider-warning-threshold-'))
+    const runner = new UsageProcessRunner(false, 0.75)
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      testOnlyMinimumTurns: 2,
+      processRunner: runner,
+      healthProvider: () => Promise.resolve([
+        { id: 'codex', label: 'Codex CLI', command: 'codex', available: true, version: 'codex test', checkedAt: new Date().toISOString() },
+        { id: 'claude', label: 'Claude Code', command: 'claude', available: true, version: 'claude test', checkedAt: new Date().toISOString() },
+        { id: 'git', label: 'Git', command: 'git', available: true, version: 'git test', checkedAt: new Date().toISOString() }
+      ])
+    })
+    const started = await orchestrator.start({
+      prompt: 'Continue normally below the provider warning boundary.',
+      workspaceRoot: root,
+      executionMode: 'chaos',
+      visibilityMode: 'spoiler-shield',
+      maxTurns: 2,
+      maxRepairLoops: 0,
+      turnTimeoutSeconds: 120,
+      dangerousModeConfirmed: false,
+      unsafeWorkspaceRootConfirmed: false
+    })
+    await orchestrator.waitForSettled(started.runId)
+
+    expect(runner.calls).toHaveLength(2)
+    expect(orchestrator.getSnapshot(started.runId)).not.toMatchObject({
+      status: 'paused',
+      usageGuard: { trigger: 'provider-warning' }
+    })
+  })
+
+  it('preserves the provider-warning guard at the 82 percent utilization boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-provider-warning-boundary-'))
+    const runner = new UsageProcessRunner(false, 0.82)
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      testOnlyMinimumTurns: 2,
+      processRunner: runner,
+      healthProvider: () => Promise.resolve([
+        { id: 'codex', label: 'Codex CLI', command: 'codex', available: true, version: 'codex test', checkedAt: new Date().toISOString() },
+        { id: 'claude', label: 'Claude Code', command: 'claude', available: true, version: 'claude test', checkedAt: new Date().toISOString() },
+        { id: 'git', label: 'Git', command: 'git', available: true, version: 'git test', checkedAt: new Date().toISOString() }
+      ])
+    })
+    const started = await orchestrator.start({
+      prompt: 'Checkpoint at the configured provider warning boundary.',
+      workspaceRoot: root,
+      executionMode: 'chaos',
+      visibilityMode: 'spoiler-shield',
+      maxTurns: 2,
+      maxRepairLoops: 0,
+      turnTimeoutSeconds: 120,
+      dangerousModeConfirmed: false,
+      unsafeWorkspaceRootConfirmed: false
+    })
+    await orchestrator.waitForSettled(started.runId)
+
+    expect(runner.calls).toHaveLength(1)
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'usage-pressure' },
+      usageGuard: {
+        trigger: 'provider-warning',
+        utilization: 0.82
+      }
+    })
+  })
 })
 
 class UsageProcessRunner implements ProcessRunnerPort {
   readonly largestRawLineBytes = { claude: 0, codex: 0 }
   readonly calls: Array<'claude' | 'codex'> = []
 
-  constructor(private readonly heavyFirstCall = false) {}
+  constructor(
+    private readonly heavyFirstCall = false,
+    private readonly providerWarningUtilization?: number
+  ) {}
 
   run(options: ProcessRunOptions): Promise<ProcessRunResult> {
     const agent = options.command.bin === 'claude' ? 'claude' : 'codex'
@@ -153,6 +228,16 @@ class UsageProcessRunner implements ProcessRunnerPort {
         publicText: `${agent === 'claude' ? 'Claude' : 'Codex'} records one accepted contribution.`,
         spoilerRisk: 0.02
       }),
+      ...(this.providerWarningUtilization === undefined
+        ? []
+        : [JSON.stringify({
+            type: 'rate_limit_event',
+            rate_limit_info: {
+              status: 'allowed_warning',
+              rateLimitType: 'five_hour',
+              utilization: this.providerWarningUtilization
+            }
+          })]),
       agent === 'claude'
         ? JSON.stringify({
             type: 'result',

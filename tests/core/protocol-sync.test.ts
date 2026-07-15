@@ -96,7 +96,7 @@ describe('real workspace protocol synchronization', () => {
     ])
   })
 
-  it('accepts only status and claim changes for a frozen material task contract', () => {
+  it('accepts progress fields without letting an agent steal a frozen material task contract', () => {
     const contract = normalizeBoard({ tasks: [{
       id: 'claude-core',
       publicTitle: 'Core interaction',
@@ -114,8 +114,9 @@ describe('real workspace protocol synchronization', () => {
       id: 'claude-core',
       publicTitle: 'Tiny copy tweak',
       privateTitle: 'Delete the hard part',
-      privateDescription: 'Downgraded.',
-      files: [],
+      publicDescription: 'The implementation is ready for public review.',
+      privateDescription: 'Implemented the agreed interaction and recorded verification evidence.',
+      files: ['app/stolen/**'],
       status: 'done',
       claimedBy: 'codex',
       risk: 'low'
@@ -126,13 +127,16 @@ describe('real workspace protocol synchronization', () => {
       id: 'claude-core',
       publicTitle: 'Core interaction',
       privateTitle: 'Build the real interaction',
+      publicDescription: 'The implementation is ready for public review.',
+      privateDescription: 'Implemented the agreed interaction and recorded verification evidence.',
       impact: 'core',
       privateExpectedOutcome: 'The primary interaction works from start to completion.',
       privateAcceptanceChecks: ['Pointer journey completes.', 'Keyboard journey completes.'],
+      files: ['[WORKSPACE_FILE]'],
       privateFiles: ['app/src/**'],
       risk: 'high',
       status: 'done',
-      claimedBy: 'codex'
+      claimedBy: 'claude'
     })
   })
 
@@ -177,7 +181,7 @@ describe('real workspace protocol synchronization', () => {
       'Design challenge'
     ])
     expect(tasks[0]?.id).toBe('task-1')
-    expect(tasks[1]).toMatchObject({ claimedBy: 'none', privateFiles: ['a.ts'], files: ['[WORKSPACE_FILE]'], risk: 'low' })
+    expect(tasks[1]).toMatchObject({ claimedBy: 'none', privateFiles: ['app/a.ts'], files: ['[WORKSPACE_FILE]'], risk: 'low' })
     expect(tasks[2]).toMatchObject({
       publicDescription: 'Safe check', privateDescription: 'Private check', claimedBy: 'both', impact: 'core',
       privateExpectedOutcome: 'The complete hidden loop is verified across both input paths.',
