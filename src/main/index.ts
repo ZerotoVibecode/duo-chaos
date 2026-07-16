@@ -32,6 +32,9 @@ const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL?.trim() || unde
 const isolatedE2eUserData = process.env.DUO_CHAOS_E2E === '1'
   ? process.env.DUO_CHAOS_E2E_USER_DATA?.trim()
   : undefined
+const isolatedE2eDefaultWorkspace = process.env.DUO_CHAOS_E2E === '1'
+  ? process.env.DUO_CHAOS_E2E_DEFAULT_WORKSPACE?.trim()
+  : undefined
 if (isolatedE2eUserData) app.setPath('userData', resolve(isolatedE2eUserData))
 
 protocol.registerSchemesAsPrivileged([{
@@ -230,7 +233,9 @@ function registerIpc(): void {
 void app.whenReady().then(async () => {
   const userData = app.getPath('userData')
   studioRuntimeRoot = join(userData, 'runs')
-  const defaultWorkspaceRoot = join(app.getPath('documents'), 'ZeroToVibecode', 'DuoChaos', 'workspaces')
+  const defaultWorkspaceRoot = isolatedE2eDefaultWorkspace
+    ? resolve(isolatedE2eDefaultWorkspace)
+    : join(app.getPath('documents'), 'ZeroToVibecode', 'DuoChaos', 'workspaces')
   await Promise.all([
     mkdir(defaultWorkspaceRoot, { recursive: true }),
     mkdir(studioRuntimeRoot, { recursive: true })

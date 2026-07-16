@@ -78,6 +78,62 @@ class UnsafeThenRecoveredDialogueRunner implements ProcessRunnerPort {
   }
 }
 
+class WrappedClaudeDialogueRunner implements ProcessRunnerPort {
+  readonly calls: Array<{ agent: 'claude' | 'codex'; round: number; stage: string }> = []
+
+  run(options: ProcessRunOptions): Promise<ProcessRunResult> {
+    const agent = agentOf(options)
+    const round = roundOf(options)
+    const stage = stageOf(options)
+    this.calls.push({ agent, round, stage })
+    const full = pitchCapsule()
+    if (agent === 'claude' && stage === 'dialogue') {
+      const move = {
+        statement: full.opening,
+        opinion: full.opinion,
+        pitches: full.pitches,
+        redactions: full.redactions
+      }
+      options.onLine('stdout', JSON.stringify([
+        {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'tool_use', name: 'StructuredOutput', input: { value: JSON.stringify(move) } }]
+          }
+        },
+        {
+          type: 'result',
+          subtype: 'error_max_turns',
+          usage: {
+            input_tokens: 120,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 40,
+            output_tokens: 24
+          }
+        }
+      ]))
+    } else {
+      options.onLine('stdout', JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: JSON.stringify(full) }
+      }))
+    }
+    const now = new Date().toISOString()
+    return Promise.resolve({
+      exitCode: agent === 'claude' ? 1 : 0,
+      signal: null,
+      timedOut: false,
+      cancelled: false,
+      startedAt: now,
+      finishedAt: now
+    })
+  }
+
+  cancelAll(): Promise<void> {
+    return Promise.resolve()
+  }
+}
+
 const healthyAgents = () => Promise.resolve([
   { id: 'codex' as const, label: 'Codex CLI', command: 'codex', available: true, version: 'codex test', checkedAt: new Date().toISOString() },
   { id: 'claude' as const, label: 'Claude Code', command: 'claude', available: true, version: 'claude test', checkedAt: new Date().toISOString() },
@@ -85,6 +141,44 @@ const healthyAgents = () => Promise.resolve([
 ])
 
 describe('structured dialogue recovery', () => {
+  it('accepts a schema-valid first Claude tool attempt when its one-turn boundary exits nonzero', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-structured-wrapper-salvage-'))
+    const runner = new WrappedClaudeDialogueRunner()
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      testOnlyMinimumTurns: 2,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await orchestrator.start({
+      prompt: 'Debate two compact hidden ideas without leaking their names.',
+      workspaceRoot: root,
+      executionMode: 'chaos',
+      visibilityMode: 'spoiler-shield',
+      maxTurns: 2,
+      maxRepairLoops: 0,
+      turnTimeoutSeconds: 120,
+      runTimeoutSeconds: 600,
+      dangerousModeConfirmed: false,
+      unsafeWorkspaceRootConfirmed: false
+    })
+    await orchestrator.waitForSettled(started.runId)
+
+    const snapshot = orchestrator.getSnapshot(started.runId)
+    expect(runner.calls.filter((call) => call.agent === 'claude')).toHaveLength(1)
+    expect(runner.calls.some((call) => call.stage === 'recovery')).toBe(false)
+    expect(snapshot?.pause?.reason).not.toBe('provider-protocol')
+    expect(snapshot?.events.some((event) => event.topic === 'dialogue-contract-rejected')).toBe(false)
+    expect(snapshot?.events.some((event) => event.type === 'run.failed')).toBe(false)
+    expect(snapshot?.events.some((event) =>
+      event.topic === 'usage-receipt' &&
+      /Claude's provider usage receipt is complete for 1 call\./u.test(event.publicText)
+    )).toBe(true)
+  })
+
   it('redacts a spoiler leak deterministically without spending a second provider turn', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-structured-recovery-'))
     const runner = new UnsafeThenRecoveredDialogueRunner()

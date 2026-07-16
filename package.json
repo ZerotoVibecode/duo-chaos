@@ -30,6 +30,7 @@
     "test:e2e": "playwright test",
     "benchmark:receipts": "node scripts/benchmark-run-receipts.mjs",
     "benchmark:quality": "node scripts/benchmark-quality-per-token.mjs",
+    "benchmark:live": "node scripts/benchmark-live-duo.mjs",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "icons": "node scripts/generate-icon.mjs",

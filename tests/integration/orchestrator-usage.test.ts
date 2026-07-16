@@ -69,7 +69,7 @@ describe('orchestrator usage snapshots', () => {
     expect(JSON.stringify(snapshot?.agentUsage)).not.toContain('private_result')
   })
 
-  it('pauses only between heavy provider calls and resumes with one fresh compact call', async () => {
+  it('checkpoints heavy completed-call usage and continues without asking the human to resume', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-usage-guard-orchestrator-'))
     const runner = new UsageProcessRunner(true)
     const orchestrator = new RunOrchestrator({
@@ -96,27 +96,17 @@ describe('orchestrator usage snapshots', () => {
     })
     await orchestrator.waitForSettled(started.runId)
 
-    const paused = orchestrator.getSnapshot(started.runId)
+    const completed = orchestrator.getSnapshot(started.runId)
     const firstAgent = runner.calls[0]
     expect(firstAgent).toBeDefined()
-    expect(paused).toMatchObject({
-      status: 'paused',
-      pause: { reason: 'usage-pressure', provider: firstAgent, resumable: true },
-      usageGuard: {
-        status: 'pending',
-        agent: firstAgent,
-        trigger: 'completed-call-usage',
-        reasons: ['processed-input']
-      }
-    })
-    expect(runner.calls).toEqual([firstAgent])
-
-    await orchestrator.resume(started.runId)
-    await orchestrator.waitForSettled(started.runId)
-
     expect(runner.calls).toHaveLength(2)
     expect(runner.calls[1]).not.toBe(firstAgent)
-    expect(orchestrator.getSnapshot(started.runId)?.pause?.reason).not.toBe('usage-pressure')
+    expect(completed?.pause?.reason).not.toBe('usage-pressure')
+    expect(completed?.usageGuard?.status).not.toBe('pending')
+    expect(completed?.events.some((event) =>
+      event.topic === 'provider-usage-advisory' &&
+      event.publicText.includes('continuing automatically')
+    )).toBe(true)
   })
 
   it('does not arm a provider-warning usage guard below 82 percent utilization', async () => {
@@ -153,9 +143,9 @@ describe('orchestrator usage snapshots', () => {
     })
   })
 
-  it('preserves the provider-warning guard at the 82 percent utilization boundary', async () => {
+  it.each([0.82, 0.87, 1])('keeps an allowed provider warning at %s advisory and completes the planned calls', async (utilization) => {
     const root = await mkdtemp(join(tmpdir(), 'duo-provider-warning-boundary-'))
-    const runner = new UsageProcessRunner(false, 0.82)
+    const runner = new UsageProcessRunner(false, utilization)
     const orchestrator = new RunOrchestrator({
       getSettings: () => Promise.resolve(defaultSettings(root)),
       onSnapshot: () => undefined,
@@ -168,7 +158,7 @@ describe('orchestrator usage snapshots', () => {
       ])
     })
     const started = await orchestrator.start({
-      prompt: 'Checkpoint at the configured provider warning boundary.',
+      prompt: 'Continue through an advisory provider warning.',
       workspaceRoot: root,
       executionMode: 'chaos',
       visibilityMode: 'spoiler-shield',
@@ -180,15 +170,14 @@ describe('orchestrator usage snapshots', () => {
     })
     await orchestrator.waitForSettled(started.runId)
 
-    expect(runner.calls).toHaveLength(1)
-    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
-      status: 'paused',
-      pause: { reason: 'usage-pressure' },
-      usageGuard: {
-        trigger: 'provider-warning',
-        utilization: 0.82
-      }
-    })
+    const completed = orchestrator.getSnapshot(started.runId)
+    expect(runner.calls).toHaveLength(2)
+    expect(completed?.pause?.reason).not.toBe('usage-pressure')
+    expect(completed?.usageGuard?.status).not.toBe('pending')
+    expect(completed?.events.some((event) =>
+      event.topic === 'quota-pressure' &&
+      event.publicText.includes(`${String(Math.round(utilization * 100))}% provider utilization`)
+    )).toBe(true)
   })
 })
 

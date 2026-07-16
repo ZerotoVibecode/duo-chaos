@@ -4,7 +4,7 @@ import { basename, dirname, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 const DEFAULT_PROTOCOL_LIMIT = 4 * 1024 * 1024
-const appendQueues = new Map<string, Promise<void>>()
+const mutationQueues = new Map<string, Promise<void>>()
 
 export class UnsafeProtocolPathError extends Error {
   constructor(message = 'Unsafe protocol path: a generated workspace link or path escape was rejected.') {
@@ -22,6 +22,30 @@ function isInside(candidate: string, root: string): boolean {
   const path = comparablePath(candidate)
   const parent = comparablePath(root)
   return path === parent || path.startsWith(`${parent}${sep}`)
+}
+
+function retryableRenameError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY'
+}
+
+async function renameProtocolFile(root: string, temporary: string, target: string): Promise<void> {
+  const retryDelays = [0, 10, 25, 50, 100] as const
+  let lastError: unknown
+  for (const delayMs of retryDelays) {
+    if (delayMs > 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs))
+    await assertDirectoryChain(root, dirname(target))
+    try {
+      await rename(temporary, target)
+      return
+    } catch (error) {
+      lastError = error
+      if (!retryableRenameError(error)) throw error
+    }
+  }
+  throw lastError
 }
 
 async function assertDirectoryChain(rootPath: string, targetParent: string): Promise<void> {
@@ -81,7 +105,18 @@ export async function safeReadProtocolText(
   }
 }
 
-export async function safeWriteProtocolText(rootPath: string, path: string, content: string): Promise<void> {
+function queueProtocolMutation(path: string, mutation: () => Promise<void>): Promise<void> {
+  const queueKey = comparablePath(path)
+  const previous = mutationQueues.get(queueKey) ?? Promise.resolve()
+  const queued = previous.catch(() => undefined).then(mutation)
+  mutationQueues.set(queueKey, queued)
+  void queued.finally(() => {
+    if (mutationQueues.get(queueKey) === queued) mutationQueues.delete(queueKey)
+  }).catch(() => undefined)
+  return queued
+}
+
+async function writeProtocolTextUnlocked(rootPath: string, path: string, content: string): Promise<void> {
   const root = resolve(rootPath)
   const target = resolve(path)
   if (!isInside(target, root)) throw new UnsafeProtocolPathError()
@@ -94,7 +129,7 @@ export async function safeWriteProtocolText(rootPath: string, path: string, cont
     await handle.sync()
     await handle.close()
     handle = undefined
-    await rename(temporary, target)
+    await renameProtocolFile(root, temporary, target)
   } catch (error) {
     await handle?.close().catch(() => undefined)
     throw error instanceof UnsafeProtocolPathError ? error : new UnsafeProtocolPathError()
@@ -103,28 +138,23 @@ export async function safeWriteProtocolText(rootPath: string, path: string, cont
   }
 }
 
+export async function safeWriteProtocolText(rootPath: string, path: string, content: string): Promise<void> {
+  await queueProtocolMutation(path, () => writeProtocolTextUnlocked(rootPath, path, content))
+}
+
 export async function safeAppendProtocolText(
   rootPath: string,
   path: string,
   content: string,
   maximumBytes = DEFAULT_PROTOCOL_LIMIT
 ): Promise<void> {
-  const queueKey = comparablePath(path)
-  const previous = appendQueues.get(queueKey) ?? Promise.resolve()
-  const append = previous
-    .catch(() => undefined)
-    .then(async () => {
+  await queueProtocolMutation(path, async () => {
       const existing = await safeReadProtocolText(rootPath, path, maximumBytes) ?? ''
       if (Buffer.byteLength(existing) + Buffer.byteLength(content) > maximumBytes) {
         throw new UnsafeProtocolPathError('Unsafe protocol path: the protocol file exceeded its supervisor size limit.')
       }
-      await safeWriteProtocolText(rootPath, path, `${existing}${content}`)
-    })
-  appendQueues.set(queueKey, append)
-  void append.finally(() => {
-    if (appendQueues.get(queueKey) === append) appendQueues.delete(queueKey)
-  }).catch(() => undefined)
-  await append
+      await writeProtocolTextUnlocked(rootPath, path, `${existing}${content}`)
+  })
 }
 
 export async function safeListProtocolFiles(

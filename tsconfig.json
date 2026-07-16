@@ -35,6 +35,7 @@
     "scripts/generate-icon.mjs",
     "scripts/benchmark-run-receipts.mjs",
     "scripts/benchmark-quality-per-token.mjs",
+    "scripts/benchmark-live-duo.mjs",
     "playwright.config.ts"
   ]
 }

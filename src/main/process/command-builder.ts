@@ -121,11 +121,18 @@ function assertInput(input: BuildAgentCommandInput): void {
   assertSession(input)
 }
 
-function structuredOutputPrompt(prompt: string, kind: StructuredDialoguePolicy['kind']): string {
+function structuredOutputPrompt(
+  prompt: string,
+  kind: StructuredDialoguePolicy['kind'],
+  agent: BuildAgentCommandInput['agent']
+): string {
   const label = kind === 'structured-recovery' ? 'recovery capsule' : 'dialogue capsule'
-  return `Return exactly one ${label} that satisfies the supplied JSON schema.
+  const transport = agent === 'claude'
+    ? `Return exactly one ${label} by submitting StructuredOutput once with every schema field at the tool-input root. Never wrap the schema fields under \`value\`, \`output\`, or \`payload\`, and never serialize the object into a string.`
+    : `Return exactly one ${label} that satisfies the supplied JSON schema.`
+  return `${transport}
 Do not inspect, edit, or run workspace tools. Do not read files, execute commands, browse, or start a tool loop.
-Answer only from the human brief and teammate context included below. Return JSON only, with no prose wrapper or markdown fence.
+Answer only from the human brief and teammate context included below. Do not add a prose wrapper or markdown fence.
 
 ${prompt}`
 }
@@ -140,7 +147,7 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
   if (input.executionMode === 'safe' && sourcePolicy && customizationProfile !== 'core') {
     throw new Error('Safe execution supports Core toolbelts only; unattended local capabilities require Chaos or YOLO Sandbox.')
   }
-  const prompt = dialoguePolicy ? structuredOutputPrompt(input.prompt, dialoguePolicy.kind) : input.prompt
+  const prompt = dialoguePolicy ? structuredOutputPrompt(input.prompt, dialoguePolicy.kind, input.agent) : input.prompt
   // Supervised runs are a closed command contract. Legacy extra-argument fields
   // remain loadable for settings compatibility, but never enter a child command:
   // they could override the visible model, effort, sandbox, tools, or consent.
@@ -261,6 +268,7 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
       ...preapprovedSourceTools,
       ...sessionArgs,
       ...(dialoguePolicy ? ['--tools', '', '--json-schema', JSON.stringify(dialoguePolicy.outputSchema)] : []),
+      ...(dialoguePolicy ? ['--max-turns', '1'] : []),
       ...(sourcePolicy?.toolPolicy === 'workspace-essential' && lockedClaudeContext
         ? ['--tools', input.executionMode === 'safe' ? 'Read,Glob,Grep,Edit,Write' : 'Read,Glob,Grep,Edit,Write,Bash']
         : []),

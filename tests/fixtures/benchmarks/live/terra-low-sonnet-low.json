@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "terra-low-sonnet-low-serious",
+  "label": "Terra Low plus Sonnet Low serious build",
+  "prompt": "Build a polished dependency-free single-page Decision Deck. A user enters three to seven options, compares two options at a time, and finishes with a ranked list. Preserve progress in localStorage, support mouse and keyboard input, include an obvious reset path, work without a network connection, and include deterministic tests for the ranking logic. The interface must remain readable at 900 by 640 and 1600 by 900.",
+  "condition": {
+    "executionMode": "chaos",
+    "visibilityMode": "spoiler-shield",
+    "missionProfile": "serious",
+    "codexModel": "gpt-5.6-terra",
+    "codexEffort": "low",
+    "claudeModel": "sonnet",
+    "claudeEffort": "low",
+    "customizationProfile": "core",
+    "qualityRoutingProfile": "balanced",
+    "maxTurns": 7,
+    "maxRepairLoops": 0,
+    "workInferenceLimit": 8,
+    "turnTimeoutSeconds": 7200,
+    "runTimeoutSeconds": 21600
+  },
+  "judge": {
+    "requiredReleaseStatus": "ready",
+    "requireCurrentVerification": true,
+    "requireBalancedAcceptedContributions": true,
+    "requireAllTasksDone": true,
+    "maxEditRatio": 4
+  }
+}

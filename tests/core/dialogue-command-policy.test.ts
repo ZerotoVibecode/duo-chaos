@@ -67,6 +67,7 @@ describe('structured tool-free dialogue command policy', () => {
     expect(valueAfter(command.args, '--output-format')).toBe('json')
     expect(valueAfter(command.args, '--tools')).toBe('')
     expect(valueAfter(command.args, '--json-schema')).toBe(JSON.stringify(dialogueSchema))
+    expect(valueAfter(command.args, '--max-turns')).toBe('1')
     expect(command.args).toContain('--no-session-persistence')
     expect(command.args).toContain('--exclude-dynamic-system-prompt-sections')
     expect(valueAfter(command.args, '--prompt-suggestions')).toBe('false')
@@ -74,6 +75,7 @@ describe('structured tool-free dialogue command policy', () => {
     expect(command.args).not.toContain('--resume')
     expect(command.stdin).toContain('Return exactly one dialogue capsule')
     expect(command.stdin).toContain('Do not inspect, edit, or run workspace tools')
+    expect(command.stdin).toContain('Never wrap the schema fields under `value`, `output`, or `payload`')
   })
 
   it('runs Codex with an output schema, read-only sandbox, ephemeral context, and an explicit no-workspace contract', () => {
@@ -107,6 +109,17 @@ describe('structured tool-free dialogue command policy', () => {
     expect(valueAfter(claude.args, '--tools')).toBe('')
     expect(codex.args).not.toContain('workspace-write')
     expect(valueAfter(codex.args, '--sandbox')).toBe('read-only')
+  })
+
+  it('never caps source-building calls with the one-turn structured-output boundary', () => {
+    const sourceInput = input('claude')
+    delete sourceInput.dialoguePolicy
+    sourceInput.sourcePolicy = { toolPolicy: 'workspace-essential', customizationProfile: 'core' }
+
+    const command = buildAgentCommand(sourceInput)
+
+    expect(command.args).not.toContain('--max-turns')
+    expect(command.args).not.toContain('--json-schema')
   })
 
   it.each(['claude', 'codex'] as const)('uses the same ephemeral no-tool boundary for %s staged recovery', (agent) => {

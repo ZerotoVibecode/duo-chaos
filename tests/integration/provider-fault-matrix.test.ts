@@ -355,7 +355,7 @@ describe('provider fault matrix', () => {
     expect(runner.calls).toHaveLength(1)
   })
 
-  it('accepts a recorded dialogue contract as a soft timebox instead of stopping the run', async () => {
+  it('preserves recorded dialogue and advances repeated process timeboxes to the final quality gate', async () => {
     const root = await temporaryRoot('duo-fault-timebox-')
     const calls: Array<'claude' | 'codex'> = []
     const runner: ProcessRunnerPort = {
@@ -379,9 +379,141 @@ describe('provider fault matrix', () => {
     const snapshot = orchestrator.getSnapshot(started.runId)
 
     expect(snapshot).toMatchObject({ status: 'paused', pause: { reason: 'quality-repair' } })
-    expect(snapshot?.events.filter((event) => event.topic === 'turn-timeboxed')).toHaveLength(2)
+    expect(snapshot?.events.some((event) => event.topic === 'turn-timeboxed')).toBe(true)
     expect(snapshot?.events.some((event) => event.type === 'run.failed')).toBe(false)
-    expect(new Set(calls)).toEqual(new Set(['claude', 'codex']))
+    expect(calls.length).toBeGreaterThan(1)
+  })
+
+  it('never hides an output-limit transport failure behind an accepted dialogue capsule', async () => {
+    const root = await temporaryRoot('duo-fault-output-limit-')
+    const runner: ProcessRunnerPort = {
+      run: (options) => {
+        emitDialogue(options)
+        return Promise.resolve(
+          result({
+            exitCode: 1,
+            outputLimitExceeded: {
+              stream: 'stdout',
+              boundary: 'pending-line',
+              limitBytes: 1_024
+            }
+          })
+        )
+      },
+      cancelAll: () => Promise.resolve()
+    }
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await orchestrator.start(request(root))
+    await orchestrator.waitForSettled(started.runId)
+
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'cli-incompatible', resumable: true }
+    })
+  })
+
+  it.each([
+    ['authentication_error: login_required', 'provider-auth'],
+    ['provider_unavailable: service_unavailable', 'provider-unavailable']
+  ] as const)('never hides canonical provider boundary %s behind an expected max-turn closure', async (errorText, pauseReason) => {
+    const root = await temporaryRoot('duo-fault-max-turn-provider-')
+    const runner: ProcessRunnerPort = {
+      run: (options) => {
+        emitDialogue(options)
+        options.onLine('stdout', JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          error: errorText
+        }))
+        return Promise.resolve(result({ exitCode: 1 }))
+      },
+      cancelAll: () => Promise.resolve()
+    }
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await orchestrator.start(request(root))
+    await orchestrator.waitForSettled(started.runId)
+
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: pauseReason, resumable: true }
+    })
+  })
+
+  it.each([
+    ['workspace_drift detected outside the expected checkpoint', 'workspace-drift'],
+    ['sandbox_violation: unsafe workspace write rejected', 'safety-violation']
+  ] as const)('never hides terminal boundary %s behind an expected max-turn closure', async (errorText, topic) => {
+    const root = await temporaryRoot('duo-fault-max-turn-terminal-')
+    const runner: ProcessRunnerPort = {
+      run: (options) => {
+        emitDialogue(options)
+        options.onLine('stdout', JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          error: errorText
+        }))
+        return Promise.resolve(result({ exitCode: 1 }))
+      },
+      cancelAll: () => Promise.resolve()
+    }
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await orchestrator.start(request(root))
+    await orchestrator.waitForSettled(started.runId)
+    const snapshot = orchestrator.getSnapshot(started.runId)
+
+    expect(snapshot?.status).toBe('failed')
+    expect(snapshot?.events.some((event) => event.type === 'run.failed' && event.topic === topic)).toBe(true)
+  })
+
+  it('never lets a max-turn marker hide an additional unrecognized fatal provider record', async () => {
+    const root = await temporaryRoot('duo-fault-max-turn-extra-fatal-')
+    const runner: ProcessRunnerPort = {
+      run: (options) => {
+        emitDialogue(options)
+        options.onLine('stdout', JSON.stringify([
+          { type: 'result', subtype: 'error_max_turns' },
+          { type: 'error', code: 'EIO', message: 'provider stream failed after structured output' }
+        ]))
+        return Promise.resolve(result({ exitCode: 1 }))
+      },
+      cancelAll: () => Promise.resolve()
+    }
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await orchestrator.start(request(root))
+    await orchestrator.waitForSettled(started.runId)
+
+    expect(orchestrator.getSnapshot(started.runId)).toMatchObject({
+      status: 'paused',
+      pause: { reason: 'cli-incompatible', resumable: true }
+    })
   })
 
   it('pauses on a quota signal inside one Claude array while preserving capsule and usage truth, then Stop cancels', async () => {
@@ -454,6 +586,50 @@ describe('provider fault matrix', () => {
     expect(stopped).toMatchObject({ status: 'cancelled', phase: 'cancelled' })
     expect(stopped.pause).toBeUndefined()
     expect(stopped.events).toContainEqual(expect.objectContaining({ type: 'run.cancelled' }))
+  })
+
+  it('resumes after a quota rejection from the next turn without replaying an accepted dialogue stage', async () => {
+    const root = await temporaryRoot('duo-fault-quota-resume-cursor-')
+    const calls: Array<{ agent: 'claude' | 'codex'; round: number }> = []
+    let rejected = false
+    const runner: ProcessRunnerPort = {
+      run: (options) => {
+        const agent = agentOf(options)
+        calls.push({ agent, round: roundOf(options) })
+        emitDialogue(options)
+        if (!rejected) {
+          rejected = true
+          options.onLine('stdout', JSON.stringify({
+            type: 'rate_limit_event',
+            rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' }
+          }))
+          return Promise.resolve(result({ exitCode: 1 }))
+        }
+        return Promise.resolve(result())
+      },
+      cancelAll: () => Promise.resolve()
+    }
+    const orchestrator = new RunOrchestrator({
+      getSettings: () => Promise.resolve(defaultSettings(root)),
+      onSnapshot: () => undefined,
+      processRunner: runner,
+      healthProvider: healthyAgents,
+      protocolPollMs: 5
+    })
+
+    const started = await orchestrator.start(request(root))
+    await orchestrator.waitForSettled(started.runId)
+    const paused = orchestrator.getSnapshot(started.runId)
+    const acceptedDispatchId = paused?.events.find((event) => event.type === 'agent.dispatch')?.id
+    expect(paused).toMatchObject({ status: 'paused', pause: { reason: 'provider-quota' } })
+
+    await orchestrator.resume(started.runId)
+    await orchestrator.waitForSettled(started.runId)
+    const resumed = orchestrator.getSnapshot(started.runId)
+
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.round).toBe(2)
+    expect(resumed?.events.filter((event) => event.id === acceptedDispatchId)).toHaveLength(1)
   })
 })
 

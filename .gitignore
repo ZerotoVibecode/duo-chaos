@@ -9,6 +9,7 @@ out/
 release/
 coverage/
 test-results/
+benchmark-results/
 playwright-report/
 *.tsbuildinfo
 

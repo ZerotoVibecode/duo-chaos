@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto'
 
+const EXPLICIT_NAME_CORRECTION_PATTERN = /(?:^|[\r\n.!?]\s*)(?:(?:no|now)\s*[,;:]?\s*)?(?:actually\s+)?(?:choose|use|pick)\s+(?:your\s+own|a\s+new|another|the\s+final)\s+name\b|(?:^|[\r\n.!?]\s*)(?:rename|change)\s+(?:it|the\s+(?:app|product|project|website|site|tool|experience)(?:\s+name)?)\b.{0,60}\blater\b/imu
+const IMPLICIT_NAME_AMBIGUITY_PATTERN = /\b(?:codename|placeholder|provisional(?:ly)?|rename|subject\s+to\s+change|tentative(?:ly)?|temporary|working\s+title)\b|\bfor\s+now\b/iu
+const NAMING_CONTEXT_PATTERN = /\b(?:call|called|codename|name|named|rename|title)\b/iu
+
 export interface PitchProvenanceRecord {
   pitchId: string
   runId: string
@@ -41,6 +45,20 @@ function namingEvidenceFingerprint(qualityBriefFingerprint: string, appName: str
     .digest('hex')
 }
 
+function hasAmbiguousNamingInstruction(humanBrief: string, normalizedAppName: string): boolean {
+  return humanBrief
+    .split(/\r?\n|(?<=[.!?])\s+/u)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .some((sentence) => {
+      if (!IMPLICIT_NAME_AMBIGUITY_PATTERN.test(sentence)) return false
+      const normalizedSentence = normalizedWords(sentence)
+      return NAMING_CONTEXT_PATTERN.test(sentence) ||
+        normalizedSentence.startsWith(normalizedAppName) ||
+        (/\bfor\s+now\b/iu.test(sentence) && normalizedSentence.includes(normalizedAppName))
+    })
+}
+
 function catalogFingerprint(pitches: PitchProvenanceRecord[]): string {
   const material = pitches
     .map((pitch) => ({
@@ -64,8 +82,7 @@ function selectionFingerprint(pitchCatalogFingerprint: string, selectedPitchIds:
 }
 
 function explicitProductNames(humanBrief: string): string[] {
-  const explicitNameCorrection = /(?:^|[\r\n.!?]\s*)(?:(?:no|now)\s*[,;:]?\s*)?(?:actually\s+)?(?:choose|use|pick)\s+(?:your\s+own|a\s+new|another|the\s+final)\s+name\b|(?:^|[\r\n.!?]\s*)(?:rename|change)\s+(?:it|the\s+(?:app|product|project|website|site|tool|experience)(?:\s+name)?)\b.{0,60}\blater\b/imu
-  if (explicitNameCorrection.test(humanBrief)) return []
+  if (EXPLICIT_NAME_CORRECTION_PATTERN.test(humanBrief)) return []
   const ambiguousNamingClause = /\b(?:codename|never\s+mind|provisional(?:ly)?|tentative(?:ly)?|temporary|placeholder|working\s+title)\b|\bfor\s+now\b|\bsubject\s+to\s+change\b|\bunless\b|\bno\s*[,;:]/iu
   const names: string[] = []
   const clauses = [
@@ -76,7 +93,9 @@ function explicitProductNames(humanBrief: string): string[] {
     /^(?:call|name)\s+it\s+/iu
   ]
   let previousLine = ''
-  for (const sourceLine of humanBrief.split(/\r?\n/u)) {
+  // Inspect sentence boundaries as well as line boundaries so a later
+  // explicit correction on the same line outranks an implicit opening title.
+  for (const sourceLine of humanBrief.split(/\r?\n|(?<=[.!?])\s+/u)) {
     const line = sourceLine.trim()
     const isExampleBlock = /(?:^|[.!?]\s*)(?:for\s+)?example(?:\s+(?:prompt|request|brief|input|project))?\s*:\s*$/iu.test(previousLine)
     for (const clause of clauses) {
@@ -113,7 +132,66 @@ function briefExplicitlyNamesProduct(humanBrief: string | undefined, appName: st
   const name = normalizedWords(appName)
   if (!name || new Set(['app', 'product', 'project', 'website', 'site', 'tool', 'local']).has(name)) return false
   const names = explicitProductNames(humanBrief)
-  return names.length === 1 && names[0] === name
+  if (names.length > 0) return names.length === 1 && names[0] === name
+  if (EXPLICIT_NAME_CORRECTION_PATTERN.test(humanBrief) || hasAmbiguousNamingInstruction(humanBrief, name)) return false
+
+  // Product briefs often use the requested name as the final noun phrase
+  // without saying "called" (for example, "Build a polished single-page
+  // Decision Deck"). Accept only the exact phrase after the final product-
+  // shape word in a direct opening instruction. This distinguishes
+  // "Decision Deck" from arbitrary suffixes such as "Deck", and it refuses
+  // audience clauses such as "an app for content creators".
+  const firstSentence = humanBrief.trim().split(/[.!?\r\n]/u, 1)[0]?.trim() ?? ''
+  const directBuildPattern = /^(?:(?:please)\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+)?(?:build|create|make|design|deliver)\b\s*/iu
+  const directBuild = firstSentence.match(directBuildPattern)
+  const isAmbiguous = /\b(?:called|codename|example|formerly|inspired\s+by|named|placeholder|provisional(?:ly)?|rename|subject\s+to\s+change|working\s+title)\b|\bfor\s+now\b/iu.test(firstSentence)
+  const instructionBody = directBuild ? firstSentence.slice(directBuild[0].length) : ''
+  const sentenceWords = instructionBody.match(/[\p{L}\p{N}][\p{L}\p{N}'\u2019-]*/gu) ?? []
+  const productShapes = new Set([
+    'app', 'application', 'browser', 'dashboard', 'desktop', 'experience',
+    'page', 'product', 'site', 'tool', 'website', 'workflow'
+  ])
+  const hasProductShape = sentenceWords.some((word) =>
+    normalizedWords(word).split(' ').some((part) => productShapes.has(part))
+  )
+  const titleConnector = new Set(['and', 'for', 'of', 'the', 'to', 'vs'])
+  const isTitleWord = (word: string): boolean => /^(?:\p{Lu}[\p{L}\p{N}'\u2019-]*|\p{N}[\p{L}\p{N}'\u2019-]*)$/u.test(word)
+  let titleStart = sentenceWords.length
+  let sawTitleWord = false
+  for (let index = sentenceWords.length - 1; index >= 0; index -= 1) {
+    const word = sentenceWords[index]!
+    if (isTitleWord(word)) {
+      titleStart = index
+      sawTitleWord = true
+      continue
+    }
+    const normalized = normalizedWords(word)
+    if (
+      sawTitleWord &&
+      titleConnector.has(normalized) &&
+      index > 0 &&
+      isTitleWord(sentenceWords[index - 1]!)
+    ) {
+      titleStart = index
+      continue
+    }
+    break
+  }
+  const precedingWord = titleStart > 0 ? normalizedWords(sentenceWords[titleStart - 1]!) : ''
+  const audienceConnector = new Set([
+    'at', 'by', 'for', 'helping', 'serving', 'targeting', 'that', 'used',
+    'using', 'where', 'which', 'with'
+  ])
+  const impliedTitleWords = sentenceWords.slice(titleStart)
+  const titleContainsProductShape = impliedTitleWords.some((word) =>
+    normalizedWords(word).split(' ').some((part) => productShapes.has(part))
+  )
+  const precedingContainsProductShape = precedingWord.split(' ').some((part) => productShapes.has(part))
+  const anchoredToProductShape = titleContainsProductShape || precedingContainsProductShape
+  const impliedName = sawTitleWord && !audienceConnector.has(precedingWord)
+    ? normalizedWords(impliedTitleWords.join(' '))
+    : ''
+  return Boolean(directBuild) && hasProductShape && anchoredToProductShape && !isAmbiguous && impliedName === name
 }
 
 export function createPitchProvenanceId(input: {

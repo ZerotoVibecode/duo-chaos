@@ -117,6 +117,182 @@ describe('supervisor consensus provenance', () => {
     })).toBeUndefined()
   })
 
+  it('accepts an explicitly selected immutable pitch when the product keeps a different user-facing name', () => {
+    const pitches = [
+      {
+        pitchId: 'pitch-0d104efd8f9d2ee7032c4271',
+        runId: 'run-decision-deck',
+        round: 1,
+        agent: 'claude' as const,
+        title: 'Merge-sort Pairwise Ranking Engine',
+        idea: 'Rank choices through a merge queue.',
+        appeal: 'Predictable comparisons.',
+        risk: 'More state.'
+      },
+      {
+        pitchId: 'pitch-5e1c8f015621b3e7b4129b3c',
+        runId: 'run-decision-deck',
+        round: 2,
+        agent: 'codex' as const,
+        title: 'Binary Insertion Ladder',
+        idea: 'Insert each choice through binary comparisons.',
+        appeal: 'Compact resumable state.',
+        risk: 'Path-dependent ordering.'
+      }
+    ]
+
+    const record = resolveConsensusProvenance({
+      runId: 'run-decision-deck',
+      appName: 'Decision Deck',
+      humanBrief: 'Build a polished dependency-free single-page Decision Deck.',
+      qualityBriefFingerprint: 'quality:decision-deck',
+      selectedSourcePitchIds: [pitches[1]!.pitchId],
+      pitches
+    })
+
+    expect(record).toMatchObject({
+      selectionMode: 'human-named-synthesis',
+      sourcePitchIds: [pitches[1]!.pitchId],
+      sourceAgents: ['codex'],
+      sourceRounds: [2]
+    })
+    expect(record?.pitchCatalogFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+    expect(record?.sourceSelectionFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+    expect(validateConsensusProvenance({
+      record: record!,
+      runId: 'run-decision-deck',
+      humanBrief: 'Build a polished dependency-free single-page Decision Deck.',
+      qualityBriefFingerprint: 'quality:decision-deck',
+      immutablePitches: pitches
+    })).toBe(true)
+  })
+
+  it.each(['Deck', 'Single Page Decision Deck', 'Creators'])(
+    'does not treat an arbitrary opening-sentence suffix as the human-fixed name: %s',
+    (appName) => {
+      const pitches = [
+        {
+          pitchId: 'pitch-111111111111111111111111', runId: 'run-implicit-name-guard', round: 1,
+          agent: 'claude' as const, title: 'First Route', idea: 'A focused route.', appeal: 'Clear.', risk: 'Scope.'
+        },
+        {
+          pitchId: 'pitch-222222222222222222222222', runId: 'run-implicit-name-guard', round: 2,
+          agent: 'codex' as const, title: 'Second Route', idea: 'A tested route.', appeal: 'Stable.', risk: 'Scope.'
+        }
+      ]
+      const humanBrief = appName === 'Creators'
+        ? 'Build a polished local app for content creators.'
+        : 'Build a polished dependency-free single-page Decision Deck.'
+
+      expect(resolveConsensusProvenance({
+        runId: 'run-implicit-name-guard',
+        appName,
+        humanBrief,
+        qualityBriefFingerprint: 'quality:implicit-name-guard',
+        selectedSourcePitchIds: [pitches[1]!.pitchId],
+        pitches
+      })).toBeUndefined()
+    }
+  )
+
+  it.each([
+    'Build a polished dependency-free single-page Decision Deck. Product name: Final Choice.',
+    'Build a polished dependency-free single-page Decision Deck. Choose your own name.'
+  ])('does not let an implicit opening title override later human naming: %s', (humanBrief) => {
+    const pitches = [
+      {
+        pitchId: 'pitch-333333333333333333333333', runId: 'run-name-precedence', round: 1,
+        agent: 'claude' as const, title: 'First Route', idea: 'A focused route.', appeal: 'Clear.', risk: 'Scope.'
+      },
+      {
+        pitchId: 'pitch-444444444444444444444444', runId: 'run-name-precedence', round: 2,
+        agent: 'codex' as const, title: 'Second Route', idea: 'A tested route.', appeal: 'Stable.', risk: 'Scope.'
+      }
+    ]
+
+    expect(resolveConsensusProvenance({
+      runId: 'run-name-precedence',
+      appName: 'Decision Deck',
+      humanBrief,
+      qualityBriefFingerprint: 'quality:name-precedence',
+      selectedSourcePitchIds: [pitches[1]!.pitchId],
+      pitches
+    })).toBeUndefined()
+  })
+
+  it('accepts a human-fixed implicit title that ends in a product-shape word', () => {
+    const pitches = [
+      {
+        pitchId: 'pitch-555555555555555555555555', runId: 'run-dashboard-name', round: 1,
+        agent: 'claude' as const, title: 'First Route', idea: 'A focused route.', appeal: 'Clear.', risk: 'Scope.'
+      },
+      {
+        pitchId: 'pitch-666666666666666666666666', runId: 'run-dashboard-name', round: 2,
+        agent: 'codex' as const, title: 'Second Route', idea: 'A tested route.', appeal: 'Stable.', risk: 'Scope.'
+      }
+    ]
+
+    expect(resolveConsensusProvenance({
+      runId: 'run-dashboard-name',
+      appName: 'Decision Dashboard',
+      humanBrief: 'Build a polished Decision Dashboard.',
+      qualityBriefFingerprint: 'quality:dashboard-name',
+      selectedSourcePitchIds: [pitches[1]!.pitchId],
+      pitches
+    })).toMatchObject({
+      selectionMode: 'human-named-synthesis',
+      sourcePitchIds: [pitches[1]!.pitchId]
+    })
+  })
+
+  it('does not confuse unrelated placeholder UI copy with naming ambiguity', () => {
+    const pitches = [
+      {
+        pitchId: 'pitch-777777777777777777777777', runId: 'run-placeholder-ui', round: 1,
+        agent: 'claude' as const, title: 'First Route', idea: 'A focused route.', appeal: 'Clear.', risk: 'Scope.'
+      },
+      {
+        pitchId: 'pitch-888888888888888888888888', runId: 'run-placeholder-ui', round: 2,
+        agent: 'codex' as const, title: 'Second Route', idea: 'A tested route.', appeal: 'Stable.', risk: 'Scope.'
+      }
+    ]
+
+    expect(resolveConsensusProvenance({
+      runId: 'run-placeholder-ui',
+      appName: 'Decision Deck',
+      humanBrief: 'Build a polished single-page Decision Deck. Do not leave placeholder UI.',
+      qualityBriefFingerprint: 'quality:placeholder-ui',
+      selectedSourcePitchIds: [pitches[1]!.pitchId],
+      pitches
+    })).toMatchObject({ selectionMode: 'human-named-synthesis' })
+  })
+
+  it.each([
+    'Build a local app used by Content Creators.',
+    'Build a local app serving Content Creators.',
+    'Build a local app serving Dashboard Creators.'
+  ])('does not treat a title-cased audience as an implicit product name: %s', (humanBrief) => {
+    const pitches = [
+      {
+        pitchId: 'pitch-999999999999999999999999', runId: 'run-audience-title', round: 1,
+        agent: 'claude' as const, title: 'First Route', idea: 'A focused route.', appeal: 'Clear.', risk: 'Scope.'
+      },
+      {
+        pitchId: 'pitch-aaaaaaaaaaaaaaaaaaaaaaab', runId: 'run-audience-title', round: 2,
+        agent: 'codex' as const, title: 'Second Route', idea: 'A tested route.', appeal: 'Stable.', risk: 'Scope.'
+      }
+    ]
+
+    expect(resolveConsensusProvenance({
+      runId: 'run-audience-title',
+      appName: humanBrief.includes('Dashboard') ? 'Dashboard Creators' : 'Content Creators',
+      humanBrief,
+      qualityBriefFingerprint: 'quality:audience-title',
+      selectedSourcePitchIds: [pitches[1]!.pitchId],
+      pitches
+    })).toBeUndefined()
+  })
+
   it.each([
     'Do not call this product Signal Garden. Build something else.',
     'Build something inspired by Signal Garden, but choose a new name.',

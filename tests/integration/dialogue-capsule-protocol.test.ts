@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -90,12 +90,13 @@ describe('dialogue capsule contract', () => {
 
   it('specializes the provider schema so a pitch cannot drift into consensus or tasks', () => {
     const pitchSchema = dialogueCapsuleJsonSchemaForTurn({ kind: 'pitch', phase: 'round.pitch' })
+    expect(pitchSchema.required).toEqual(['statement', 'opinion', 'pitches', 'redactions'])
+    expect(Object.keys(pitchSchema.properties)).toEqual(['statement', 'opinion', 'pitches', 'redactions'])
     expect(pitchSchema.properties.pitches).toMatchObject({ minItems: 2, maxItems: 2 })
-    expect(pitchSchema.properties.tasks).toMatchObject({ minItems: 0, maxItems: 0 })
-    expect(pitchSchema.properties.consensus).toEqual({ type: 'null' })
 
     const consensusSchema = dialogueCapsuleJsonSchemaForTurn({ kind: 'critique', phase: 'round.consensus' })
-    expect(consensusSchema.properties.pitches).toMatchObject({ minItems: 0, maxItems: 0 })
+    expect(consensusSchema.required).toEqual(['statement', 'opinion', 'tasks', 'consensus', 'redactions'])
+    expect(Object.keys(consensusSchema.properties)).toEqual(['statement', 'opinion', 'tasks', 'consensus', 'redactions'])
     expect(consensusSchema.properties.tasks).toMatchObject({ minItems: 2, maxItems: 2 })
     const consensusContract = consensusSchema.properties.consensus as {
       required?: unknown
@@ -112,6 +113,88 @@ describe('dialogue capsule contract', () => {
     // deliberately restricted response-schema dialect.
     expect(consensusContract.properties?.sourcePitchIds).not.toHaveProperty('uniqueItems')
     expect(consensusSchema.properties.tasks.items.properties.claimedBy.enum).toEqual(['claude', 'codex'])
+
+    const critiqueSchema = dialogueCapsuleJsonSchemaForTurn({ kind: 'critique', phase: 'round.critique' })
+    expect(critiqueSchema.required).toEqual(['statement', 'opinion', 'redactions'])
+    expect(Object.keys(critiqueSchema.properties)).toEqual(['statement', 'opinion', 'redactions'])
+    expect(JSON.stringify(pitchSchema).length).toBeLessThan(4_000)
+  })
+
+  it('salvages one exact Claude StructuredOutput wrapper and normalizes only the active stage fields', () => {
+    const contract = { kind: 'pitch' as const, phase: 'round.pitch' as const }
+    const move = {
+      statement: capsule.opening,
+      opinion: capsule.opinion,
+      pitches: [
+        { title: 'Orbit Garden', idea: 'A spatial seed ritual.', appeal: 'Tactile and visual.', risk: 'Input parity.' },
+        { title: 'Signal Room', idea: 'A disappearing radio message.', appeal: 'Immediate tension.', risk: 'Audio polish.' }
+      ],
+      redactions: [
+        { value: 'Orbit Garden', label: 'APP_NAME' },
+        { value: 'Signal Room', label: 'APP_NAME' },
+        ...capsule.redactions
+      ]
+    }
+    const envelope = JSON.stringify([
+      {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'StructuredOutput', input: { value: JSON.stringify(move) } }]
+        }
+      },
+      { type: 'result', subtype: 'error_max_turns' }
+    ])
+
+    expect(extractDialogueCapsuleFromCliLine('claude', envelope, contract)).toEqual({
+      opening: move.statement,
+      counter: move.statement,
+      verdict: move.statement,
+      opinion: move.opinion,
+      tasks: [],
+      pitches: move.pitches,
+      consensus: null,
+      redactions: move.redactions
+    })
+
+    const unsafeWrapper = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          name: 'StructuredOutput',
+          input: { value: JSON.stringify(move), extra: true }
+        }]
+      }
+    })
+    expect(extractDialogueCapsuleFromCliLine('claude', unsafeWrapper, contract)).toBeUndefined()
+  })
+
+  it('prefers a validated final structured result over an earlier salvage candidate', () => {
+    const contract = { kind: 'critique' as const, phase: 'round.critique' as const }
+    const wrapped = {
+      statement: capsule.opening,
+      opinion: capsule.opinion,
+      redactions: capsule.redactions
+    }
+    const finalMove = {
+      statement: capsule.counter,
+      opinion: { ...capsule.opinion, tone: 'collaborative' },
+      redactions: capsule.redactions
+    }
+    const envelope = JSON.stringify([
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: { value: wrapped } }] }
+      },
+      { type: 'result', subtype: 'success', structured_output: finalMove }
+    ])
+
+    expect(extractDialogueCapsuleFromCliLine('claude', envelope, contract)).toMatchObject({
+      opening: finalMove.statement,
+      counter: finalMove.statement,
+      verdict: finalMove.statement,
+      opinion: finalMove.opinion
+    })
   })
 
   it('accepts one complete capsule and rejects prose wrappers or missing exchange fields', () => {
@@ -167,6 +250,247 @@ describe('dialogue capsule contract', () => {
       expect(publicText).toMatch(/…$/u)
     }
     expect(privateDispatch.privateText).toBe(capsule.opening.privateText)
+  })
+
+  it('writes stable dialogue and pitch records only once when a preserved stage is reconciled', async () => {
+    const workspacePath = await protocolWorkspace('duo-dialogue-idempotent-')
+    const pitches = [
+      { title: 'Orbit Garden', idea: 'A spatial seed ritual.', appeal: 'Tactile and visual.', risk: 'Input parity.' },
+      { title: 'Signal Room', idea: 'A disappearing radio message.', appeal: 'Immediate tension.', risk: 'Audio polish.' }
+    ]
+    const input = {
+      workspacePath,
+      runId: 'duo-run-dialogue-idempotent',
+      round: 1,
+      agent: 'claude' as const,
+      targetAgent: 'codex' as const,
+      claimKey: 'shared-direction',
+      contract: { kind: 'pitch' as const, phase: 'round.pitch' as const },
+      capsule: {
+        ...capsule,
+        redactions: capsule.redactions.map((entry) => ({ ...entry })),
+        tasks: [],
+        pitches
+      }
+    }
+
+    await writeDialogueCapsuleProtocol(input)
+    await writeDialogueCapsuleProtocol(input)
+
+    for (const path of [
+      join(workspacePath, '.duo', 'public', 'dispatches.jsonl'),
+      join(workspacePath, '.duo', 'private', 'dispatches.jsonl'),
+      join(workspacePath, '.duo', 'public', 'opinions.jsonl'),
+      join(workspacePath, '.duo', 'private', 'opinions.jsonl')
+    ]) {
+      expect((await readFile(path, 'utf8')).trim().split(/\r?\n/u)).toHaveLength(1)
+    }
+    expect((await readFile(join(workspacePath, '.duo', 'private', 'pitches.jsonl'), 'utf8')).trim().split(/\r?\n/u)).toHaveLength(2)
+  })
+
+  it('completes a private-first partial dialogue write when the same logical content is replayed', async () => {
+    const sourceWorkspace = await protocolWorkspace('duo-dialogue-partial-source-')
+    const replayWorkspace = await protocolWorkspace('duo-dialogue-partial-replay-')
+    const input = {
+      workspacePath: sourceWorkspace,
+      runId: 'duo-run-dialogue-partial-replay',
+      round: 2,
+      agent: 'codex' as const,
+      targetAgent: 'claude' as const,
+      claimKey: 'shared-direction',
+      contract: { kind: 'critique' as const, phase: 'round.critique' as const },
+      capsule: parseDialogueCapsule(capsule)
+    }
+
+    await writeDialogueCapsuleProtocol(input)
+    const privateDispatch = await readFile(
+      join(sourceWorkspace, '.duo', 'private', 'dispatches.jsonl'),
+      'utf8'
+    )
+    await writeFile(
+      join(replayWorkspace, '.duo', 'private', 'dispatches.jsonl'),
+      privateDispatch,
+      'utf8'
+    )
+
+    await expect(writeDialogueCapsuleProtocol({ ...input, workspacePath: replayWorkspace })).resolves.toBeUndefined()
+
+    const [publicRecords, privateRecords] = await Promise.all([
+      readFile(join(replayWorkspace, '.duo', 'public', 'dispatches.jsonl'), 'utf8'),
+      readFile(join(replayWorkspace, '.duo', 'private', 'dispatches.jsonl'), 'utf8')
+    ])
+    expect(publicRecords.trim().split(/\r?\n/u)).toHaveLength(1)
+    expect(privateRecords.trim().split(/\r?\n/u)).toHaveLength(1)
+    const privateRecord = JSON.parse(privateRecords) as Record<string, unknown>
+    const publicRecord = JSON.parse(publicRecords) as Record<string, unknown>
+    expect(privateRecord).toMatchObject({
+      publicText: capsule.opening.publicText,
+      privateText: capsule.opening.privateText
+    })
+    expect(publicRecord.timestamp).toBe(privateRecord.timestamp)
+  })
+
+  it('fails closed when a changed replay follows an unverifiable public-only partial write', async () => {
+    const sourceWorkspace = await protocolWorkspace('duo-dialogue-public-partial-source-')
+    const replayWorkspace = await protocolWorkspace('duo-dialogue-public-partial-replay-')
+    const input = {
+      workspacePath: sourceWorkspace,
+      runId: 'duo-run-dialogue-public-partial-replay',
+      round: 2,
+      agent: 'codex' as const,
+      targetAgent: 'claude' as const,
+      claimKey: 'shared-direction',
+      contract: { kind: 'critique' as const, phase: 'round.critique' as const },
+      capsule: parseDialogueCapsule(capsule)
+    }
+
+    await writeDialogueCapsuleProtocol(input)
+    const publicDispatch = await readFile(
+      join(sourceWorkspace, '.duo', 'public', 'dispatches.jsonl'),
+      'utf8'
+    )
+    await writeFile(
+      join(replayWorkspace, '.duo', 'public', 'dispatches.jsonl'),
+      publicDispatch,
+      'utf8'
+    )
+    const changedCapsule = parseDialogueCapsule({
+      ...capsule,
+      counter: {
+        publicText: 'I disagree: the [FEATURE] should take a different public direction.',
+        privateText: 'I disagree: the orbit-grid should take a different private direction.'
+      }
+    })
+
+    await expect(writeDialogueCapsuleProtocol({
+      ...input,
+      workspacePath: replayWorkspace,
+      capsule: changedCapsule
+    })).rejects.toThrow(/partial|replay|conflict|verify/iu)
+
+    await expect(readFile(join(replayWorkspace, '.duo', 'private', 'dispatches.jsonl'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    const preservedPublic = await readFile(
+      join(replayWorkspace, '.duo', 'public', 'dispatches.jsonl'),
+      'utf8'
+    )
+    expect(JSON.parse(preservedPublic)).toMatchObject({ publicText: capsule.opening.publicText })
+  })
+
+  it('rejects changed logical content after a private-first partial dialogue write', async () => {
+    const sourceWorkspace = await protocolWorkspace('duo-dialogue-private-conflict-source-')
+    const replayWorkspace = await protocolWorkspace('duo-dialogue-private-conflict-replay-')
+    const input = {
+      workspacePath: sourceWorkspace,
+      runId: 'duo-run-dialogue-private-conflict',
+      round: 2,
+      agent: 'codex' as const,
+      targetAgent: 'claude' as const,
+      claimKey: 'shared-direction',
+      contract: { kind: 'critique' as const, phase: 'round.critique' as const },
+      capsule: parseDialogueCapsule(capsule)
+    }
+
+    await writeDialogueCapsuleProtocol(input)
+    const privateDispatch = await readFile(
+      join(sourceWorkspace, '.duo', 'private', 'dispatches.jsonl'),
+      'utf8'
+    )
+    await writeFile(
+      join(replayWorkspace, '.duo', 'private', 'dispatches.jsonl'),
+      privateDispatch,
+      'utf8'
+    )
+
+    await expect(writeDialogueCapsuleProtocol({
+      ...input,
+      workspacePath: replayWorkspace,
+      capsule: parseDialogueCapsule({
+        ...capsule,
+        opening: {
+          publicText: 'I think the [FEATURE] should now follow a different public direction.',
+          privateText: 'I think the orbit-grid should now follow a different private direction.'
+        }
+      })
+    })).rejects.toThrow(/replay conflict|different logical content/iu)
+
+    await expect(readFile(join(replayWorkspace, '.duo', 'public', 'dispatches.jsonl'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(join(replayWorkspace, '.duo', 'private', 'dispatches.jsonl'), 'utf8'))
+      .toBe(privateDispatch)
+  })
+
+  it.each([
+    ['pitch', {
+      ...capsule,
+      pitches: [{
+        title: 'Orbit Garden',
+        idea: 'A private spatial ritual with one focused interaction.',
+        appeal: 'The concept is tactile, legible, and visually distinctive.',
+        risk: 'The interaction needs exact pointer and keyboard parity.'
+      }],
+      redactions: [...capsule.redactions, { value: 'Orbit Garden', label: 'APP_NAME' }]
+    }],
+    ['task', {
+      ...capsule,
+      tasks: [{
+        ...capsule.tasks[0],
+        privateDescription: 'Replace the committed task with a different hidden implementation boundary.'
+      }]
+    }],
+    ['consensus', {
+      ...capsule,
+      consensus: {
+        appName: 'Orbit Atlas',
+        sourcePitchIds: [],
+        idea: 'A changed sealed direction that was not part of the committed capsule.',
+        summary: 'The same visible dialogue now attempts to install a different private result.',
+        spec: 'Build a different complete experience and verify its primary interaction deterministically.',
+        redactions: [{ value: 'Orbit Atlas', label: 'APP_NAME' }]
+      },
+      redactions: [...capsule.redactions, { value: 'Orbit Atlas', label: 'APP_NAME' }]
+    }]
+  ])('rejects changed %s content after the complete capsule was committed but later artifacts were not', async (_kind, changed) => {
+    const sourceWorkspace = await protocolWorkspace('duo-capsule-commit-source-')
+    const replayWorkspace = await protocolWorkspace('duo-capsule-commit-replay-')
+    const input = {
+      workspacePath: sourceWorkspace,
+      runId: 'duo-run-full-capsule-replay',
+      round: 2,
+      agent: 'codex' as const,
+      targetAgent: 'claude' as const,
+      claimKey: 'shared-direction',
+      contract: { kind: 'critique' as const, phase: 'round.critique' as const },
+      capsule: parseDialogueCapsule(capsule)
+    }
+    await writeDialogueCapsuleProtocol(input)
+
+    for (const relativePath of [
+      ['private', 'dialogue-commits.jsonl'],
+      ['private', 'dispatches.jsonl'],
+      ['public', 'dispatches.jsonl'],
+      ['private', 'opinions.jsonl'],
+      ['public', 'opinions.jsonl']
+    ] as const) {
+      await writeFile(
+        join(replayWorkspace, '.duo', ...relativePath),
+        await readFile(join(sourceWorkspace, '.duo', ...relativePath), 'utf8'),
+        'utf8'
+      )
+    }
+
+    await expect(writeDialogueCapsuleProtocol({
+      ...input,
+      workspacePath: replayWorkspace,
+      capsule: parseDialogueCapsule(changed)
+    })).rejects.toThrow(/capsule replay conflict|complete preserved capsule/iu)
+
+    await expect(readFile(join(replayWorkspace, '.duo', 'board.json'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(replayWorkspace, '.duo', 'private', 'pitches.jsonl'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(replayWorkspace, '.duo', 'sealed', 'idea.md'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('redacts a sealed term near the end of the complete provider statement before clipping', async () => {
@@ -828,6 +1152,119 @@ describe('dialogue capsule contract', () => {
     expect(specification).toContain(humanBrief)
     expect(specification).toMatch(/brief fingerprint/i)
     expect(specification).toContain('Acceptance checks')
+  })
+
+  it('accepts the preserved Decision Deck consensus with an explicitly selected differently named pitch', async () => {
+    const workspacePath = await protocolWorkspace('duo-dialogue-decision-deck-')
+    const runId = 'duo-run-decision-deck'
+    const humanBrief = 'Build a polished dependency-free single-page Decision Deck. A user enters three to seven options, compares two options at a time, and finishes with a ranked list. Preserve progress in localStorage, support mouse and keyboard input, include an obvious reset path, work without a network connection, and include deterministic tests for the ranking logic. The interface must remain readable at 900 by 640 and 1600 by 900.'
+    await writeSeriousMissionContract(join(workspacePath, '.duo', 'sealed'), humanBrief, '2026-07-15T23:12:42.000Z')
+    const pitchTurns = [
+      {
+        agent: 'claude' as const,
+        targetAgent: 'codex' as const,
+        title: 'Merge-sort Pairwise Ranking Engine',
+        idea: 'Rank choices through a deterministic merge queue.'
+      },
+      {
+        agent: 'codex' as const,
+        targetAgent: 'claude' as const,
+        title: 'Binary Insertion Ladder',
+        idea: 'Insert each option through focused binary comparisons.'
+      }
+    ]
+    for (const [index, pitch] of pitchTurns.entries()) {
+      await writeDialogueCapsuleProtocol({
+        workspacePath,
+        runId,
+        round: index + 1,
+        agent: pitch.agent,
+        targetAgent: pitch.targetAgent,
+        claimKey: 'shared-direction',
+        contract: { kind: 'pitch', phase: 'round.pitch' },
+        missionProfile: 'serious',
+        humanBrief,
+        capsule: parseDialogueCapsule({
+          ...capsule,
+          tasks: [],
+          pitches: [{
+            title: pitch.title,
+            idea: pitch.idea,
+            appeal: 'Compact, testable, and resumable.',
+            risk: 'The preference-order wording must stay precise.'
+          }],
+          redactions: [{ value: pitch.title, label: 'private pitch title' }]
+        })
+      })
+    }
+
+    const pitchRecords = (await readFile(join(workspacePath, '.duo', 'private', 'pitches.jsonl'), 'utf8'))
+      .trim().split(/\r?\n/u).map((line) => JSON.parse(line) as { pitchId: string; title: string })
+    const selectedPitchId = pitchRecords.find((pitch) => pitch.title === 'Binary Insertion Ladder')!.pitchId
+    await writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId,
+      round: 4,
+      agent: 'codex',
+      targetAgent: 'claude',
+      claimKey: 'shared-direction',
+      contract: { kind: 'consensus', phase: 'round.consensus' },
+      missionProfile: 'serious',
+      humanBrief,
+      capsule: parseDialogueCapsule({
+        ...capsule,
+        pitches: [],
+        tasks: [
+          { ...capsule.tasks[0], id: 'decision-engine', claimedBy: 'codex' },
+          { ...capsule.tasks[0], id: 'decision-interface', claimedBy: 'claude' }
+        ],
+        consensus: {
+          appName: 'Decision Deck',
+          sourcePitchIds: [selectedPitchId],
+          idea: 'An offline Decision Deck ranks three to seven options through focused pairwise choices.',
+          summary: 'A polished dependency-free comparison flow with durable progress, mouse and keyboard input, reset, and transparent ranked results.',
+          spec: 'Build a polished dependency-free single-page Decision Deck that works offline. Accept three to seven options, rank them with deterministic pairwise insertion logic, persist and restore progress in localStorage, support mouse and keyboard input, provide an obvious reset, and test ranking plus persistence transitions. Keep entry, comparison, and result views readable at 900 by 640 and 1600 by 900.\n\nAcceptance checks\n- Complete the entire ranking flow offline.\n- Restore progress after refresh and clear it with reset.\n- Pass deterministic ranking tests and both target-size layout checks.',
+          redactions: [{ value: 'Decision Deck', label: 'chosen app name' }]
+        },
+        redactions: [
+          { value: 'Decision Deck', label: 'chosen app name' },
+          { value: 'Binary Insertion Ladder', label: 'private pitch title' }
+        ]
+      })
+    })
+
+    const provenance = JSON.parse(
+      await readFile(join(workspacePath, '.duo', 'sealed', 'consensus_provenance.json'), 'utf8')
+    ) as { selectionMode: string; sourcePitchIds: string[] }
+    expect(provenance).toMatchObject({
+      selectionMode: 'human-named-synthesis',
+      sourcePitchIds: [selectedPitchId]
+    })
+  })
+
+  it('repairs provider mojibake before a structured dialogue capsule can be persisted or reused', () => {
+    const parsed = parseDialogueCapsule({
+      ...capsule,
+      opening: {
+        publicText: 'Claude\u00e2\u20ac\u2122s position \u00e2\u20ac\u201d concise\u00e2\u20ac\u00a6',
+        privateText: 'Claude\u00e2\u0080\u0099s private position \u00e2\u0080\u0094 concrete.'
+      },
+      pitches: [{
+        title: 'Builder\u00e2\u20ac\u2122s Bench',
+        idea: 'A focused workspace.',
+        appeal: 'It\u00e2\u0080\u0099s testable.',
+        risk: 'Scope.'
+      }]
+    })
+
+    expect(parsed.opening).toMatchObject({
+      publicText: 'Claude’s position — concise…',
+      privateText: 'Claude’s private position — concrete.'
+    })
+    expect(parsed.pitches[0]).toMatchObject({
+      title: 'Builder’s Bench',
+      appeal: 'It’s testable.'
+    })
   })
 
   it('rejects an unpitched consensus and records stable private provenance for a pitched winner', async () => {

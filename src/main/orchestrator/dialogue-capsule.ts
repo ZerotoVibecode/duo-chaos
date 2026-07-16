@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { AgentId, DuoEvent, MissionProfile, RunPhase, TurnKind } from '@shared/types'
 import { decodeProviderEnvelope } from '@main/process/provider-envelope'
+import { repairProviderText } from '@main/text/repair-mojibake'
 import {
   analyzeSeriousAgentSpecification,
   sealSeriousMissionSpecification
@@ -298,7 +299,7 @@ export function parseDialogueCapsule(value: unknown): DialogueCapsule {
       .join('; ')
     throw new DialogueCapsuleError(`Invalid dialogue capsule: ${details}`)
   }
-  return result.data
+  return repairProviderText(result.data)
 }
 
 export interface DialogueTurnContract {
@@ -306,17 +307,23 @@ export interface DialogueTurnContract {
   phase: RunPhase
 }
 
-type MutableDialogueCapsuleJsonSchema = Record<string, unknown> & {
-  properties: {
-    tasks: Record<string, unknown> & {
-      items: {
-        properties: {
-          claimedBy: Record<string, unknown>
-        }
-      }
-    }
-    pitches: Record<string, unknown>
-    consensus: Record<string, unknown>
+type JsonSchemaNode = Record<string, unknown> & {
+  items: JsonSchemaNode
+  properties: Record<string, JsonSchemaNode> & { claimedBy: JsonSchemaNode }
+  required: string[]
+  enum: string[]
+  anyOf: JsonSchemaNode[]
+}
+
+export type DialogueProviderJsonSchema = Record<string, unknown> & {
+  required: string[]
+  properties: Record<string, JsonSchemaNode> & {
+    statement: JsonSchemaNode
+    opinion: JsonSchemaNode
+    pitches: JsonSchemaNode
+    tasks: JsonSchemaNode
+    consensus: JsonSchemaNode
+    redactions: JsonSchemaNode
   }
 }
 
@@ -325,34 +332,172 @@ type MutableDialogueCapsuleJsonSchema = Record<string, unknown> & {
  * can prevent the expensive, common drift where a pitch response creates
  * tasks or consensus. The stricter runtime validator remains authoritative.
  */
-export function dialogueCapsuleJsonSchemaForTurn(contract: DialogueTurnContract): MutableDialogueCapsuleJsonSchema {
-  const schema = structuredClone(DIALOGUE_CAPSULE_JSON_SCHEMA) as unknown as MutableDialogueCapsuleJsonSchema
+export function dialogueCapsuleJsonSchemaForTurn(contract: DialogueTurnContract): DialogueProviderJsonSchema {
+  const commonProperties = {
+    statement: structuredClone(DIALOGUE_CAPSULE_JSON_SCHEMA.$defs.speech) as unknown as JsonSchemaNode,
+    opinion: structuredClone(DIALOGUE_CAPSULE_JSON_SCHEMA.properties.opinion) as unknown as JsonSchemaNode,
+    redactions: structuredClone(DIALOGUE_CAPSULE_JSON_SCHEMA.properties.redactions) as unknown as JsonSchemaNode
+  }
   if (contract.kind === 'pitch') {
-    schema.properties.pitches.minItems = 2
-    schema.properties.pitches.maxItems = 2
-    schema.properties.tasks.minItems = 0
-    schema.properties.tasks.maxItems = 0
-    schema.properties.consensus = { type: 'null' }
-    return schema
+    const pitches = structuredClone(DIALOGUE_CAPSULE_JSON_SCHEMA.properties.pitches) as unknown as JsonSchemaNode
+    pitches.minItems = 2
+    pitches.maxItems = 2
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['statement', 'opinion', 'pitches', 'redactions'],
+      properties: {
+        statement: commonProperties.statement,
+        opinion: commonProperties.opinion,
+        pitches,
+        redactions: commonProperties.redactions
+      }
+    } as unknown as DialogueProviderJsonSchema
   }
   if (contract.phase === 'round.consensus') {
-    schema.properties.pitches.minItems = 0
-    schema.properties.pitches.maxItems = 0
-    schema.properties.tasks.minItems = 2
-    schema.properties.tasks.maxItems = 2
-    schema.properties.tasks.items.properties.claimedBy = {
+    const tasks = structuredClone(DIALOGUE_CAPSULE_JSON_SCHEMA.properties.tasks) as unknown as JsonSchemaNode
+    tasks.minItems = 2
+    tasks.maxItems = 2
+    tasks.items.properties.claimedBy = {
       type: 'string',
       enum: ['claude', 'codex']
-    }
-    schema.properties.consensus = structuredClone(
-      DIALOGUE_CAPSULE_JSON_SCHEMA.properties.consensus.anyOf[0]
-    )
-    return schema
+    } as unknown as JsonSchemaNode
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['statement', 'opinion', 'tasks', 'consensus', 'redactions'],
+      properties: {
+        statement: commonProperties.statement,
+        opinion: commonProperties.opinion,
+        tasks,
+        consensus: structuredClone(DIALOGUE_CAPSULE_JSON_SCHEMA.properties.consensus.anyOf[0]),
+        redactions: commonProperties.redactions
+      }
+    } as unknown as DialogueProviderJsonSchema
   }
-  schema.properties.tasks.minItems = 0
-  schema.properties.tasks.maxItems = 0
-  schema.properties.consensus = { type: 'null' }
-  return schema
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['statement', 'opinion', 'redactions'],
+    properties: commonProperties
+  } as unknown as DialogueProviderJsonSchema
+}
+
+const providerMoveCommonShape = {
+  statement: speechSchema,
+  opinion: opinionSchema,
+  redactions: z.array(redactionTermSchema).min(1).max(24)
+}
+
+function parseDialogueProviderMove(value: unknown, contract: DialogueTurnContract): DialogueCapsule {
+  let candidate = value
+  if (typeof candidate === 'string') {
+    const text = candidate.trim()
+    if (text.length > 96_000 || !text.startsWith('{') || !text.endsWith('}')) {
+      throw new DialogueCapsuleError('Dialogue move must be one bounded JSON object.')
+    }
+    try {
+      candidate = JSON.parse(text) as unknown
+    } catch {
+      throw new DialogueCapsuleError('Dialogue move must contain valid JSON.')
+    }
+  }
+
+  const invalidMove = (issues: Array<{ path: PropertyKey[]; message: string }>): never => {
+    const details = issues
+      .slice(0, 6)
+      .map((issue) => `${issue.path.map(String).join('.') || 'move'}: ${issue.message}`)
+      .join('; ')
+    throw new DialogueCapsuleError(`Invalid dialogue move: ${details}`)
+  }
+  if (contract.kind === 'pitch') {
+    const parsed = z.object({
+      ...providerMoveCommonShape,
+      pitches: z.array(pitchSchema).length(2)
+    }).strict().safeParse(candidate)
+    if (!parsed.success) return invalidMove(parsed.error.issues)
+    const statement = parsed.data.statement
+    return {
+      opening: statement,
+      counter: statement,
+      verdict: statement,
+      opinion: parsed.data.opinion,
+      tasks: [],
+      pitches: parsed.data.pitches,
+      consensus: null,
+      redactions: parsed.data.redactions
+    }
+  }
+  if (contract.phase === 'round.consensus') {
+    const parsed = z.object({
+      ...providerMoveCommonShape,
+      tasks: z.array(taskSchema).length(2),
+      consensus: consensusSchema
+    }).strict().safeParse(candidate)
+    if (!parsed.success) return invalidMove(parsed.error.issues)
+    const statement = parsed.data.statement
+    return {
+      opening: statement,
+      counter: statement,
+      verdict: statement,
+      opinion: parsed.data.opinion,
+      tasks: parsed.data.tasks,
+      pitches: [],
+      consensus: parsed.data.consensus,
+      redactions: parsed.data.redactions
+    }
+  }
+  const parsed = z.object(providerMoveCommonShape).strict().safeParse(candidate)
+  if (!parsed.success) return invalidMove(parsed.error.issues)
+  const statement = parsed.data.statement
+  return {
+    opening: statement,
+    counter: statement,
+    verdict: statement,
+    opinion: parsed.data.opinion,
+    tasks: [],
+    pitches: [],
+    consensus: null,
+    redactions: parsed.data.redactions
+  }
+}
+
+function parseDialogueProviderCandidate(value: unknown, contract?: DialogueTurnContract): DialogueCapsule {
+  try {
+    return parseDialogueCapsule(value)
+  } catch (capsuleError) {
+    if (!contract) throw capsuleError
+    return parseDialogueProviderMove(value, contract)
+  }
+}
+
+function unwrapStructuredOutputCandidate(value: unknown): unknown {
+  const wrapper = record(value)
+  const keys = Object.keys(wrapper)
+  if (keys.length !== 1 || !['value', 'output', 'payload'].includes(keys[0]!)) return value
+  const wrapped = wrapper[keys[0]!]
+  if (typeof wrapped === 'string') {
+    const text = wrapped.trim()
+    if (text.length > 96_000 || !text.startsWith('{') || !text.endsWith('}')) return undefined
+    try {
+      return JSON.parse(text) as unknown
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof wrapped === 'object' && wrapped !== null && !Array.isArray(wrapped)) return wrapped
+  return undefined
+}
+
+function claudeStructuredToolInputs(input: Record<string, unknown>): unknown[] {
+  if (input.type !== 'assistant') return []
+  const message = record(input.message)
+  if (!Array.isArray(message.content)) return []
+  return message.content.flatMap((entry) => {
+    const content = record(entry)
+    if (content.type !== 'tool_use' || content.name !== 'StructuredOutput') return []
+    return [content.input]
+  })
 }
 
 function normalizedSecretTerm(value: string): string {
@@ -743,13 +888,30 @@ async function persistAccumulatedRedactions(
   )
 }
 
-/** Extracts only a provider's final structured response, never command or tool output. */
+/**
+ * Extracts a provider's final structured response. Claude may intermittently
+ * serialize an otherwise valid first StructuredOutput attempt under one
+ * wrapper key; that exact tool input is accepted only after the same strict
+ * schema validation and is never treated as workspace activity.
+ */
 export function extractDialogueCapsuleFromCliLine(
   agent: 'claude' | 'codex',
-  line: string
+  line: string,
+  contract?: DialogueTurnContract
 ): DialogueCapsule | undefined {
-  let capsule: DialogueCapsule | undefined
+  let salvaged: DialogueCapsule | undefined
+  let finalCapsule: DialogueCapsule | undefined
   for (const input of decodeProviderEnvelope(line)) {
+    if (agent === 'claude') {
+      for (const toolInput of claudeStructuredToolInputs(input)) {
+        const candidate = unwrapStructuredOutputCandidate(toolInput)
+        try {
+          salvaged = parseDialogueProviderCandidate(candidate, contract)
+        } catch {
+          // Invalid or partial tool input is never accepted as a capsule.
+        }
+      }
+    }
     let candidate: unknown
     if (agent === 'claude' && input.type === 'result') {
       candidate = input.structured_output ?? input.structuredOutput ?? input.result
@@ -761,12 +923,15 @@ export function extractDialogueCapsuleFromCliLine(
       continue
     }
     try {
-      capsule = parseDialogueCapsule(candidate)
+      finalCapsule = parseDialogueProviderCandidate(
+        unwrapStructuredOutputCandidate(candidate),
+        contract
+      )
     } catch {
       // A malformed candidate cannot erase an earlier valid final record.
     }
   }
-  return capsule
+  return finalCapsule ?? salvaged
 }
 
 interface DialogueCapsuleProtocolInput {
@@ -805,14 +970,183 @@ function stableId(input: DialogueCapsuleProtocolInput, kind: string): string {
   return `dialogue-${createHash('sha256').update(seed).digest('hex').slice(0, 24)}`
 }
 
-async function appendEventPair(protocolRoot: string, publicPath: string, privatePath: string, event: DuoEvent): Promise<void> {
-  const publicEvent = { ...event }
+function capsuleReplayFingerprint(input: DialogueCapsuleProtocolInput, capsule: DialogueCapsule): string {
+  return createHash('sha256').update(canonicalJson({
+    schemaVersion: 1,
+    runId: input.runId,
+    round: input.round,
+    agent: input.agent,
+    targetAgent: input.targetAgent,
+    claimKey: input.claimKey,
+    contract: input.contract,
+    missionProfile: input.missionProfile ?? 'surprise',
+    humanBrief: input.humanBrief ?? null,
+    replyTo: input.replyTo ?? null,
+    capsule
+  })).digest('hex')
+}
+
+async function commitFullCapsuleReplay(
+  input: DialogueCapsuleProtocolInput,
+  capsule: DialogueCapsule
+): Promise<void> {
+  const root = join(input.workspacePath, '.duo')
+  const path = join(root, 'private', 'dialogue-commits.jsonl')
+  const commitId = stableId(input, 'capsule')
+  const fingerprint = capsuleReplayFingerprint(input, capsule)
+  const existing = await safeReadProtocolText(root, path) ?? ''
+  let matched = false
+  for (const line of existing.split(/\r?\n/u)) {
+    if (!line.trim()) continue
+    try {
+      const candidate = record(JSON.parse(line) as unknown)
+      if (candidate.commitId !== commitId) continue
+      matched = true
+      if (candidate.fingerprint !== fingerprint) {
+        throw new DialogueCapsuleError(
+          `Dialogue capsule replay conflict for ${commitId}: the complete preserved capsule has different logical content.`
+        )
+      }
+    } catch (error) {
+      if (error instanceof DialogueCapsuleError) throw error
+      // An unrelated truncated tail cannot verify this logical turn.
+    }
+  }
+  if (matched) return
+  await safeAppendProtocolText(root, path, `${JSON.stringify({
+    schemaVersion: 1,
+    commitId,
+    runId: input.runId,
+    round: input.round,
+    agent: input.agent,
+    claimKey: input.claimKey,
+    fingerprint
+  })}\n`)
+}
+
+async function appendUniqueJsonlRecord(
+  protocolRoot: string,
+  path: string,
+  key: string,
+  value: string,
+  serialized: string
+): Promise<void> {
+  const existing = await safeReadProtocolText(protocolRoot, path) ?? ''
+  for (const line of existing.split(/\r?\n/u)) {
+    if (!line.trim()) continue
+    try {
+      if (record(JSON.parse(line) as unknown)[key] === value) return
+    } catch {
+      // A truncated record cannot make the stable accepted record disappear.
+    }
+  }
+  await safeAppendProtocolText(protocolRoot, path, `${serialized}\n`)
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (typeof value !== 'object' || value === null) return JSON.stringify(value) ?? 'null'
+  const input = value as Record<string, unknown>
+  return `{${Object.keys(input)
+    .sort()
+    .filter((key) => input[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(input[key])}`)
+    .join(',')}}`
+}
+
+function publicEventRecord(value: Record<string, unknown>): Record<string, unknown> {
+  const publicEvent = { ...value }
   delete publicEvent.privateText
   delete publicEvent.metadata
-  await Promise.all([
-    safeAppendProtocolText(protocolRoot, publicPath, `${JSON.stringify(publicEvent)}\n`),
-    safeAppendProtocolText(protocolRoot, privatePath, `${JSON.stringify(event)}\n`)
-  ])
+  return publicEvent
+}
+
+function replayFingerprint(value: Record<string, unknown>, visibility: 'public' | 'private'): string {
+  const stable = visibility === 'public' ? publicEventRecord(value) : { ...value }
+  delete stable.timestamp
+  return createHash('sha256').update(canonicalJson(stable)).digest('hex')
+}
+
+async function matchingJsonlRecords(
+  protocolRoot: string,
+  path: string,
+  key: string,
+  value: string
+): Promise<Record<string, unknown>[]> {
+  const existing = await safeReadProtocolText(protocolRoot, path) ?? ''
+  return existing.split(/\r?\n/u).flatMap((line) => {
+    if (!line.trim()) return []
+    try {
+      const parsed = record(JSON.parse(line) as unknown)
+      return parsed[key] === value ? [parsed] : []
+    } catch {
+      // A truncated unrelated tail is ignored. It can never verify a logical ID.
+      return []
+    }
+  })
+}
+
+function verifiedReplayRecord(
+  records: Record<string, unknown>[],
+  expected: Record<string, unknown>,
+  visibility: 'public' | 'private',
+  eventId: string
+): Record<string, unknown> | undefined {
+  if (records.length === 0) return undefined
+  const expectedFingerprint = replayFingerprint(expected, visibility)
+  if (records.some((candidate) => replayFingerprint(candidate, visibility) !== expectedFingerprint)) {
+    throw new DialogueCapsuleError(
+      `Dialogue replay conflict for ${eventId}: the preserved ${visibility} record has different logical content.`
+    )
+  }
+  return records[0]
+}
+
+const eventPairQueues = new Map<string, Promise<void>>()
+
+async function appendEventPair(protocolRoot: string, publicPath: string, privatePath: string, event: DuoEvent): Promise<void> {
+  const queueKey = `${protocolRoot}\0${privatePath}\0${event.id}`
+  const previous = eventPairQueues.get(queueKey) ?? Promise.resolve()
+  const queued = previous.catch(() => undefined).then(async () => {
+    const expectedPrivate = event as unknown as Record<string, unknown>
+    const expectedPublic = publicEventRecord(expectedPrivate)
+    const [publicMatches, privateMatches] = await Promise.all([
+      matchingJsonlRecords(protocolRoot, publicPath, 'id', event.id),
+      matchingJsonlRecords(protocolRoot, privatePath, 'id', event.id)
+    ])
+    const privateRecord = verifiedReplayRecord(privateMatches, expectedPrivate, 'private', event.id)
+    const publicRecord = verifiedReplayRecord(publicMatches, expectedPublic, 'public', event.id)
+
+    if (publicRecord && !privateRecord) {
+      throw new DialogueCapsuleError(
+        `Dialogue replay conflict for ${event.id}: a public-only partial write cannot verify its sealed counterpart.`
+      )
+    }
+    if (privateRecord && publicRecord) {
+      if (canonicalJson(publicEventRecord(privateRecord)) !== canonicalJson(publicRecord)) {
+        throw new DialogueCapsuleError(
+          `Dialogue replay conflict for ${event.id}: the public and private records are not the same committed pair.`
+        )
+      }
+      return
+    }
+    if (privateRecord) {
+      await safeAppendProtocolText(protocolRoot, publicPath, `${canonicalJson(publicEventRecord(privateRecord))}\n`)
+      return
+    }
+
+    // The private record is the authoritative half because it contains both
+    // public and sealed content. Persist it first so any interrupted write can
+    // be verified and safely completed on an identical replay.
+    await safeAppendProtocolText(protocolRoot, privatePath, `${JSON.stringify(event)}\n`)
+    await safeAppendProtocolText(protocolRoot, publicPath, `${JSON.stringify(expectedPublic)}\n`)
+  })
+  eventPairQueues.set(queueKey, queued)
+  try {
+    await queued
+  } finally {
+    if (eventPairQueues.get(queueKey) === queued) eventPairQueues.delete(queueKey)
+  }
 }
 
 function dispatchEvent(
@@ -895,20 +1229,21 @@ async function persistPrivateProductContext(input: DialogueCapsuleProtocolInput)
   if (input.capsule.pitches.length > 0) {
     const pitchPath = join(root, 'private', 'pitches.jsonl')
     for (const [index, pitch] of input.capsule.pitches.entries()) {
-      await safeAppendProtocolText(root, pitchPath, `${JSON.stringify({
-        pitchId: createPitchProvenanceId({
-          runId: input.runId,
-          round: input.round,
-          agent: input.agent,
-          index,
-          title: pitch.title,
-          idea: pitch.idea
-        }),
+      const pitchId = createPitchProvenanceId({
+        runId: input.runId,
+        round: input.round,
+        agent: input.agent,
+        index,
+        title: pitch.title,
+        idea: pitch.idea
+      })
+      await appendUniqueJsonlRecord(root, pitchPath, 'pitchId', pitchId, JSON.stringify({
+        pitchId,
         runId: input.runId,
         round: input.round,
         agent: input.agent,
         ...pitch
-      })}\n`)
+      }))
     }
   }
   const consensus = input.capsule.consensus
@@ -1041,7 +1376,7 @@ async function persistPrivateQualityContract(
   }
 }
 
-export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtocolInput): Promise<void> {
+async function writeDialogueCapsuleProtocolUnlocked(input: DialogueCapsuleProtocolInput): Promise<void> {
   const providerCapsule = parseDialogueCapsule(input.capsule)
   if (input.missionProfile === 'serious' && providerCapsule.consensus) {
     if (!input.humanBrief || !analyzeSeriousAgentSpecification(input.humanBrief, providerCapsule.consensus.spec).valid) {
@@ -1057,6 +1392,11 @@ export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtoco
   // sealed term near the end cannot be hidden beyond the broadcast boundary.
   assertPublicTextIsSpoilerSafe(spoilerSafeProviderCapsule, accumulatedRedactions)
   const capsule = normalizeDialoguePublicText(spoilerSafeProviderCapsule)
+  // Commit the complete logical capsule before any protocol mutation. Event
+  // IDs alone cover only the visible statement/opinion and cannot detect a
+  // retry that quietly changes pitches, tasks, consensus, redactions, or the
+  // quality-bearing human contract after a partial write.
+  await commitFullCapsuleReplay(input, providerCapsule)
   await persistAccumulatedRedactions(input.workspacePath, accumulatedRedactions, capsule)
   const validated = { ...input, capsule }
   const timestamp = new Date().toISOString()
@@ -1079,4 +1419,20 @@ export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtoco
   await mergeBoard(validated)
   await persistPrivateProductContext(validated)
   await persistPrivateQualityContract(validated, preparedQuality)
+}
+
+const capsuleProtocolQueues = new Map<string, Promise<void>>()
+
+export async function writeDialogueCapsuleProtocol(input: DialogueCapsuleProtocolInput): Promise<void> {
+  const queueKey = `${input.workspacePath}\0${stableId(input, 'capsule')}`
+  const previous = capsuleProtocolQueues.get(queueKey) ?? Promise.resolve()
+  const queued = previous.catch(() => undefined).then(async () => {
+    await writeDialogueCapsuleProtocolUnlocked(input)
+  })
+  capsuleProtocolQueues.set(queueKey, queued)
+  try {
+    await queued
+  } finally {
+    if (capsuleProtocolQueues.get(queueKey) === queued) capsuleProtocolQueues.delete(queueKey)
+  }
 }

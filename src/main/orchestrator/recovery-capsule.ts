@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { DuoEvent } from '@shared/types'
 import { decodeProviderEnvelope } from '@main/process/provider-envelope'
+import { repairProviderText } from '@main/text/repair-mojibake'
 import {
   safeAppendProtocolText,
   safeReadProtocolText
@@ -128,20 +129,59 @@ export function parseRecoveryCapsule(value: unknown): RecoveryCapsule {
       .join('; ')
     throw new RecoveryCapsuleError(`Invalid recovery capsule: ${details}`)
   }
-  return parsed.data
+  return repairProviderText(parsed.data)
 }
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
 }
 
-/** Extract only the provider's final structured response, never tool output. */
+function unwrapStructuredOutputCandidate(value: unknown): unknown {
+  const wrapper = record(value)
+  const keys = Object.keys(wrapper)
+  if (keys.length !== 1 || !['value', 'output', 'payload'].includes(keys[0]!)) return value
+  const wrapped = wrapper[keys[0]!]
+  if (typeof wrapped === 'string') {
+    const text = wrapped.trim()
+    if (text.length > 48_000 || !text.startsWith('{') || !text.endsWith('}')) return undefined
+    try {
+      return JSON.parse(text) as unknown
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof wrapped === 'object' && wrapped !== null && !Array.isArray(wrapped)) return wrapped
+  return undefined
+}
+
+function claudeStructuredToolInputs(input: Record<string, unknown>): unknown[] {
+  if (input.type !== 'assistant') return []
+  const message = record(input.message)
+  if (!Array.isArray(message.content)) return []
+  return message.content.flatMap((entry) => {
+    const content = record(entry)
+    if (content.type !== 'tool_use' || content.name !== 'StructuredOutput') return []
+    return [content.input]
+  })
+}
+
+/** Extract a final capsule or one strictly validated first StructuredOutput attempt. */
 export function extractRecoveryCapsuleFromCliLine(
   agent: 'claude' | 'codex',
   line: string
 ): RecoveryCapsule | undefined {
-  let capsule: RecoveryCapsule | undefined
+  let salvaged: RecoveryCapsule | undefined
+  let finalCapsule: RecoveryCapsule | undefined
   for (const input of decodeProviderEnvelope(line)) {
+    if (agent === 'claude') {
+      for (const toolInput of claudeStructuredToolInputs(input)) {
+        try {
+          salvaged = parseRecoveryCapsule(unwrapStructuredOutputCandidate(toolInput))
+        } catch {
+          // Invalid or partial tool input is never accepted as a capsule.
+        }
+      }
+    }
     let candidate: unknown
     if (agent === 'claude' && input.type === 'result') {
       candidate = input.structured_output ?? input.structuredOutput ?? input.result
@@ -153,12 +193,12 @@ export function extractRecoveryCapsuleFromCliLine(
       continue
     }
     try {
-      capsule = parseRecoveryCapsule(candidate)
+      finalCapsule = parseRecoveryCapsule(unwrapStructuredOutputCandidate(candidate))
     } catch {
       // A malformed later record cannot erase an earlier valid final capsule.
     }
   }
-  return capsule
+  return finalCapsule ?? salvaged
 }
 
 interface WriteRecoveryCapsuleProtocolInput {

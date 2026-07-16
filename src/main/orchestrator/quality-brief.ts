@@ -11,12 +11,13 @@ const STOP_WORDS = new Set([
   'that', 'the', 'their', 'them', 'this', 'to', 'tool', 'using', 'very', 'want', 'we', 'website', 'with', 'you'
 ])
 
-const PROCESS_ONLY_PATTERN = /\b(?:agent|argue|challenge weak|claude|codex|debate|decide everything|do not reveal|reveal only|secret|spoiler|yourselves)\b/iu
+const PROCESS_ONLY_PATTERN = /\b(?:agent|argue|challenge weak|claude|codex|debate|decide everything|do not reveal|final reviewer|preserved source|reveal only|routine dialogue|secret|spoiler|yourselves)\b/iu
 const PRODUCT_SIGNAL_PATTERN = /\b(?:accessible|app|audience|browser|content|creator|dashboard|desktop|for\s+\p{L}|local|locally|offline|platform|responsive|tool|useful|website|workflow)\b/iu
-const RESTRICTION_PATTERN = /\b(?:avoid|do not|don't|must not|never|no|without)\b/iu
+const RESTRICTION_PATTERN = /\b(?:avoid|cannot|can't|do not|does not|don't|is not|are not|lacks?|must not|never|no|omits?|without)\b/iu
+const RESTRICTION_PREFIX_PATTERN = /^(?:avoid|cannot|can't|do not|does not|don't|is not|are not|lacks?|must not|never|no|omits?|without)\b\s*/iu
 const RESTRICTION_CONTROL_TERMS = new Set([
-  'add', 'allow', 'avoid', 'disable', 'do', 'don', 'dont', 'enable', 'include', 'must', 'never', 'no', 'not',
-  'require', 'use', 'without',
+  'add', 'allow', 'avoid', 'cannot', 'disable', 'do', 'does', 'don', 'dont', 'enable', 'include', 'lack', 'must',
+  'never', 'no', 'not', 'omit', 'require', 'use', 'without',
   // These layout nouns are too generic to prove a prohibited state by
   // themselves (for example, "primary controls work" must not be read as
   // affirming "clipped primary controls"). Keep the failure-bearing terms.
@@ -102,24 +103,63 @@ function sourceSegments(humanBrief: string): string[] {
     .replace(/\r\n?/gu, '\n')
     .replace(/^\s*[-*\d.)]+\s*/gmu, '')
   return normalized
-    .split(/(?:\n+|[.!?;]+|,\s+(?=(?:but|and)\s+)|\s+and\s+(?=(?:it\s+)?(?:must|needs?|should|works?|feels?|has|supports?)\b))/giu)
+    .split(/(?:\n+|[.!?;]+|,\s+(?=(?:(?:but|and)\s+)?(?:add|allow|be|display|enable|ensure|feel|function|functions|has|have|include|keep|must|need|needs|offer|operate|operates|persist|preserve|provide|remain|require|requires|run|runs|should|support|supports|use|with|work|works)\b)|\s+and\s+(?=(?:it\s+)?(?:must|needs?|should|works?|feels?|has|supports?)\b))/giu)
     .map(normalizedText)
     .filter((segment) => segment.length >= 3)
 }
 
-function splitMixedRestriction(segment: string): string[] {
-  const marker = segment.search(RESTRICTION_PATTERN)
-  if (marker <= 0) return [segment]
+interface SplitConstraintSegment {
+  text: string
+  forceBind: boolean
+  processOnly: boolean
+}
+
+function splitMixedRestriction(segment: string): SplitConstraintSegment[] {
+  const processOnly = isProcessOnlySegment(segment)
+  const offlineRequirement = /\b(?:work|works|run|runs|operate|operates|function|functions)\s+without\s+(?:an?\s+)?(?:internet|network)(?:\s+connection)?\b/iu
+  const offlineMatch = segment.match(offlineRequirement)
+  let normalizedSegment = segment
+  if (offlineMatch?.index !== undefined) {
+    const verb = offlineMatch[0].match(/^\w+/u)?.[0] ?? 'work'
+    const before = segment.slice(0, offlineMatch.index)
+    const after = segment.slice(offlineMatch.index + offlineMatch[0].length)
+    const offlineSegment = normalizedText(`${before}${verb} offline`)
+    const siblingClause = after.match(/^\s*(,\s*)?(?:(and|or|nor)\s+|(as\s+well\s+as)\s+)?(.+)$/iu)
+    if (after.trim() && siblingClause) {
+      const hasLeadingComma = Boolean(siblingClause[1])
+      const connector = normalizedText(siblingClause[2] ?? siblingClause[3] ?? '').toLocaleLowerCase()
+      const sibling = siblingClause[4]!.trim()
+      const startsRestriction = sibling.search(RESTRICTION_PATTERN) === 0
+      const inheritsNegativeScope = connector === 'or' || connector === 'nor' || connector === 'as well as' ||
+        (hasLeadingComma && /,\s*(?:and|or|nor)\b/iu.test(sibling))
+      if (!startsRestriction && !inheritsNegativeScope) {
+        return [
+          { text: offlineSegment, forceBind: true, processOnly },
+          { text: normalizedText(sibling), forceBind: true, processOnly }
+        ]
+      }
+      normalizedSegment = normalizedText(
+        `${offlineSegment} and ${startsRestriction ? sibling : `without ${sibling}`}`
+      )
+    } else {
+      normalizedSegment = offlineSegment
+    }
+  }
+  const marker = normalizedSegment.search(RESTRICTION_PATTERN)
+  if (marker <= 0) return [{ text: normalizedSegment, forceBind: false, processOnly }]
   const positive = normalizedText(
-    segment.slice(0, marker).replace(/\b(?:and|but|or|with)\s*$/iu, '')
+    normalizedSegment.slice(0, marker).replace(/\b(?:and|but|or|with)\s*$/iu, '')
   )
-  const restriction = normalizedText(segment.slice(marker))
+  const restriction = normalizedText(normalizedSegment.slice(marker))
   // A sentence such as "fit cleanly ... without clipped controls" contains
   // two independent contracts. Treating the whole sentence as a prohibition
   // makes the positive requirement contradict itself at consensus time.
   return meaningfulTerms(positive).length >= 1 && meaningfulTerms(restriction).length >= 1
-    ? [positive, restriction]
-    : [segment]
+      ? [
+        { text: positive, forceBind: true, processOnly },
+        { text: restriction, forceBind: true, processOnly }
+      ]
+    : [{ text: normalizedSegment, forceBind: false, processOnly }]
 }
 
 function constraintKind(segment: string): QualityBriefConstraint['kind'] {
@@ -139,7 +179,7 @@ function restrictionTerms(segment: string): string[] {
 function restrictionCoverageGroups(segment: string): string[][] {
   const marker = segment.search(RESTRICTION_PATTERN)
   const restriction = normalizedText(marker >= 0 ? segment.slice(marker) : segment)
-    .replace(/^(?:avoid|do not|don't|must not|never|no|without)\b\s*/iu, '')
+    .replace(RESTRICTION_PREFIX_PATTERN, '')
   const groups = restriction
     .split(/\s*,\s*|\s+\b(?:and|or)\b\s+/giu)
     .map((item) => meaningfulTerms(item).filter((term) => !RESTRICTION_CONTROL_TERMS.has(term)))
@@ -148,10 +188,14 @@ function restrictionCoverageGroups(segment: string): string[][] {
 }
 
 function shouldBindSegment(segment: string, index: number): boolean {
-  if (PROCESS_ONLY_PATTERN.test(segment) && !PRODUCT_SIGNAL_PATTERN.test(segment)) return false
+  if (isProcessOnlySegment(segment)) return false
   if (index === 0) return true
   return PRODUCT_SIGNAL_PATTERN.test(segment) ||
-    /\b(?:must|need|require|should|work|feel|include|support|without|avoid|never|no)\b/iu.test(segment)
+    /\b(?:accessible|add|allow|display|enable|feel|include|input|keyboard|must|need|offer|persist|preserve|provide|remain|require|should|support|use|with|work|without|avoid|never|no)\b/iu.test(segment)
+}
+
+function isProcessOnlySegment(segment: string): boolean {
+  return PROCESS_ONLY_PATTERN.test(segment) && !PRODUCT_SIGNAL_PATTERN.test(segment)
 }
 
 function constraintId(index: number, sourceText: string): string {
@@ -162,8 +206,13 @@ function constraintId(index: number, sourceText: string): string {
 function compileConstraints(humanBrief: string): QualityBriefConstraint[] {
   const constraints: QualityBriefConstraint[] = []
   const segments = sourceSegments(humanBrief).flatMap(splitMixedRestriction)
-  for (const [index, segment] of segments.entries()) {
-    if (!shouldBindSegment(segment, index)) continue
+  for (const [index, candidate] of segments.entries()) {
+    const segment = candidate.text
+    // Restriction splitting marks both halves as force-bound. That must not
+    // turn instructions about how Duo should run into requirements for the
+    // generated product (for example, "debate ... without Max effort").
+    if (candidate.processOnly || isProcessOnlySegment(segment)) continue
+    if (!candidate.forceBind && !shouldBindSegment(segment, index)) continue
     const polarity = RESTRICTION_PATTERN.test(segment) ? 'forbid' as const : 'require' as const
     const coverageGroups = polarity === 'forbid' ? restrictionCoverageGroups(segment) : undefined
     const coverageTerms = polarity === 'forbid'
@@ -185,13 +234,19 @@ function compileConstraints(humanBrief: string): QualityBriefConstraint[] {
 
   if (constraints.length === 0) {
     const fallback = normalizedText(humanBrief).slice(0, MAX_SOURCE_TEXT)
-    constraints.push({
-      id: constraintId(0, fallback),
-      kind: 'required-outcome',
-      polarity: 'require',
-      sourceText: fallback,
-      coverageTerms: meaningfulTerms(fallback).slice(0, 12)
-    })
+    // A purely orchestration-facing brief intentionally has no generated-app
+    // hard constraints. The generic quality bar and acceptance checks still
+    // apply; copying the process instruction into the product contract would
+    // create an impossible consensus and waste a recovery turn.
+    if (!isProcessOnlySegment(fallback)) {
+      constraints.push({
+        id: constraintId(0, fallback),
+        kind: 'required-outcome',
+        polarity: 'require',
+        sourceText: fallback,
+        coverageTerms: meaningfulTerms(fallback).slice(0, 12)
+      })
+    }
   }
   return constraints
 }
@@ -264,14 +319,10 @@ export function compileQualityBrief(input: {
   }
 }
 
-function consensusTerms(input: ConsensusQualityInput): Set<string> {
-  return new Set(meaningfulTerms([input.appName, input.idea, input.summary, input.spec].join('\n')))
-}
-
 function affirmativeConsensusClauses(input: ConsensusQualityInput): Array<Set<string>> {
-  return [input.idea, input.summary, input.spec]
+  return [input.appName, input.idea, input.summary, input.spec]
     .join('\n')
-    .split(/(?:\r?\n+|[.!?;]+|\b(?:but|however|instead|yet|while)\b)/giu)
+    .split(/(?:\r?\n+|[.!?;]+|\b(?:and|but|however|instead|yet|while)\b)/giu)
     .map(normalizedText)
     .filter((clause) => clause.length > 0 && !RESTRICTION_PATTERN.test(clause))
     .map((clause) => new Set(meaningfulTerms(clause)))
@@ -289,8 +340,8 @@ export function assessConsensusAgainstQualityBrief(
   brief: CompiledQualityBrief,
   consensus: ConsensusQualityInput
 ): ConsensusQualityAssessment {
-  const terms = consensusTerms(consensus)
   const affirmativeClauses = affirmativeConsensusClauses(consensus)
+  const affirmativeTerms = new Set([...affirmativeClauses].flatMap((clause) => [...clause]))
   const violations: string[] = []
   const coveredConstraintIds: string[] = []
   for (const constraint of brief.privateContract.hardConstraints) {
@@ -307,7 +358,7 @@ export function assessConsensusAgainstQualityBrief(
       continue
     }
 
-    const matched = constraint.coverageTerms.filter((term) => terms.has(term)).length
+    const matched = constraint.coverageTerms.filter((term) => affirmativeTerms.has(term)).length
     const required = Math.min(3, Math.max(1, Math.ceil(constraint.coverageTerms.length * 0.4)))
     if (matched < required) {
       violations.push(`Consensus does not preserve human-brief constraint ${constraint.id}.`)
@@ -320,7 +371,7 @@ export function assessConsensusAgainstQualityBrief(
 
 export function formatQualityBriefForAgent(brief: CompiledQualityBrief): string {
   const constraints = brief.privateContract.hardConstraints
-    .map((constraint, index) => `${String(index + 1)}. [${constraint.polarity.toUpperCase()}] ${constraint.sourceText}`)
+    .map((constraint, index) => `${String(index + 1)}. [${constraint.polarity.toUpperCase()}] ${constraintPromptText(constraint)}`)
     .join('\n')
   const quality = brief.privateContract.qualityBar.map((item) => `- ${item}`).join('\n')
   // Constraint-specific acceptance lines merely restate the numbered hard
@@ -341,7 +392,15 @@ export function formatQualityBriefForAgent(brief: CompiledQualityBrief): string 
  */
 export function formatQualityBriefBatonForAgent(brief: CompiledQualityBrief): string {
   const constraints = brief.privateContract.hardConstraints
-    .map((constraint) => `${constraint.id} [${constraint.polarity.toUpperCase()}] ${constraint.sourceText}`)
+    .map((constraint) => `${constraint.id} [${constraint.polarity.toUpperCase()}] ${constraintPromptText(constraint)}`)
     .join('\n')
   return `SEALED QUALITY BATON (private; immutable)\nFingerprint: ${brief.fingerprint}\nExact contract: .duo/sealed/quality_brief.json\nSealed decision: .duo/sealed/spec.md\n\nBinding constraints\n${constraints}\n\nPreserve every ID above. Use the sealed files for exact detail and prove the current task's acceptance checks before handoff.`
+}
+
+function constraintPromptText(constraint: QualityBriefConstraint): string {
+  if (constraint.polarity !== 'forbid') return constraint.sourceText
+  const affirmativeProhibition = normalizedText(
+    constraint.sourceText.replace(RESTRICTION_PREFIX_PATTERN, '')
+  )
+  return affirmativeProhibition || constraint.sourceText
 }

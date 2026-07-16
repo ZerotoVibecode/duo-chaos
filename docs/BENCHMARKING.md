@@ -1,6 +1,6 @@
-# Offline benchmarking
+# Benchmarking
 
-Duo Chaos has two deterministic benchmark commands. Both make zero provider calls and are safe to run when Claude quota must not be consumed.
+Duo Chaos has two deterministic offline benchmark commands and one separately gated live harness. Every command is a dry run or makes zero provider calls unless the live harness receives both explicit quota flags.
 
 ## Saved run receipts
 
@@ -19,7 +19,30 @@ npm run benchmark:receipts -- --json path/to/duo-receipt.json path/to/baseline-r
 
 With no receipt paths, the command uses two transparent synthetic fixtures. Synthetic results validate the report pipeline only and do not claim that one model or orchestration strategy is better.
 
-Live mode is intentionally unsupported. `--live` exits without invoking a provider. Future live benchmarking must be a separate, explicit opt-in path and must still drive authenticated local CLIs rather than direct APIs.
+## Opt-in live exact-condition harness
+
+The live harness records one predeclared condition: Duo Chaos in Serious + Chaos + Spoiler Shield with Codex Terra Low and Claude Sonnet Low. Its public brief, limits, loadout, and judge gates live in `tests/fixtures/benchmarks/live/terra-low-sonnet-low.json`. Command-line model, prompt, fixture, and limit overrides are rejected so results stay comparable.
+
+```bash
+# Inspect the exact condition; zero provider calls
+npm run benchmark:live
+npm run benchmark:live -- --json
+
+# After npm run build, explicitly authorize the one live condition
+npm run benchmark:live -- --live --i-understand-this-uses-local-cli-quota
+```
+
+Both `--live` and `--i-understand-this-uses-local-cli-quota` are required. Supplying only one exits before Electron starts. Live mode drives the installed, authenticated local CLIs through an isolated Electron user-data directory and a fresh temporary workspace; even Electron's startup default workspace is redirected there. Development-renderer and Node-injection environment variables are removed before launch. It does not call a direct API, and `saveRawLogs` is forced off.
+
+The harness starts the condition once. It never resumes a paused battle or launches another attempt. Repair loops are set to zero for this sample. An external watchdog is independent of the in-app run ceiling and stops a harness that no longer reaches a terminal snapshot. Graceful Electron shutdown is bounded; its full process tree is terminated if needed so provider children cannot outlive the sample. Every terminal or harness-failure result is written to the receipt instead of being dropped, and its generated workspace is copied beside the receipt before temporary directories are removed. Shutdown or evidence-copy failure downgrades any provisional pass receipt. If evidence copying fails, the temporary source paths are recorded and deliberately retained. This preserves successful artifacts for blinded human review and incomplete artifacts for local diagnosis.
+
+Live outputs stay under ignored `benchmark-results/live-duo/<run-id>/`. This is deliberately separate from Playwright's `test-results/` directory, which is cleared by E2E runs:
+
+- `receipt.json` contains only bounded status, release gates, supervisor-recorded contributions, verification counts, tasks, usage, and the fixed public condition label;
+- `preserved-workspace/` contains the generated source for every terminal outcome and may include the fixed benchmark brief, so it must remain ignored and local. Review this folder blindly before using the receipt to make a product-quality claim.
+- `supervisor-runtime/` contains ignored local proof/checkpoint records when they exist. The preserved source deliberately omits its dangling external `.git` pointer; use the runtime copy only for local diagnosis, never as a public fixture.
+
+The deterministic judge is intentionally narrow. It reads only the projected supervisor snapshot and requires a ready release, current verification, all tasks complete, and accepted implementation plus reciprocal review evidence from both agents with a bounded edit ratio. It does not load fixture JavaScript, run fixture shell commands, start the generated app, or pretend to replace blinded human product review. A passing receipt is execution evidence for one condition, not proof that Duo is universally better than either CLI alone.
 
 ## Quality-per-token architecture contract
 
