@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { Dirent } from 'node:fs'
 import { lstat, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { devNull } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import type {
   AppSettings,
@@ -3465,10 +3466,10 @@ export class RunOrchestrator {
           timeoutMs: timeoutSeconds * 1_000,
           stdoutPath: session.settings.saveRawLogs
             ? join(session.workspace.runtimePath, 'private', 'raw', `${turn.agent}.jsonl`)
-            : process.platform === 'win32' ? 'NUL' : '/dev/null',
+            : devNull,
           stderrPath: session.settings.saveRawLogs
             ? join(session.workspace.runtimePath, 'private', 'raw', `${turn.agent}.stderr.log`)
-            : process.platform === 'win32' ? 'NUL' : '/dev/null',
+            : devNull,
           onLine
         })
         session.usageTracker.finishCall(

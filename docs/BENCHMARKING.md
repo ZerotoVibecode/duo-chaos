@@ -52,7 +52,7 @@ The separately preregistered `premium-medium` suite fixes exactly five arms befo
 
 The immutable `premium-medium-open` continuation contains only Duo Sol Medium plus Opus Medium, uses the same exact task and judge, and has no independent harness active-work wall. It waits until the Electron supervisor records a terminal result instead of stopping productive work at 15 minutes. Its fixed supervisor safety leases are the application's published maxima: eight hours for one turn and 24 hours for the run. Provider failure, process failure, an unresponsive Electron surface, or a supervisor terminal status can therefore still preserve an incomplete result. Its contract lives in `tests/fixtures/benchmarks/live/short-matrix-premium-medium-open.json`. Its suite namespace creates fresh one-attempt slots without altering, replacing, or reopening any historical slot. Prompt, model, effort, arm, suite, and runtime overrides outside checked-in contracts are rejected.
 
-Two versioned follow-up suites reuse that canonical task, improved executable judge, and open supervisor runtime without changing any historical fixture. `codex-effort-open-v1` isolates Codex effort/model effects in the preregistered order Sol Medium, Sol Low, Terra Medium, then Sol Max. `sol-fable-2x2-open-v1` preserves the first paired interaction attempt, including a Windows global-npm-shim transport failure discovered before its first provider consensus response. It remains reliability evidence and is not mixed with repaired trials. `sol-fable-2x2-open-v2` repeats the same preregistered order after the schema-argument transport repair: Sol Medium + Fable Medium, Sol Medium + Fable Max, Sol Max + Fable Medium, then Sol Max + Fable Max. These suites use trials 1 and 2, have no independent harness active-work wall, and pass `max` literally to the corresponding local CLI.
+Versioned follow-up suites reuse that canonical task, improved executable judge, and open supervisor runtime without changing any historical fixture. `codex-effort-open-v1` isolates Codex effort/model effects in the preregistered order Sol Medium, Sol Low, Terra Medium, then Sol Max. `sol-fable-2x2-open-v1` preserves the first paired interaction attempt, including a Windows global-npm-shim transport failure discovered before its first provider consensus response. `sol-fable-2x2-open-v2` preserves the post-transport attempt that exposed a Codex provider-schema incompatibility before source work. Both remain reliability evidence and are not mixed with repaired trials. `sol-fable-2x2-open-v3` repeats the same preregistered order after both repairs: Sol Medium + Fable Medium, Sol Medium + Fable Max, Sol Max + Fable Medium, then Sol Max + Fable Max. These suites use trials 1 and 2, have no independent harness active-work wall, and pass `max` literally to the corresponding local CLI.
 
 ```bash
 # Inspect all four arms; zero provider calls
@@ -88,11 +88,14 @@ npm run benchmark:matrix -- --suite codex-effort-open-v1 --live --i-understand-t
 # Inspect the preserved pre-repair Sol/Fable 2x2; zero provider calls
 npm run benchmark:matrix -- --suite sol-fable-2x2-open-v1 --json
 
-# Inspect the post-repair Sol/Fable 2x2; zero provider calls
+# Inspect the transport-repaired but provider-schema-incompatible record; zero provider calls
 npm run benchmark:matrix -- --suite sol-fable-2x2-open-v2 --json
 
-# Execute the first post-repair Sol/Fable slot
-npm run benchmark:matrix -- --suite sol-fable-2x2-open-v2 --live --i-understand-this-uses-local-cli-quota --arm duo-sol-medium-fable-medium-open-v2 --trial 1 --json
+# Inspect the post-compatibility-repair Sol/Fable 2x2; zero provider calls
+npm run benchmark:matrix -- --suite sol-fable-2x2-open-v3 --json
+
+# Execute the first valid post-repair Sol/Fable slot
+npm run benchmark:matrix -- --suite sol-fable-2x2-open-v3 --live --i-understand-this-uses-local-cli-quota --arm duo-sol-medium-fable-medium-open-v3 --trial 1 --json
 ```
 
 Solo arms launch only the authenticated local CLI with fixed argument arrays, `shell: false`, a Core toolset, an ephemeral/no-persistence session, an allowlisted child environment, and a fresh temporary workspace. Duo arms use the Electron supervisor with the same fixed task, fresh user data, Core toolbelts, no repair loops, and no trusted local capabilities. A Duo build preflight completes before its immutable slot is reserved. Once reservation succeeds, it points to the run receipt and an unexpected executor failure still writes a terminal harness-error receipt instead of silently burning the slot. The harness never auto-resumes or retries an arm. Each suite/arm/trial slot can be attempted once, every terminal result is written below an opaque ignored `benchmark-results/short-matrix/` run ID, and generated source is preserved before temporary storage is removed.

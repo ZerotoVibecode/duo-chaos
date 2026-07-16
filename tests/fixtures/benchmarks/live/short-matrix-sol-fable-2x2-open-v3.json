@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "id": "decision-deck-sol-fable-2x2-open-v3",
+  "label": "Decision Deck Sol Fable 2x2 open v3",
+  "prompt": "Build a polished dependency-free single-page Decision Deck in this empty workspace. The artifact must work completely offline with no packages, CDNs, network calls, or build step. At the artifact root create index.html, app.js, logic.js, and logic.test.mjs. A user enters three to seven non-empty options through an element with data-testid=\"options-input\", starts through data-testid=\"start\", and compares every unique pair in original input order: option 1 versus each later option, then option 2 versus each later option, and so on. Each pair appears with the earlier option in data-testid=\"choose-left\" and the later option in data-testid=\"choose-right\". Rank by total wins descending, breaking ties by original input order, and render rows with data-testid=\"ranking-item\". Preserve progress in localStorage, support mouse and keyboard input, provide an obvious reset control with data-testid=\"reset\", and expose clear live feedback with data-testid=\"status\". Export pure deterministic ranking logic from logic.js and cover it from logic.test.mjs using the built-in node:test runner. Keep the interface polished and readable at 900 by 640 and 1600 by 900. Run the deterministic test and perform a final source-level self-check. Do not ask the human for decisions. Finish only when it is runnable from a simple local static server with no package install or build step.",
+  "maxActiveSeconds": null,
+  "trials": [1, 2],
+  "duoRuntime": {
+    "executionMode": "chaos",
+    "visibilityMode": "spoiler-shield",
+    "missionProfile": "serious",
+    "customizationProfile": "core",
+    "qualityRoutingProfile": "balanced",
+    "maxTurns": 7,
+    "maxRepairLoops": 0,
+    "workInferenceLimit": 8,
+    "turnTimeoutSeconds": 28800,
+    "runTimeoutSeconds": 86400
+  },
+  "arms": [
+    {
+      "id": "duo-sol-medium-fable-medium-open-v3",
+      "label": "Duo Sol Medium plus Fable Medium open v3",
+      "kind": "duo",
+      "codex": { "model": "gpt-5.6-sol", "effort": "medium" },
+      "claude": { "model": "fable", "effort": "medium" }
+    },
+    {
+      "id": "duo-sol-medium-fable-max-open-v3",
+      "label": "Duo Sol Medium plus Fable Max open v3",
+      "kind": "duo",
+      "codex": { "model": "gpt-5.6-sol", "effort": "medium" },
+      "claude": { "model": "fable", "effort": "max" }
+    },
+    {
+      "id": "duo-sol-max-fable-medium-open-v3",
+      "label": "Duo Sol Max plus Fable Medium open v3",
+      "kind": "duo",
+      "codex": { "model": "gpt-5.6-sol", "effort": "max" },
+      "claude": { "model": "fable", "effort": "medium" }
+    },
+    {
+      "id": "duo-sol-max-fable-max-open-v3",
+      "label": "Duo Sol Max plus Fable Max open v3",
+      "kind": "duo",
+      "codex": { "model": "gpt-5.6-sol", "effort": "max" },
+      "claude": { "model": "fable", "effort": "max" }
+    }
+  ],
+  "judge": {
+    "requiredFiles": ["index.html", "app.js", "logic.js", "logic.test.mjs"],
+    "stableHooks": ["options-input", "start", "choose-left", "choose-right", "ranking-item", "reset", "status"]
+  }
+}

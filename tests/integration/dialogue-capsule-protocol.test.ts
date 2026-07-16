@@ -126,26 +126,18 @@ describe('dialogue capsule contract', () => {
     // still rejected by the supervisor after parsing, outside the provider's
     // deliberately restricted response-schema dialect.
     expect(consensusContract.properties?.sourcePitchIds).not.toHaveProperty('uniqueItems')
-    expect(consensusContract.properties?.appName).toMatchObject({
-      pattern: '^(?!\\s*(?:[Aa][Pp][Pp]|[Pp][Rr][Oo][Dd][Uu][Cc][Tt])[_ -]?[Nn][Aa][Mm][Ee]\\s*$)[^\\[<{].*$'
-    })
+    expect(consensusContract.properties?.appName).not.toHaveProperty('pattern')
     expect(consensusContract.properties?.redactions).toMatchObject({
       minItems: 1,
       maxItems: 1,
       items: {
         properties: {
-          label: { enum: ['app name', 'product name'] },
-          value: { pattern: '^(?!\\s*(?:[Aa][Pp][Pp]|[Pp][Rr][Oo][Dd][Uu][Cc][Tt])[_ -]?[Nn][Aa][Mm][Ee]\\s*$)[^\\[<{].*$' }
+          label: { enum: ['app name', 'product name'] }
         }
       }
     })
-    const appNamePattern = consensusContract.properties?.appName?.pattern
-    expect(appNamePattern).toBeTypeOf('string')
-    const appNameMatcher = new RegExp(appNamePattern!)
-    expect(['[APP_NAME]', '<product_name>', '{{ app name }}', 'APP_NAME', 'app_name', 'product name']
-      .every((value) => !appNameMatcher.test(value))).toBe(true)
-    expect(['Decision Deck', 'Ørbital Garden', 'Signal_Garden']
-      .every((value) => appNameMatcher.test(value))).toBe(true)
+    expect(consensusContract.properties?.redactions?.items?.properties?.value).not.toHaveProperty('pattern')
+    expect(JSON.stringify(consensusSchema)).not.toMatch(/\(\?[=!<]/u)
     expect(consensusSchema.properties.tasks.items.properties.claimedBy.enum).toEqual(['claude', 'codex'])
 
     const critiqueSchema = dialogueCapsuleJsonSchemaForTurn({ kind: 'critique', phase: 'round.critique' })

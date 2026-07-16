@@ -209,6 +209,36 @@ const SOL_FABLE_2X2_OPEN_V2_ARMS = [
     claude: { model: 'fable', effort: 'max' }
   }
 ]
+const SOL_FABLE_2X2_OPEN_V3_ARMS = [
+  {
+    id: 'duo-sol-medium-fable-medium-open-v3',
+    label: 'Duo Sol Medium plus Fable Medium open v3',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'medium' },
+    claude: { model: 'fable', effort: 'medium' }
+  },
+  {
+    id: 'duo-sol-medium-fable-max-open-v3',
+    label: 'Duo Sol Medium plus Fable Max open v3',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'medium' },
+    claude: { model: 'fable', effort: 'max' }
+  },
+  {
+    id: 'duo-sol-max-fable-medium-open-v3',
+    label: 'Duo Sol Max plus Fable Medium open v3',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'max' },
+    claude: { model: 'fable', effort: 'medium' }
+  },
+  {
+    id: 'duo-sol-max-fable-max-open-v3',
+    label: 'Duo Sol Max plus Fable Max open v3',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'max' },
+    claude: { model: 'fable', effort: 'max' }
+  }
+]
 const CAPPED_DUO_RUNTIME = {
   executionMode: 'chaos',
   visibilityMode: 'spoiler-shield',
@@ -260,6 +290,12 @@ const FIXED_SUITES = {
   'sol-fable-2x2-open-v2': {
     manifestPath: resolve(LIVE_FIXTURE_ROOT, 'short-matrix-sol-fable-2x2-open-v2.json'),
     expectedArms: SOL_FABLE_2X2_OPEN_V2_ARMS,
+    maxActiveSeconds: null,
+    expectedRuntime: OPEN_DUO_RUNTIME
+  },
+  'sol-fable-2x2-open-v3': {
+    manifestPath: resolve(LIVE_FIXTURE_ROOT, 'short-matrix-sol-fable-2x2-open-v3.json'),
+    expectedArms: SOL_FABLE_2X2_OPEN_V3_ARMS,
     maxActiveSeconds: null,
     expectedRuntime: OPEN_DUO_RUNTIME
   }
@@ -1154,7 +1190,7 @@ async function main() {
   try {
     const options = parseArgs(process.argv.slice(2))
     if (options.help) {
-      process.stdout.write(`Usage: npm run benchmark:matrix -- [--suite <low-diagnostic|premium-medium|premium-medium-open|codex-effort-open-v1|sol-fable-2x2-open-v1|sol-fable-2x2-open-v2>] [--json] [--arm <id> --trial <1|2>] [${LIVE_FLAG} ${QUOTA_FLAG}]\nDry-run is the default. Live mode executes exactly one fixed arm and trial from the selected immutable suite.\n`)
+      process.stdout.write(`Usage: npm run benchmark:matrix -- [--suite <low-diagnostic|premium-medium|premium-medium-open|codex-effort-open-v1|sol-fable-2x2-open-v1|sol-fable-2x2-open-v2|sol-fable-2x2-open-v3>] [--json] [--arm <id> --trial <1|2>] [${LIVE_FLAG} ${QUOTA_FLAG}]\nDry-run is the default. Live mode executes exactly one fixed arm and trial from the selected immutable suite.\n`)
       return
     }
     if (options.live !== options.quotaAcknowledged) {

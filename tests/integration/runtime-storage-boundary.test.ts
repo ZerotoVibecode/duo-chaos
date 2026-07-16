@@ -1,5 +1,5 @@
 import { lstat, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { devNull, tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { scanRecentBuilds } from '../../src/main/history/run-history'
@@ -191,6 +191,53 @@ describe('agent-invisible runtime storage boundary', () => {
     expect.soft(await exists(join(started.workspacePath, '.duo', 'public', 'timeline.jsonl'))).toBe(false)
     expect.soft(await exists(join(started.workspacePath, '.duo', 'private', 'transcript.jsonl'))).toBe(false)
     expect.soft(await exists(join(started.workspacePath, '.duo', 'prompts'))).toBe(false)
+  })
+
+  it('routes disabled raw logs to the operating-system null device', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'duo-runtime-null-sink-'))
+    const workspaceRoot = join(root, 'generated-workspaces')
+    const runtimeRoot = join(root, 'studio-runtime')
+    const runner = new CapturingFailureRunner()
+    const settings = {
+      ...defaultSettings(workspaceRoot),
+      codexModel: 'gpt-5.6-sol',
+      codexEffort: 'low' as const,
+      claudeModel: 'fable',
+      claudeEffort: 'low' as const,
+      saveRawLogs: false
+    }
+    const orchestrator = new RunOrchestrator({
+      runtimeRoot,
+      getSettings: () => Promise.resolve(settings),
+      onSnapshot: () => undefined,
+      testOnlyMinimumTurns: 2,
+      processRunner: runner,
+      healthProvider: () => Promise.resolve([
+        { id: 'codex' as const, label: 'Codex CLI', command: 'codex', available: true, version: 'codex test', checkedAt: new Date().toISOString() },
+        { id: 'claude' as const, label: 'Claude Code', command: 'claude', available: true, version: 'claude test', checkedAt: new Date().toISOString() },
+        { id: 'git' as const, label: 'Git', command: 'git', available: true, version: 'git test', checkedAt: new Date().toISOString() }
+      ])
+    })
+
+    const started = await orchestrator.start({
+      prompt: 'Build a compact hidden app without retaining provider streams.',
+      workspaceRoot,
+      executionMode: 'chaos',
+      visibilityMode: 'spoiler-shield',
+      maxTurns: 2,
+      maxRepairLoops: 0,
+      turnTimeoutSeconds: 30,
+      runTimeoutSeconds: 120,
+      dangerousModeConfirmed: false,
+      unsafeWorkspaceRootConfirmed: false
+    })
+    await orchestrator.waitForSettled(started.runId)
+
+    expect(runner.calls.length).toBeGreaterThan(0)
+    for (const call of runner.calls) {
+      expect(call.stdoutPath).toBe(devNull)
+      expect(call.stderrPath).toBe(devNull)
+    }
   })
 
   it('rebuilds recent-run history from an external runtime record plus explicit workspace paths', async () => {

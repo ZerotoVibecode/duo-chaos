@@ -365,14 +365,10 @@ export function dialogueCapsuleJsonSchemaForTurn(contract: DialogueTurnContract)
     const consensus = structuredClone(
       DIALOGUE_CAPSULE_JSON_SCHEMA.properties.consensus.anyOf[0]
     ) as unknown as JsonSchemaNode
-    // Consensus is private provider output. Require the actual title here
-    // instead of a public Spoiler Shield placeholder, and reserve one
-    // dedicated redaction entry for it. Other private terms remain in the
-    // top-level redactions array.
-    consensus.properties.appName = {
-      ...consensus.properties.appName,
-      pattern: '^(?!\\s*(?:[Aa][Pp][Pp]|[Pp][Rr][Oo][Dd][Uu][Cc][Tt])[_ -]?[Nn][Aa][Mm][Ee]\\s*$)[^\\[<{].*$'
-    } as unknown as JsonSchemaNode
+    // Consensus is private provider output. Reserve one dedicated title
+    // redaction entry here. Placeholder-name rejection stays in Duo's local
+    // validator because Codex's structured-output schema dialect rejects
+    // regex lookaround even though Claude accepts it.
     const consensusRedactions = consensus.properties.redactions!
     const consensusRedactionItems = consensusRedactions.items
     consensus.properties.redactions = {
@@ -383,10 +379,7 @@ export function dialogueCapsuleJsonSchemaForTurn(contract: DialogueTurnContract)
         ...consensusRedactionItems,
         properties: {
           ...consensusRedactionItems.properties,
-          value: {
-            ...consensusRedactionItems.properties.value,
-            pattern: '^(?!\\s*(?:[Aa][Pp][Pp]|[Pp][Rr][Oo][Dd][Uu][Cc][Tt])[_ -]?[Nn][Aa][Mm][Ee]\\s*$)[^\\[<{].*$'
-          },
+          value: consensusRedactionItems.properties.value,
           label: { type: 'string', enum: ['app name', 'product name'] }
         }
       }

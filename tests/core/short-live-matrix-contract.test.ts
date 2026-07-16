@@ -10,6 +10,7 @@ const openMediumFixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'sh
 const codexEffortOpenFixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-codex-effort-open-v1.json')
 const solFableOpenFixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-sol-fable-2x2-open-v1.json')
 const solFableOpenV2Fixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-sol-fable-2x2-open-v2.json')
+const solFableOpenV3Fixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-sol-fable-2x2-open-v3.json')
 
 interface MatrixArm {
   id: string
@@ -229,6 +230,24 @@ describe('short live matrix benchmark contract', () => {
     })
   })
 
+  it('declares a fresh v3 Sol and Fable matrix after the provider-schema portability repair', async () => {
+    const result = await execute(['--suite', 'sol-fable-2x2-open-v3', '--json'])
+
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      suite: 'sol-fable-2x2-open-v3',
+      maxActiveSeconds: null,
+      trials: [1, 2],
+      arms: [
+        { id: 'duo-sol-medium-fable-medium-open-v3', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'medium' }, claude: { model: 'fable', effort: 'medium' } },
+        { id: 'duo-sol-medium-fable-max-open-v3', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'medium' }, claude: { model: 'fable', effort: 'max' } },
+        { id: 'duo-sol-max-fable-medium-open-v3', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'max' }, claude: { model: 'fable', effort: 'medium' } },
+        { id: 'duo-sol-max-fable-max-open-v3', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'max' }, claude: { model: 'fable', effort: 'max' } }
+      ]
+    })
+  })
+
   it.each([
     ['live without quota acknowledgement', ['--live', '--arm', 'codex-terra-low-solo', '--trial', '1']],
     ['quota acknowledgement without live', ['--i-understand-this-uses-local-cli-quota', '--arm', 'codex-terra-low-solo', '--trial', '1']],
@@ -370,7 +389,8 @@ describe('short live matrix benchmark contract', () => {
   it.each([
     ['codex-effort-open-v1', codexEffortOpenFixture],
     ['sol-fable-2x2-open-v1', solFableOpenFixture],
-    ['sol-fable-2x2-open-v2', solFableOpenV2Fixture]
+    ['sol-fable-2x2-open-v2', solFableOpenV2Fixture],
+    ['sol-fable-2x2-open-v3', solFableOpenV3Fixture]
   ])('pins %s to the canonical task, improved judge, and open supervisor runtime', async (suiteId, fixturePath) => {
     const { activeWallMilliseconds, assertCanonicalPrompt, loadManifest } = await harness()
     const canonical = await loadManifest('premium-medium-open')
