@@ -128,7 +128,7 @@ function structuredOutputPrompt(
 ): string {
   const label = kind === 'structured-recovery' ? 'recovery capsule' : 'dialogue capsule'
   const transport = agent === 'claude'
-    ? `Return exactly one ${label} by submitting StructuredOutput once with every schema field at the tool-input root. Never wrap the schema fields under \`value\`, \`output\`, or \`payload\`, and never serialize the object into a string.`
+    ? `Return exactly one valid ${label} by submitting StructuredOutput with every schema field at the tool-input root. Never wrap the schema fields under \`value\`, \`output\`, or \`payload\`, and never serialize the object into a string. If schema validation rejects the first submission, immediately correct and resubmit once. Do not call anything else.`
     : `Return exactly one ${label} that satisfies the supplied JSON schema.`
   return `${transport}
 Do not inspect, edit, or run workspace tools. Do not read files, execute commands, browse, or start a tool loop.
@@ -268,7 +268,10 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
       ...preapprovedSourceTools,
       ...sessionArgs,
       ...(dialoguePolicy ? ['--tools', '', '--json-schema', JSON.stringify(dialoguePolicy.outputSchema)] : []),
-      ...(dialoguePolicy ? ['--max-turns', '1'] : []),
+      // One response plus one provider-internal schema correction. Real tools
+      // remain disabled, the session stays ephemeral, and the orchestrator
+      // still accepts only one strictly validated capsule.
+      ...(dialoguePolicy ? ['--max-turns', '2'] : []),
       ...(sourcePolicy?.toolPolicy === 'workspace-essential' && lockedClaudeContext
         ? ['--tools', input.executionMode === 'safe' ? 'Read,Glob,Grep,Edit,Write' : 'Read,Glob,Grep,Edit,Write,Bash']
         : []),

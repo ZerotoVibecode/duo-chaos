@@ -148,7 +148,7 @@ describe('simulation orchestration', () => {
 
   it('runs the complete equal-agent Real Mode schedule with deterministic fake CLIs', async () => {
     const root = await mkdtemp(join(tmpdir(), 'duo-orchestrator-real-'))
-    const fakeRunner = new FakeProcessRunner()
+    const fakeRunner = new RuntimeProvenanceProcessRunner()
     const orchestrator = new RunOrchestrator({
       getSettings: () => Promise.resolve({
         ...defaultSettings(root),
@@ -188,6 +188,20 @@ describe('simulation orchestration', () => {
       codex: { model: 'gpt-5.6-sol', effort: 'max', source: 'studio' },
       claude: { model: 'fable', effort: 'high', source: 'studio' }
     })
+    expect(locked?.providerRuntimes).toMatchObject({
+      claude: {
+        model: 'claude-fable-5',
+        effort: 'high',
+        source: 'claude-system-init'
+      },
+      codex: {
+        model: 'gpt-5.6-sol',
+        effort: 'max',
+        source: 'codex-thread-started'
+      }
+    })
+    const durable = JSON.parse(await readFile(join(result.workspacePath, '.duo', 'run-manifest.json'), 'utf8')) as Record<string, unknown>
+    expect(durable).toMatchObject({ providerRuntimes: locked?.providerRuntimes })
     expect(fakeRunner.commands.find((command) => command.bin === 'codex')?.args).toContain('gpt-5.6-sol')
     expect(fakeRunner.commands.find((command) => command.bin === 'claude')?.args).toContain('fable')
     const claudeCommand = fakeRunner.commands.find((command) => command.bin === 'claude')
@@ -840,6 +854,16 @@ class FakeProcessRunner implements ProcessRunnerPort {
 
   cancelAll(): Promise<void> {
     return Promise.resolve()
+  }
+}
+
+class RuntimeProvenanceProcessRunner extends FakeProcessRunner {
+  override async run(options: ProcessRunOptions): Promise<ProcessRunResult> {
+    const agent = options.id.includes('claude') ? 'claude' : 'codex'
+    options.onLine('stdout', JSON.stringify(agent === 'claude'
+      ? { type: 'system', subtype: 'init', model: 'claude-fable-5', effort: 'high' }
+      : { type: 'thread.started', model: 'gpt-5.6-sol', reasoning_effort: 'max' }))
+    return await super.run(options)
   }
 }
 

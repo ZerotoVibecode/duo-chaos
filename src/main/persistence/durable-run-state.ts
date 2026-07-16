@@ -28,6 +28,13 @@ const loadoutSchema = z.object({
   resolvedEffort: z.string().trim().min(1).max(64).optional()
 }).strict()
 
+const providerRuntimeObservationSchema = z.object({
+  model: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
+  source: z.enum(['claude-system-init', 'codex-thread-started']),
+  recordedAt: timestampSchema
+}).strict().refine((value) => Boolean(value.model || value.effort), 'Observed runtime requires a model or effort.')
+
 const capabilitySchema = z.object({
   adapterVersion: z.string().trim().min(1).max(128),
   cliVersion: z.string().trim().min(1).max(128),
@@ -121,6 +128,12 @@ export const durableRunManifestSchema = z.object({
     claude: z.string().trim().min(1).max(256).optional(),
     codex: z.string().trim().min(1).max(256).optional()
   }).strict(),
+  // Optional so manifests written before provider-observed runtime provenance
+  // remain restart-compatible.
+  providerRuntimes: z.object({
+    claude: providerRuntimeObservationSchema.optional(),
+    codex: providerRuntimeObservationSchema.optional()
+  }).strict().optional(),
   evidence: z.object({
     acceptedCodeAgents: uniqueAgentsSchema,
     acceptedReviewAgents: uniqueAgentsSchema,

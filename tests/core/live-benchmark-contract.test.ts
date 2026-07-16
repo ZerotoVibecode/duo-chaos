@@ -34,7 +34,7 @@ interface LiveBenchmarkHarness {
     environment: NodeJS.ProcessEnv
   ) => Promise<void>
   waitForTerminalSnapshot: (options: {
-    timeoutMs: number
+    timeoutMs?: number
     pollMs?: number
     readSnapshot: () => Promise<RunSnapshot | undefined>
     stopRun: () => Promise<unknown>
@@ -196,6 +196,24 @@ describe('opt-in live Duo benchmark contract', () => {
 
     expect(result).toEqual({ snapshot: undefined, timedOut: true })
     expect(stopped).toBe(true)
+  })
+
+  it('can wait for a terminal supervisor result without imposing a harness wall', async () => {
+    const { waitForTerminalSnapshot } = await harness()
+    const terminal = passingSnapshot()
+    let reads = 0
+    let stopped = false
+    const result = await waitForTerminalSnapshot({
+      pollMs: 1,
+      readSnapshot: () => Promise.resolve(reads++ === 0 ? undefined : terminal),
+      stopRun: () => {
+        stopped = true
+        return Promise.resolve()
+      }
+    })
+
+    expect(result).toEqual({ snapshot: terminal, timedOut: false })
+    expect(stopped).toBe(false)
   })
 
   it('force-terminates the Electron process tree when graceful benchmark shutdown exceeds its deadline', async () => {

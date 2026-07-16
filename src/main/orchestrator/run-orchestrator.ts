@@ -33,6 +33,10 @@ import { checkAllTools } from '@main/health/health-check'
 import { resolveAgentRuntimeProfiles } from '@main/health/runtime-profile'
 import { buildAgentCommand } from '@main/process/command-builder'
 import { extractAgentSessionId } from '@main/process/session-continuity'
+import {
+  extractProviderRuntimeObservation,
+  sameProviderRuntimeObservation
+} from '@main/process/runtime-provenance'
 import { decodeProviderEnvelope, type ProviderRecord } from '@main/process/provider-envelope'
 import { repairMojibake } from '@main/text/repair-mojibake'
 import {
@@ -143,6 +147,7 @@ import {
   dialogueCapsuleJsonSchemaForTurn,
   DialogueCapsuleError,
   extractDialogueCapsuleFromCliLine,
+  readAccumulatedDialogueRedactions,
   selectDialogueStatementForTurn,
   validateDialogueCapsuleForTurn,
   writeDialogueCapsuleProtocol,
@@ -957,6 +962,7 @@ export class RunOrchestrator {
         workspacePath: workspace.workspacePath,
         appPath: workspace.appPath,
         agentRuntimes,
+        providerRuntimes: {},
         tasks: [],
         events: []
       },
@@ -1585,6 +1591,10 @@ export class RunOrchestrator {
             qualityCeiling: manifest.loadout.codex.requestedEffort ?? manifest.loadout.codex.resolvedEffort ?? 'default'
           }
         }
+        const providerRuntimes: RunSnapshot['providerRuntimes'] = {
+          ...(manifest.providerRuntimes?.claude ? { claude: manifest.providerRuntimes.claude } : {}),
+          ...(manifest.providerRuntimes?.codex ? { codex: manifest.providerRuntimes.codex } : {})
+        }
         const request: StartRunRequest = {
           ...manifest.request,
           codexModel: manifest.loadout.codex.requestedModel ?? manifest.loadout.codex.resolvedModel ?? '',
@@ -1629,6 +1639,7 @@ export class RunOrchestrator {
             workspacePath,
             appPath: join(workspacePath, 'app'),
             agentRuntimes,
+            providerRuntimes,
             ...(manifest.usageGuard ? { usageGuard: manifest.usageGuard } : {}),
             ...(legacy.releaseStatus === 'ready' || legacy.releaseStatus === 'partial' || legacy.releaseStatus === 'failed'
               ? { releaseStatus: legacy.releaseStatus }
@@ -2092,6 +2103,7 @@ export class RunOrchestrator {
       activeTurnIndex: session.activeTurnIndex,
       releaseStatus: session.snapshot.releaseStatus ?? null,
       agentUsage,
+      providerRuntimes: session.snapshot.providerRuntimes ?? null,
       providerSessions: session.providerSessions,
       resumeRecoveryOriginStage: session.resumeRecoveryOriginStage ?? null,
       resumeRecoveryReasons: session.resumeRecoveryReasons ?? null,
@@ -2121,6 +2133,7 @@ export class RunOrchestrator {
         round: session.snapshot.round,
         totalTurns: session.snapshot.totalTurns,
         agentUsage,
+        providerRuntimes: session.snapshot.providerRuntimes ?? {},
         activeTurnIndex: session.activeTurnIndex,
         activeTimeMs: session.accumulatedActiveMs + (session.activeSinceMs > 0
           ? Math.max(0, this.nowMs() - session.activeSinceMs)
@@ -2283,6 +2296,9 @@ export class RunOrchestrator {
         ...(session.snapshot.turnStage ? { stageReceipt: session.snapshot.turnStage } : {})
       },
       providerSessions: { ...session.providerSessions },
+      ...(session.snapshot.providerRuntimes && Object.keys(session.snapshot.providerRuntimes).length > 0
+        ? { providerRuntimes: { ...session.snapshot.providerRuntimes } }
+        : {}),
       evidence: {
         acceptedCodeAgents: [...session.acceptedCodeAgents],
         acceptedReviewAgents: [...session.acceptedReviewAgents],
@@ -3343,6 +3359,18 @@ export class RunOrchestrator {
         session.providerSessions[turn.agent] = discovered
         void this.persistRunState(session).catch(() => undefined)
       }
+      const runtimeObservation = extractProviderRuntimeObservation(turn.agent, line)
+      if (runtimeObservation && !sameProviderRuntimeObservation(
+        session.snapshot.providerRuntimes?.[turn.agent],
+        runtimeObservation
+      )) {
+        session.snapshot.providerRuntimes = {
+          ...session.snapshot.providerRuntimes,
+          [turn.agent]: runtimeObservation
+        }
+        this.publishSnapshot(session)
+        void this.persistRunState(session).catch(() => undefined)
+      }
       const quota = parseCliQuotaSignal(line)
       if (quota?.status === 'allowed_warning' && (quota.utilization ?? 0) >= 0.82) {
         session.providerPressure[turn.agent] = quota
@@ -3474,6 +3502,18 @@ export class RunOrchestrator {
         session.providerSessions[turn.agent] = replaySession
         void this.persistRunState(session).catch(() => undefined)
       }
+      const replayRuntimeObservation = extractProviderRuntimeObservation(turn.agent, replayEnvelope)
+      if (replayRuntimeObservation && !sameProviderRuntimeObservation(
+        session.snapshot.providerRuntimes?.[turn.agent],
+        replayRuntimeObservation
+      )) {
+        session.snapshot.providerRuntimes = {
+          ...session.snapshot.providerRuntimes,
+          [turn.agent]: replayRuntimeObservation
+        }
+        this.publishSnapshot(session)
+        void this.persistRunState(session).catch(() => undefined)
+      }
       const replayQuota = parseCliQuotaSignal(replayEnvelope)
       if (replayQuota?.status === 'rejected') {
         quotaRejected = true
@@ -3583,10 +3623,13 @@ export class RunOrchestrator {
           throw new DialogueCapsuleError('Structured dialogue attempted workspace tool activity.')
         }
         const proposedTaskOwners = dialogueCapsule.tasks.map((task) => task.claimedBy)
+        const accumulatedRedactions = turn.phase === 'round.consensus'
+          ? await readAccumulatedDialogueRedactions(session.workspace.workspacePath)
+          : []
         const validatedCapsule = validateDialogueCapsuleForTurn(dialogueCapsule, {
           kind: turn.kind,
           phase: turn.phase
-        })
+        }, { accumulatedRedactions })
         let supervisorProvenance: ConsensusProvenanceRecord | undefined
         if (validatedCapsule.consensus) {
           const immutablePitches = await session.proofStore.readPitches(session.snapshot.runId)
@@ -3841,9 +3884,9 @@ export class RunOrchestrator {
       providerFailure?.kind === 'cli-incompatible' && providerFailure.source === 'process' &&
       isExpectedClaudeStructuredMaxTurnClosure(turn.agent, stageProviderRecords, result)
     if (expectedStructuredMaxTurnClosure && activeProcessId) {
-      // Claude may close a deliberately one-turn structured call with
-      // error_max_turns even though its single strict StructuredOutput tool
-      // payload was accepted. Reconcile only that exact canonical closure;
+      // Claude may close a deliberately bounded structured call with
+      // error_max_turns even though one strict StructuredOutput payload was
+      // accepted. Reconcile only that exact canonical closure;
       // output-limit, raw-log, timeout, host, and generic CLI failures remain
       // real safety boundaries.
       session.usageTracker.finishCall(turn.agent, activeProcessId, 'complete')

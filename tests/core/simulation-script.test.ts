@@ -49,6 +49,25 @@ describe('simulation script', () => {
     expect(Math.max(...script.map((step) => step.event.round))).toBe(8)
   })
 
+  it('records typed synthetic Duo-quality proof only for the successful surprise rehearsal', () => {
+    const surprise = buildSimulationScript('sim-quality', 'Build a surprise')
+    const quality = surprise.find((step) => step.event.topic === 'quality-evidence-state')?.event
+
+    expect(quality).toMatchObject({
+      type: 'decision',
+      agent: 'director',
+      proof: {
+        kind: 'quality-state',
+        acceptedContributionAgents: ['claude', 'codex'],
+        acceptedReviewAgents: ['claude', 'codex']
+      },
+      metadata: { synthetic: true }
+    })
+
+    const serious = buildSimulationScript('sim-quality-serious', 'Build a serious tool', 'serious')
+    expect(serious.some((step) => step.event.topic === 'quality-evidence-state')).toBe(false)
+  })
+
   it('labels a serious-profile rehearsal without pretending the requested product may be replaced', () => {
     const seriousScript = (buildSimulationScript as unknown as (
       runId: string,

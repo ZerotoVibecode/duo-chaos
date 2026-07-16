@@ -245,6 +245,32 @@ describe('supervisor consensus provenance', () => {
     })
   })
 
+  it('accepts an implicit product title before a bounded workspace-location clause', () => {
+    const pitches = [
+      {
+        pitchId: 'pitch-abcdefabcdefabcdefabcdef', runId: 'run-location-suffix', round: 1,
+        agent: 'claude' as const, title: 'Card Duel Table', idea: 'A focused route.', appeal: 'Clear.', risk: 'Scope.'
+      },
+      {
+        pitchId: 'pitch-fedcbafedcbafedcbafedcba', runId: 'run-location-suffix', round: 2,
+        agent: 'codex' as const, title: 'Replayable Duel Ledger', idea: 'A tested route.', appeal: 'Stable.', risk: 'Scope.'
+      }
+    ]
+
+    expect(resolveConsensusProvenance({
+      runId: 'run-location-suffix',
+      appName: 'Decision Deck',
+      humanBrief: 'Build a polished dependency-free single-page Decision Deck in this empty workspace.',
+      qualityBriefFingerprint: 'quality:location-suffix',
+      selectedSourcePitchIds: pitches.map((pitch) => pitch.pitchId),
+      pitches
+    })).toMatchObject({
+      selectionMode: 'human-named-synthesis',
+      sourcePitchIds: pitches.map((pitch) => pitch.pitchId),
+      sourceAgents: ['claude', 'codex']
+    })
+  })
+
   it('does not confuse unrelated placeholder UI copy with naming ambiguity', () => {
     const pitches = [
       {

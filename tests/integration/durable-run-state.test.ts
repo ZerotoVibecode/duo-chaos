@@ -99,6 +99,20 @@ function manifest(overrides: Partial<DurableRunManifest> = {}): DurableRunManife
       claude: '11111111-1111-4111-8111-111111111111',
       codex: '22222222-2222-4222-8222-222222222222'
     },
+    providerRuntimes: {
+      claude: {
+        model: 'claude-fable-5',
+        effort: 'max',
+        source: 'claude-system-init',
+        recordedAt: '2026-07-11T12:00:30.000Z'
+      },
+      codex: {
+        model: 'gpt-sol',
+        effort: 'max',
+        source: 'codex-thread-started',
+        recordedAt: '2026-07-11T12:00:35.000Z'
+      }
+    },
     evidence: {
       acceptedCodeAgents: ['claude'],
       acceptedReviewAgents: [],
@@ -305,6 +319,19 @@ describe('DurableRunStateStore', () => {
     await writeFile(store.manifestPath, `${JSON.stringify(legacy)}\n`, 'utf8')
 
     await expect(store.readManifest()).resolves.toMatchObject({ request: { missionProfile: 'surprise' } })
+  })
+
+  test('accepts an older manifest without provider runtime observations', async () => {
+    const root = await temporaryRoot()
+    const store = new DurableRunStateStore(root, {
+      runId: 'duo-run-fixture-a1b2',
+      workspaceId: 'workspace-fixture-a1b2'
+    })
+    const legacy = JSON.parse(JSON.stringify(manifest())) as Record<string, unknown>
+    delete legacy.providerRuntimes
+    await writeFile(store.manifestPath, `${JSON.stringify(legacy)}\n`, 'utf8')
+
+    await expect(store.readManifest()).resolves.not.toHaveProperty('providerRuntimes')
   })
 
   test('rejects a manifest or journal belonging to another run or workspace', async () => {

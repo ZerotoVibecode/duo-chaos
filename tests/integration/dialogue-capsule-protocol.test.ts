@@ -7,6 +7,7 @@ import {
   dialogueCapsuleJsonSchemaForTurn,
   extractDialogueCapsuleFromCliLine,
   parseDialogueCapsule,
+  readAccumulatedDialogueRedactions,
   validateDialogueCapsuleForTurn,
   writeDialogueCapsuleProtocol
 } from '../../src/main/orchestrator/dialogue-capsule'
@@ -100,7 +101,20 @@ describe('dialogue capsule contract', () => {
     expect(consensusSchema.properties.tasks).toMatchObject({ minItems: 2, maxItems: 2 })
     const consensusContract = consensusSchema.properties.consensus as {
       required?: unknown
-      properties?: { sourcePitchIds?: unknown }
+      properties?: {
+        sourcePitchIds?: Record<string, unknown>
+        appName?: { pattern?: string }
+        redactions?: {
+          minItems?: number
+          maxItems?: number
+          items?: {
+            properties?: {
+              label?: Record<string, unknown>
+              value?: { pattern?: string }
+            }
+          }
+        }
+      }
     }
     expect(consensusSchema.properties.consensus).toMatchObject({ type: 'object' })
     expect(consensusContract.required).toEqual(expect.arrayContaining(['sourcePitchIds']))
@@ -112,6 +126,26 @@ describe('dialogue capsule contract', () => {
     // still rejected by the supervisor after parsing, outside the provider's
     // deliberately restricted response-schema dialect.
     expect(consensusContract.properties?.sourcePitchIds).not.toHaveProperty('uniqueItems')
+    expect(consensusContract.properties?.appName).toMatchObject({
+      pattern: '^(?!\\s*(?:[Aa][Pp][Pp]|[Pp][Rr][Oo][Dd][Uu][Cc][Tt])[_ -]?[Nn][Aa][Mm][Ee]\\s*$)[^\\[<{].*$'
+    })
+    expect(consensusContract.properties?.redactions).toMatchObject({
+      minItems: 1,
+      maxItems: 1,
+      items: {
+        properties: {
+          label: { enum: ['app name', 'product name'] },
+          value: { pattern: '^(?!\\s*(?:[Aa][Pp][Pp]|[Pp][Rr][Oo][Dd][Uu][Cc][Tt])[_ -]?[Nn][Aa][Mm][Ee]\\s*$)[^\\[<{].*$' }
+        }
+      }
+    })
+    const appNamePattern = consensusContract.properties?.appName?.pattern
+    expect(appNamePattern).toBeTypeOf('string')
+    const appNameMatcher = new RegExp(appNamePattern!)
+    expect(['[APP_NAME]', '<product_name>', '{{ app name }}', 'APP_NAME', 'app_name', 'product name']
+      .every((value) => !appNameMatcher.test(value))).toBe(true)
+    expect(['Decision Deck', 'Ørbital Garden', 'Signal_Garden']
+      .every((value) => appNameMatcher.test(value))).toBe(true)
     expect(consensusSchema.properties.tasks.items.properties.claimedBy.enum).toEqual(['claude', 'codex'])
 
     const critiqueSchema = dialogueCapsuleJsonSchemaForTurn({ kind: 'critique', phase: 'round.critique' })
@@ -650,6 +684,90 @@ describe('dialogue capsule contract', () => {
       kind: 'critique',
       phase: 'round.consensus'
     })).toThrow(/ambiguous|app.name/i)
+  })
+
+  it('recovers one placeholder consensus from the preserved private app-name dictionary without another provider call', async () => {
+    const workspacePath = await protocolWorkspace('duo-dialogue-placeholder-recovery-')
+    const pitchCapsule = parseDialogueCapsule({
+      ...capsule,
+      tasks: [],
+      pitches: [
+        { title: 'Editorial Card Table', idea: 'A focused comparison arena.', appeal: 'Legible.', risk: 'Spacing.' },
+        { title: 'Decision Ledger', idea: 'A visible comparison ledger.', appeal: 'Traceable.', risk: 'Bias.' }
+      ],
+      redactions: [
+        ...capsule.redactions,
+        { value: 'Decision Deck', label: 'chosen app name' }
+      ]
+    })
+    await writeDialogueCapsuleProtocol({
+      workspacePath,
+      runId: 'duo-run-placeholder-recovery',
+      round: 1,
+      agent: 'codex',
+      targetAgent: 'claude',
+      claimKey: 'shared-direction',
+      contract: { kind: 'pitch', phase: 'round.pitch' },
+      capsule: pitchCapsule
+    })
+
+    const providerConsensus = parseDialogueCapsule({
+      ...capsule,
+      pitches: [],
+      tasks: [
+        { ...capsule.tasks[0], id: 'logic-and-tests', claimedBy: 'claude' },
+        { ...capsule.tasks[0], id: 'arena-ui-shell', claimedBy: 'codex' }
+      ],
+      consensus: {
+        appName: '[APP_NAME]',
+        sourcePitchIds: [],
+        idea: 'A focused comparison arena.',
+        summary: 'A deterministic local comparison tool.',
+        spec: 'Build and verify the complete comparison interaction.',
+        redactions: [{ value: 'blind progress rail', label: 'mechanic' }]
+      },
+      redactions: [{ value: 'blind progress rail', label: 'mechanic' }]
+    })
+    const accumulatedRedactions = await readAccumulatedDialogueRedactions(workspacePath)
+    const validated = validateDialogueCapsuleForTurn(providerConsensus, {
+      kind: 'consensus',
+      phase: 'round.consensus'
+    }, { accumulatedRedactions })
+
+    expect(validated.consensus?.appName).toBe('Decision Deck')
+    expect(validated.redactions).toContainEqual({ value: 'Decision Deck', label: 'app name' })
+    expect(validated.consensus?.redactions).toContainEqual({ value: 'Decision Deck', label: 'app name' })
+  })
+
+  it('never invents a private consensus name when preserved app-name evidence is absent or ambiguous', () => {
+    const placeholderConsensus = parseDialogueCapsule({
+      ...capsule,
+      pitches: [],
+      tasks: [
+        { ...capsule.tasks[0], id: 'task-one', claimedBy: 'claude' },
+        { ...capsule.tasks[0], id: 'task-two', claimedBy: 'codex' }
+      ],
+      consensus: {
+        appName: '[APP_NAME]',
+        sourcePitchIds: [],
+        idea: 'A focused private direction.',
+        summary: 'A deterministic private result.',
+        spec: 'Build and verify the complete private interaction.',
+        redactions: [{ value: 'hidden mechanic', label: 'feature' }]
+      },
+      redactions: [{ value: 'hidden mechanic', label: 'feature' }]
+    })
+    const contract = { kind: 'consensus' as const, phase: 'round.consensus' as const }
+
+    expect(() => validateDialogueCapsuleForTurn(placeholderConsensus, contract, {
+      accumulatedRedactions: []
+    })).toThrow(/exactly one private app-name term/i)
+    expect(() => validateDialogueCapsuleForTurn(placeholderConsensus, contract, {
+      accumulatedRedactions: [
+        { value: 'Decision Deck', label: 'chosen app name' },
+        { value: 'Focus Field', label: 'private product name' }
+      ]
+    })).toThrow(/exactly one private app-name term/i)
   })
 
   it('rejects a trivial task paired with a core task but accepts similarly material source contracts', () => {

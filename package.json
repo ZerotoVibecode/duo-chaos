@@ -31,6 +31,8 @@
     "benchmark:receipts": "node scripts/benchmark-run-receipts.mjs",
     "benchmark:quality": "node scripts/benchmark-quality-per-token.mjs",
     "benchmark:live": "node scripts/benchmark-live-duo.mjs",
+    "benchmark:matrix": "node scripts/benchmark-short-matrix.mjs",
+    "benchmark:matrix:judge": "node scripts/judge-short-benchmark.mjs",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "icons": "node scripts/generate-icon.mjs",

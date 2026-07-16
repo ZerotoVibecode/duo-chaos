@@ -155,7 +155,29 @@ function briefExplicitlyNamesProduct(humanBrief: string | undefined, appName: st
     normalizedWords(word).split(' ').some((part) => productShapes.has(part))
   )
   const titleConnector = new Set(['and', 'for', 'of', 'the', 'to', 'vs'])
+  const audienceConnector = new Set([
+    'at', 'by', 'for', 'helping', 'serving', 'targeting', 'that', 'used',
+    'using', 'where', 'which', 'with'
+  ])
   const isTitleWord = (word: string): boolean => /^(?:\p{Lu}[\p{L}\p{N}'\u2019-]*|\p{N}[\p{L}\p{N}'\u2019-]*)$/u.test(word)
+  const normalizedNameWords = name.split(' ').filter(Boolean)
+  const locationSuffix = new Set(['in', 'inside', 'on', 'within'])
+  const exactTitleSequence = sentenceWords.some((_, start) => {
+    if (normalizedNameWords.length === 0 || start + normalizedNameWords.length > sentenceWords.length) return false
+    const candidateWords = sentenceWords.slice(start, start + normalizedNameWords.length)
+    if (candidateWords.map(normalizedWords).join(' ') !== name || !candidateWords.every((word) =>
+      isTitleWord(word) || titleConnector.has(normalizedWords(word))
+    )) return false
+    const precedingWord = start > 0 ? normalizedWords(sentenceWords[start - 1]!) : ''
+    if (audienceConnector.has(precedingWord)) return false
+    const anchoredToShape = candidateWords.some((word) =>
+      normalizedWords(word).split(' ').some((part) => productShapes.has(part))
+    ) || precedingWord.split(' ').some((part) => productShapes.has(part))
+    if (!anchoredToShape) return false
+    const followingWord = sentenceWords[start + normalizedNameWords.length]
+    return followingWord === undefined || locationSuffix.has(normalizedWords(followingWord))
+  })
+  if (Boolean(directBuild) && hasProductShape && !isAmbiguous && exactTitleSequence) return true
   let titleStart = sentenceWords.length
   let sawTitleWord = false
   for (let index = sentenceWords.length - 1; index >= 0; index -= 1) {
@@ -178,10 +200,6 @@ function briefExplicitlyNamesProduct(humanBrief: string | undefined, appName: st
     break
   }
   const precedingWord = titleStart > 0 ? normalizedWords(sentenceWords[titleStart - 1]!) : ''
-  const audienceConnector = new Set([
-    'at', 'by', 'for', 'helping', 'serving', 'targeting', 'that', 'used',
-    'using', 'where', 'which', 'with'
-  ])
   const impliedTitleWords = sentenceWords.slice(titleStart)
   const titleContainsProductShape = impliedTitleWords.some((word) =>
     normalizedWords(word).split(' ').some((part) => productShapes.has(part))

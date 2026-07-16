@@ -198,6 +198,8 @@ describe('turn stage prompts', () => {
     expect(prompt).toContain('pitch-111111111111111111111111 | claude | Bloom Board')
     expect(prompt).toContain('pitch-222222222222222222222222 | codex | Focus Field')
     expect(prompt).toMatch(/sourcePitchIds.*exact.*(?:one or two|1-2)/is)
+    expect(prompt).toMatch(/appName.*real private product name.*never.*\[APP_NAME\]/isu)
+    expect(prompt).toMatch(/consensus\.redactions.*exactly one.*(?:app name|product name)/isu)
     expect(prompt).toMatch(/every task file boundary.*app\//isu)
   })
 

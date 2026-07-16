@@ -1,4 +1,4 @@
-import type { AgentRuntimeProfile } from '@shared/types'
+import type { AgentRuntimeProfile, ProviderRuntimeObservation } from '@shared/types'
 
 const MODEL_LABELS: Record<string, string> = {
   'gpt-5.6-sol': 'Sol',
@@ -31,4 +31,31 @@ export function formatRuntimeProfile(runtime?: AgentRuntimeProfile): string {
   if (!runtime) return 'CLI default'
   const model = formatModelLabel(runtime.model ?? '')
   return runtime.effort ? `${model} · ${EFFORT_LABELS[runtime.effort]}` : model
+}
+
+/**
+ * AgentRuntimeProfile records the runtime Duo asked the local CLI to use. It
+ * is not proof of the runtime the provider ultimately served, so keep that
+ * provenance explicit anywhere the profile is shown.
+ */
+export function formatRuntimeRequest(runtime?: AgentRuntimeProfile): string {
+  const profile = formatRuntimeProfile(runtime)
+  return `${formatRuntimeRequestSource(runtime)}: ${profile}`
+}
+
+export function formatRuntimeRequestSource(runtime?: AgentRuntimeProfile): string {
+  if (!runtime || runtime.source === 'cli-default') return 'Requested via CLI default'
+  if (runtime.source === 'cli-config') return 'Requested via CLI config'
+  return 'Requested'
+}
+
+export function formatRuntimeObservation(input: { observation?: ProviderRuntimeObservation; simulation: boolean }): string {
+  if (input.simulation) return 'Simulation · no provider runtime'
+  if (!input.observation) return 'Provider runtime not recorded by Duo'
+  const profile = formatRuntimeProfile({
+    model: input.observation.model,
+    ...(input.observation.effort ? { effort: input.observation.effort } : {}),
+    source: 'studio'
+  })
+  return `Provider observed: ${profile}`
 }

@@ -36,6 +36,9 @@
     "scripts/benchmark-run-receipts.mjs",
     "scripts/benchmark-quality-per-token.mjs",
     "scripts/benchmark-live-duo.mjs",
+    "scripts/benchmark-short-matrix.mjs",
+    "scripts/judge-short-benchmark.mjs",
+    "tests/fixtures/benchmarks/short-judge/**/*.mjs",
     "playwright.config.ts"
   ]
 }

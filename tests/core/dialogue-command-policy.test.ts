@@ -61,21 +61,23 @@ function valueAfter(args: string[], flag: string): string | undefined {
 }
 
 describe('structured tool-free dialogue command policy', () => {
-  it('runs Claude as one schema-constrained response with every tool disabled and no persistent session', () => {
+  it('gives Claude one bounded schema-correction turn with every tool disabled and no persistent session', () => {
     const command = buildAgentCommand(input('claude'))
 
     expect(valueAfter(command.args, '--output-format')).toBe('json')
     expect(valueAfter(command.args, '--tools')).toBe('')
     expect(valueAfter(command.args, '--json-schema')).toBe(JSON.stringify(dialogueSchema))
-    expect(valueAfter(command.args, '--max-turns')).toBe('1')
+    expect(valueAfter(command.args, '--max-turns')).toBe('2')
     expect(command.args).toContain('--no-session-persistence')
     expect(command.args).toContain('--exclude-dynamic-system-prompt-sections')
     expect(valueAfter(command.args, '--prompt-suggestions')).toBe('false')
     expect(command.args).not.toContain('--session-id')
     expect(command.args).not.toContain('--resume')
-    expect(command.stdin).toContain('Return exactly one dialogue capsule')
+    expect(command.stdin).toContain('Return exactly one valid dialogue capsule')
     expect(command.stdin).toContain('Do not inspect, edit, or run workspace tools')
     expect(command.stdin).toContain('Never wrap the schema fields under `value`, `output`, or `payload`')
+    expect(command.stdin).toContain('If schema validation rejects the first submission')
+    expect(command.stdin).toContain('correct and resubmit once')
   })
 
   it('runs Codex with an output schema, read-only sandbox, ephemeral context, and an explicit no-workspace contract', () => {
@@ -132,7 +134,8 @@ describe('structured tool-free dialogue command policy', () => {
     if (agent === 'claude') {
       expect(valueAfter(command.args, '--tools')).toBe('')
       expect(command.args).toContain('--no-session-persistence')
-      expect(command.stdin).toContain('Return exactly one recovery capsule')
+      expect(valueAfter(command.args, '--max-turns')).toBe('2')
+      expect(command.stdin).toContain('Return exactly one valid recovery capsule')
     } else {
       expect(valueAfter(command.args, '--sandbox')).toBe('read-only')
       expect(command.args.some((value, index) => value === '--disable' && command.args[index + 1] === 'shell_tool')).toBe(true)

@@ -25,6 +25,8 @@ export default defineConfig({
       'release/**',
       'coverage/**',
       'test-results/**',
+      'benchmark-results/**',
+      'tests/fixtures/**',
       'workspaces/**',
       'runs/**',
       '.duo/**',

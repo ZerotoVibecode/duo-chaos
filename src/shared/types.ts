@@ -57,6 +57,20 @@ export interface AgentRuntimeProfile {
   qualityCeiling?: string
 }
 
+export type ProviderRuntimeEvidenceSource = 'claude-system-init' | 'codex-thread-started'
+
+/**
+ * Runtime identity explicitly reported by an allowlisted provider init event.
+ * This is intentionally separate from AgentRuntimeProfile, which describes
+ * the local CLI configuration Duo requested.
+ */
+export interface ProviderRuntimeObservation {
+  model?: string
+  effort?: Exclude<CodexEffort, 'default'>
+  source: ProviderRuntimeEvidenceSource
+  recordedAt: string
+}
+
 export interface AgentUsageTotals {
   processedInputTokens: number
   cachedInputTokens: number
@@ -409,6 +423,7 @@ export interface RunSnapshot {
   activeAgent?: AgentId
   turnStage?: TurnStageSnapshot
   agentRuntimes?: Partial<Record<Extract<AgentId, 'claude' | 'codex'>, AgentRuntimeProfile>>
+  providerRuntimes?: Partial<Record<Extract<AgentId, 'claude' | 'codex'>, ProviderRuntimeObservation>>
   agentUsage?: AgentUsageSnapshot
   usageGuard?: ProviderUsageGuardSnapshot
   pause?: RunPauseSnapshot

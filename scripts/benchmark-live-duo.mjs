@@ -370,7 +370,8 @@ async function waitForTerminalSnapshot({ readSnapshot, stopRun, timeoutMs, pollM
     operation,
     new Promise((_, reject) => setTimeout(() => reject(new Error(message)), maximumMs))
   ])
-  const deadline = Date.now() + timeoutMs
+  const hasDeadline = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs >= 0
+  const deadline = hasDeadline ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY
   let lastSnapshot
   while (Date.now() < deadline) {
     const candidate = await bounded(readSnapshot(), 30_000, 'The Electron benchmark surface stopped responding.')

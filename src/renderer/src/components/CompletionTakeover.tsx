@@ -3,6 +3,7 @@ import type { RunSnapshot } from '@shared/types'
 import { currentVerificationPassCount } from '@shared/verification-evidence'
 import { deriveAgentContribution, deriveEvidenceMomentum, deriveUsageCompleteness } from '@renderer/lib/contributions'
 import { missionPresentation } from '@renderer/lib/mission-presentation'
+import { formatRuntimeObservation, formatRuntimeRequest } from '@renderer/lib/runtime-label'
 import { AccessibleModal } from './AccessibleModal'
 
 interface CompletionTakeoverProps {
@@ -37,18 +38,40 @@ export function CompletionTakeover({ run, busy, onReveal }: CompletionTakeoverPr
   const reviewsComplete = evidence.shared.acceptedReviews >= evidence.shared.acceptedReviewGoal
   const partial = run.releaseStatus === 'partial'
   const failed = run.releaseStatus === 'failed'
+  const artifactVerified = run.releaseStatus === 'ready' && verificationPassed
+  const duoVerified = artifactVerified && bothContributed && reviewsComplete
+  const tier = failed
+    ? 'failed'
+    : partial || !artifactVerified
+      ? 'partial'
+      : duoVerified
+        ? 'duo-verified'
+        : 'artifact-verified'
   const heading = failed
     ? 'Build stopped before full completion.'
-    : partial
+    : tier === 'partial'
       ? 'Build reached reveal with caveats.'
-      : labels.completion
-  const kicker = failed ? 'Diagnostics packet prepared' : partial ? 'Caveats documented' : run.missionProfile === 'serious' ? 'DELIVERY VERIFIED' : 'BUILD SURVIVED'
-  const action = failed || partial ? 'Inspect result' : 'Reveal app'
+      : tier === 'artifact-verified'
+        ? 'Artifact verified. Duo proof incomplete.'
+        : labels.completion
+  const kicker = failed
+    ? 'Diagnostics packet prepared'
+    : tier === 'partial'
+      ? 'Caveats documented'
+      : tier === 'artifact-verified'
+        ? 'Artifact verified'
+        : run.missionProfile === 'serious'
+          ? 'Duo delivery verified'
+          : 'Build survived'
+  const action = failed || tier === 'partial' ? 'Inspect result' : 'Reveal app'
+  const completionIcon = tier === 'duo-verified'
+    ? <Sparkles className="completion-spark" size={28} aria-hidden="true" />
+    : <ShieldCheck className="completion-spark" size={28} aria-hidden="true" />
 
   return (
     <AccessibleModal
-      layerClassName={`completion-takeover release-${run.releaseStatus ?? 'ready'}`}
-      dialogClassName="completion-terminal"
+      layerClassName={`completion-takeover release-${run.releaseStatus ?? 'unknown'} completion-layer-${tier}`}
+      dialogClassName={`completion-terminal completion-tier-${tier}`}
       labelledBy="completion-takeover-title"
     >
         <p className="sr-only" role="status" aria-live="polite">{heading} Completion evidence is ready for inspection.</p>
@@ -56,15 +79,15 @@ export function CompletionTakeover({ run, busy, onReveal }: CompletionTakeoverPr
         <div className="completion-terminal-bar"><span><i /> FINAL SIGNAL</span><span>DUO/{run.runId.slice(-8).toUpperCase()}</span></div>
         <div className="completion-core">
           <span className="completion-kicker"><RadioTower size={14} /> {kicker}</span>
-          <Sparkles className="completion-spark" size={28} aria-hidden="true" />
+          {completionIcon}
           <h1 id="completion-takeover-title">{heading}</h1>
           <p>{releaseEvent?.publicText ?? 'The agents finished the run and sealed the release packet.'}</p>
           <div className="completion-proof" aria-label="Completion proof">
             {run.tasks.length > 0 && <span><Check size={14} />{tasksDone}/{run.tasks.length} tasks complete</span>}
             {verificationPassed && <span><ShieldCheck size={14} />Verification passed</span>}
             {checkpoints > 0 && <span><GitCommitHorizontal size={14} />Final checkpoint recorded</span>}
-            {bothContributed && <span><UsersRound size={14} />2/2 accepted contributions</span>}
-            {reviewsComplete && <span><ShieldCheck size={14} />2/2 current reviews</span>}
+            <span className={bothContributed ? 'proof-pass' : 'proof-pending'}><UsersRound size={14} />{evidence.shared.acceptedContributions}/{evidence.shared.acceptedContributionGoal} accepted contributions</span>
+            <span className={reviewsComplete ? 'proof-pass' : 'proof-pending'}><ShieldCheck size={14} />{evidence.shared.acceptedReviews}/{evidence.shared.acceptedReviewGoal} current reviews</span>
             {evidence.shared.brief.available && (
               <span className={evidence.shared.brief.passed ? 'proof-pass' : 'proof-pending'}><ScrollText size={14} />{evidence.shared.brief.passed ? 'Brief constraints proved' : 'Brief proof incomplete'}</span>
             )}
@@ -76,6 +99,10 @@ export function CompletionTakeover({ run, busy, onReveal }: CompletionTakeoverPr
             <span><b>Claude</b>{claude.turns} turns · {claude.edits} edit events · {claude.messages} messages</span>
             <i />
             <span><b>Codex</b>{codex.turns} turns · {codex.edits} edit events · {codex.messages} messages</span>
+          </div>
+          <div className="completion-runtime" aria-label="Requested and observed agent runtimes">
+            <span><b>Claude runtime</b>{formatRuntimeRequest(run.agentRuntimes?.claude)}<small>{formatRuntimeObservation({ observation: run.providerRuntimes?.claude, simulation: run.executionMode === 'simulation' })}</small></span>
+            <span><b>Codex runtime</b>{formatRuntimeRequest(run.agentRuntimes?.codex)}<small>{formatRuntimeObservation({ observation: run.providerRuntimes?.codex, simulation: run.executionMode === 'simulation' })}</small></span>
           </div>
           {run.agentUsage && (
             <div className="completion-usage" aria-label="Provider-reported run usage">

@@ -42,7 +42,10 @@ test('launches a full Simulation Mode run through the reveal', async () => {
 
   const reveal = page.getByRole('button', { name: 'Reveal app' })
   await expect(reveal).toBeEnabled({ timeout: 28_000 })
-  await expect(page.getByRole('heading', { name: 'The build survived' })).toBeVisible()
+  const completion = page.getByRole('dialog', { name: /the build survived/i })
+  await expect(completion.getByRole('heading', { name: 'The build survived' })).toBeVisible()
+  await expect(completion.getByText('2/2 accepted contributions')).toBeVisible()
+  await expect(completion.getByText('2/2 current reviews')).toBeVisible()
   await expect(page.getByText('2/2 tasks complete')).toBeVisible()
   await expectMinimumFontSize(page, '.completion-core h1', 32)
   await expectMinimumFontSize(page, '.completion-proof span', 11)

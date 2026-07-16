@@ -18,6 +18,7 @@ import type {
 } from '@shared/types'
 import { releaseVerificationPassCount } from '@shared/verification-evidence'
 import { safeReadProtocolText } from '@main/workspace/safe-protocol-files'
+import { parseProviderRuntimeObservation } from '@main/process/runtime-provenance'
 
 const MAX_JSON_BYTES = 512_000
 const MAX_TIMELINE_BYTES = 4_000_000
@@ -517,6 +518,13 @@ export async function loadArchivedCompleteRunSnapshot(
       return event ? [event] : []
     })
   const run = runtime.run ?? {}
+  const persistedProviderRuntimes = recordOf(run.providerRuntimes)
+  const claudeProviderRuntime = parseProviderRuntimeObservation(persistedProviderRuntimes.claude, 'claude')
+  const codexProviderRuntime = parseProviderRuntimeObservation(persistedProviderRuntimes.codex, 'codex')
+  const providerRuntimes = {
+    ...(claudeProviderRuntime ? { claude: claudeProviderRuntime } : {}),
+    ...(codexProviderRuntime ? { codex: codexProviderRuntime } : {})
+  }
   const finishedAt = boundedText(run.finishedAt, 80) ?? summary.finishedAt
 
   return {
@@ -532,6 +540,7 @@ export async function loadArchivedCompleteRunSnapshot(
     startedAt: summary.startedAt,
     ...(finishedAt ? { finishedAt } : {}),
     ...(Number.isFinite(run.activeTimeMs) ? { activeTimeMs: positiveInteger(run.activeTimeMs, 0) } : {}),
+    ...(Object.keys(providerRuntimes).length > 0 ? { providerRuntimes } : {}),
     workspacePath: summary.workspacePath,
     appPath: resolve(summary.workspacePath, 'app'),
     releaseStatus: summary.releaseStatus ?? reveal.status,

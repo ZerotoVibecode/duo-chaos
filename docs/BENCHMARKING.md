@@ -44,6 +44,68 @@ Live outputs stay under ignored `benchmark-results/live-duo/<run-id>/`. This is 
 
 The deterministic judge is intentionally narrow. It reads only the projected supervisor snapshot and requires a ready release, current verification, all tasks complete, and accepted implementation plus reciprocal review evidence from both agents with a bounded edit ratio. It does not load fixture JavaScript, run fixture shell commands, start the generated app, or pretend to replace blinded human product review. A passing receipt is execution evidence for one condition, not proof that Duo is universally better than either CLI alone.
 
+## Short live matrix suites
+
+The short matrix holds one dependency-free offline Decision Deck task and hidden judge constant across immutable suites. The task is pinned to its preregistered canonical SHA-256, not just a handful of expected substrings, so a wording change cannot silently alter later comparisons. The historical Low diagnostic suite remains the default and retains exactly four predeclared arms: Codex Terra Low solo, Claude Sonnet Low solo, Duo Terra Low plus Sonnet Low, and Duo Terra Low plus Sonnet Medium. Its fixed contract lives in `tests/fixtures/benchmarks/live/short-matrix-decision-deck.json`.
+
+The separately preregistered `premium-medium` suite fixes exactly five arms before any of those live slots are used: Codex Sol Medium solo, Claude Fable Medium solo, Claude Opus Medium solo, Duo Sol Medium plus Fable Medium, and Duo Sol Medium plus Opus Medium. Its contract lives in `tests/fixtures/benchmarks/live/short-matrix-premium-medium.json`. Both historical suites retain their original 15-minute active-work ceiling and evidence unchanged.
+
+The immutable `premium-medium-open` continuation contains only Duo Sol Medium plus Opus Medium, uses the same exact task and judge, and has no independent harness active-work wall. It waits until the Electron supervisor records a terminal result instead of stopping productive work at 15 minutes. Its fixed supervisor safety leases are the application's published maxima: eight hours for one turn and 24 hours for the run. Provider failure, process failure, an unresponsive Electron surface, or a supervisor terminal status can therefore still preserve an incomplete result. Its contract lives in `tests/fixtures/benchmarks/live/short-matrix-premium-medium-open.json`. Its suite namespace creates fresh one-attempt slots without altering, replacing, or reopening any historical slot. Prompt, model, effort, arm, suite, and runtime overrides outside checked-in contracts are rejected.
+
+Two versioned follow-up suites reuse that canonical task, improved executable judge, and open supervisor runtime without changing any historical fixture. `codex-effort-open-v1` isolates Codex effort/model effects in the preregistered order Sol Medium, Sol Low, Terra Medium, then Sol Max. `sol-fable-2x2-open-v1` is the paired interaction study in the preregistered order Sol Medium + Fable Medium, Sol Medium + Fable Max, Sol Max + Fable Medium, then Sol Max + Fable Max. Both use trials 1 and 2, have no independent harness active-work wall, and pass `max` literally to the corresponding local CLI.
+
+```bash
+# Inspect all four arms; zero provider calls
+npm run benchmark:matrix -- --json
+
+# Inspect one exact selection; zero provider calls
+npm run benchmark:matrix -- --arm codex-terra-low-solo --trial 1 --json
+
+# Execute exactly one selected arm after explicit quota authorization
+npm run benchmark:matrix -- --live --i-understand-this-uses-local-cli-quota --arm codex-terra-low-solo --trial 1 --json
+
+# Inspect the five preregistered Medium arms; zero provider calls
+npm run benchmark:matrix -- --suite premium-medium --json
+
+# Inspect one Medium selection; zero provider calls
+npm run benchmark:matrix -- --suite premium-medium --arm codex-sol-medium-solo --trial 1 --json
+
+# Execute one explicitly selected Medium slot
+npm run benchmark:matrix -- --suite premium-medium --live --i-understand-this-uses-local-cli-quota --arm codex-sol-medium-solo --trial 1 --json
+
+# Inspect the uncapped Sol Medium plus Opus Medium continuation; zero provider calls
+npm run benchmark:matrix -- --suite premium-medium-open --json
+
+# Execute its first immutable slot without a harness active-work wall
+npm run benchmark:matrix -- --suite premium-medium-open --live --i-understand-this-uses-local-cli-quota --arm duo-sol-medium-opus-medium --trial 1 --json
+
+# Inspect the versioned Codex effort ladder; zero provider calls
+npm run benchmark:matrix -- --suite codex-effort-open-v1 --json
+
+# Execute the first Codex effort slot
+npm run benchmark:matrix -- --suite codex-effort-open-v1 --live --i-understand-this-uses-local-cli-quota --arm codex-sol-medium-solo-open-v1 --trial 1 --json
+
+# Inspect the versioned Sol/Fable 2x2; zero provider calls
+npm run benchmark:matrix -- --suite sol-fable-2x2-open-v1 --json
+
+# Execute the first Sol/Fable slot
+npm run benchmark:matrix -- --suite sol-fable-2x2-open-v1 --live --i-understand-this-uses-local-cli-quota --arm duo-sol-medium-fable-medium-open-v1 --trial 1 --json
+```
+
+Solo arms launch only the authenticated local CLI with fixed argument arrays, `shell: false`, a Core toolset, an ephemeral/no-persistence session, an allowlisted child environment, and a fresh temporary workspace. Duo arms use the Electron supervisor with the same fixed task, fresh user data, Core toolbelts, no repair loops, and no trusted local capabilities. A Duo build preflight completes before its immutable slot is reserved. Once reservation succeeds, it points to the run receipt and an unexpected executor failure still writes a terminal harness-error receipt instead of silently burning the slot. The harness never auto-resumes or retries an arm. Each suite/arm/trial slot can be attempted once, every terminal result is written below an opaque ignored `benchmark-results/short-matrix/` run ID, and generated source is preserved before temporary storage is removed.
+
+Run the three historical `premium-medium` solo arms before either Duo comparison. The `premium-medium-open` continuation exists specifically for the post-diagnostic Sol plus Opus comparison and must not be presented as a replacement for an unfavorable historical result. Trial 2 remains reserved for later replication.
+
+The arm-neutral receipt records provider-reported usage, active time, terminal status, and a static artifact contract for `index.html`, `app.js`, `logic.js`, `logic.test.mjs`, and the fixed `data-testid` hooks. That static contract never executes generated code and is not a product-quality score. Compare the sealed artifacts blindly and report failed, paused, and timed-out trials instead of rerunning only weak arms.
+
+After an arm completes, apply the same executable hidden judge to its preserved workspace:
+
+```bash
+npm run benchmark:matrix:judge -- benchmark-results/short-matrix/<run-id>/preserved-workspace
+```
+
+The judge refuses paths outside the ignored matrix-results root and refuses linked workspaces/files. It never executes agent-authored test files. It does require a substantive local `logic.test.mjs` contract, dynamically imports the authored `logic.js`, and probes a named exported function for deterministic, non-mutating behavior; empty placeholder files therefore fail. Repo-owned hidden browser checks verify exact all-left, all-right, mixed, three-option, seven-option, invalid-input, persistence, keyboard, reset, reduced-motion, and viewport behavior. The browser context disables service workers, aborts external HTTP requests, intercepts and closes every WebSocket, and records any attempted external protocol as a failure. It writes bounded facts plus screenshots beside the arm receipt.
+
 ## Quality-per-token architecture contract
 
 ```bash

@@ -362,6 +362,35 @@ export function dialogueCapsuleJsonSchemaForTurn(contract: DialogueTurnContract)
       type: 'string',
       enum: ['claude', 'codex']
     } as unknown as JsonSchemaNode
+    const consensus = structuredClone(
+      DIALOGUE_CAPSULE_JSON_SCHEMA.properties.consensus.anyOf[0]
+    ) as unknown as JsonSchemaNode
+    // Consensus is private provider output. Require the actual title here
+    // instead of a public Spoiler Shield placeholder, and reserve one
+    // dedicated redaction entry for it. Other private terms remain in the
+    // top-level redactions array.
+    consensus.properties.appName = {
+      ...consensus.properties.appName,
+      pattern: '^(?!\\s*(?:[Aa][Pp][Pp]|[Pp][Rr][Oo][Dd][Uu][Cc][Tt])[_ -]?[Nn][Aa][Mm][Ee]\\s*$)[^\\[<{].*$'
+    } as unknown as JsonSchemaNode
+    const consensusRedactions = consensus.properties.redactions!
+    const consensusRedactionItems = consensusRedactions.items
+    consensus.properties.redactions = {
+      ...consensusRedactions,
+      minItems: 1,
+      maxItems: 1,
+      items: {
+        ...consensusRedactionItems,
+        properties: {
+          ...consensusRedactionItems.properties,
+          value: {
+            ...consensusRedactionItems.properties.value,
+            pattern: '^(?!\\s*(?:[Aa][Pp][Pp]|[Pp][Rr][Oo][Dd][Uu][Cc][Tt])[_ -]?[Nn][Aa][Mm][Ee]\\s*$)[^\\[<{].*$'
+          },
+          label: { type: 'string', enum: ['app name', 'product name'] }
+        }
+      }
+    } as unknown as JsonSchemaNode
     return {
       type: 'object',
       additionalProperties: false,
@@ -370,7 +399,7 @@ export function dialogueCapsuleJsonSchemaForTurn(contract: DialogueTurnContract)
         statement: commonProperties.statement,
         opinion: commonProperties.opinion,
         tasks,
-        consensus: structuredClone(DIALOGUE_CAPSULE_JSON_SCHEMA.properties.consensus.anyOf[0]),
+        consensus,
         redactions: commonProperties.redactions
       }
     } as unknown as DialogueProviderJsonSchema
@@ -520,13 +549,18 @@ function isProductNamePlaceholder(value: string): boolean {
   return /^(?:\[\s*(?:app|product)[_ -]?name\s*\]|\{\{\s*(?:app|product)[_ -]?name\s*\}\}|<\s*(?:app|product)[_ -]?name\s*>|(?:app|product)[_ -]name)$/iu.test(value.trim())
 }
 
-function hydratePrivateConsensusName(capsule: DialogueCapsule): DialogueCapsule {
+function isAppNameRedactionLabel(value: string): boolean {
+  const label = normalizedSecretTerm(value)
+  return /(?:^| )(?:app|product) name(?:$| )/u.test(label)
+}
+
+function hydratePrivateConsensusName(
+  capsule: DialogueCapsule,
+  accumulatedRedactions: DialogueCapsule['redactions'] = []
+): DialogueCapsule {
   if (!capsule.consensus || !isProductNamePlaceholder(capsule.consensus.appName)) return capsule
-  const candidates = [...capsule.redactions, ...capsule.consensus.redactions]
-    .filter((term) => {
-      const label = normalizedSecretTerm(term.label)
-      return label === 'app name' || label === 'product name'
-    })
+  const candidates = [...capsule.redactions, ...capsule.consensus.redactions, ...accumulatedRedactions]
+    .filter((term) => isAppNameRedactionLabel(term.label))
     .map((term) => term.value.trim())
     .filter((value) => value && !isProductNamePlaceholder(value))
   const unique = new Map(candidates.map((value) => [secretTermKey(value), value]))
@@ -698,9 +732,10 @@ function canonicalConsensusTaskBoundaries(tasks: DialogueCapsule['tasks']): Dial
 
 export function validateDialogueCapsuleForTurn(
   capsule: DialogueCapsule,
-  contract: DialogueTurnContract
+  contract: DialogueTurnContract,
+  context: { accumulatedRedactions?: DialogueCapsule['redactions'] } = {}
 ): DialogueCapsule {
-  const hydratedCapsule = hydratePrivateConsensusName(capsule)
+  const hydratedCapsule = hydratePrivateConsensusName(capsule, context.accumulatedRedactions)
   const repairedRedactions = repairedTitleRedactions(hydratedCapsule)
   const repairedConsensusRedactions = hydratedCapsule.consensus
     ? reserveRequiredRedactions(hydratedCapsule.consensus.redactions, [{
@@ -851,7 +886,9 @@ function assertPublicTextIsSpoilerSafe(
 
 const ACCUMULATED_REDACTION_LIMIT = 512
 
-async function readAccumulatedRedactions(workspacePath: string): Promise<DialogueCapsule['redactions']> {
+export async function readAccumulatedDialogueRedactions(
+  workspacePath: string
+): Promise<DialogueCapsule['redactions']> {
   const path = join(workspacePath, '.duo', 'private', 'redactions.json')
   const root = join(workspacePath, '.duo')
   try {
@@ -1386,7 +1423,7 @@ async function writeDialogueCapsuleProtocolUnlocked(input: DialogueCapsuleProtoc
     }
   }
   const preparedQuality = await preparePrivateQualityContract({ ...input, capsule: providerCapsule })
-  const accumulatedRedactions = await readAccumulatedRedactions(input.workspacePath)
+  const accumulatedRedactions = await readAccumulatedDialogueRedactions(input.workspacePath)
   const spoilerSafeProviderCapsule = redactDialoguePublicText(providerCapsule, accumulatedRedactions)
   // Validate the complete provider statement before presentation clipping so a
   // sealed term near the end cannot be hidden beyond the broadcast boundary.
