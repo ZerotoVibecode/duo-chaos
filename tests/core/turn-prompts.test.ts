@@ -171,9 +171,10 @@ describe('turn stage prompts', () => {
 
     expect(prompt).toMatch(/one real (?:agent )?statement|one substantive statement/i)
     expect(prompt).toMatch(/do not (?:simulate|invent).*(?:conversation|teammate|reply)/i)
-    expect(prompt).toMatch(/opening.*first position/i)
-    expect(prompt).toMatch(/counter.*reply/i)
-    expect(prompt).toMatch(/verdict.*consensus/i)
+    expect(prompt).toMatch(/statement.*single concise first-person position/i)
+    expect(prompt).toMatch(/open directly.*first turn/i)
+    expect(prompt).toMatch(/answer.*recorded teammate.*reply/i)
+    expect(prompt).toMatch(/actionable decision.*consensus/i)
   })
 
   it('gives consensus an immutable compact pitch catalog and requires exact source ids', () => {
@@ -197,6 +198,8 @@ describe('turn stage prompts', () => {
     expect(prompt).toContain('pitch-111111111111111111111111 | claude | Bloom Board')
     expect(prompt).toContain('pitch-222222222222222222222222 | codex | Focus Field')
     expect(prompt).toMatch(/sourcePitchIds.*exact.*(?:one or two|1-2)/is)
+    expect(prompt).toMatch(/appName.*real private product name.*never.*\[APP_NAME\]/isu)
+    expect(prompt).toMatch(/consensus\.redactions.*exactly one.*(?:app name|product name)/isu)
     expect(prompt).toMatch(/every task file boundary.*app\//isu)
   })
 

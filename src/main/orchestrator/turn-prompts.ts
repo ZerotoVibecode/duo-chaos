@@ -127,7 +127,7 @@ function dialogueCapsuleContract(input: ComposeTurnStagePromptInput): string {
     ? serious
       ? 'Include `pitches` with exactly two compact private solution approaches for the requested product. Compare architecture, UX, or implementation strategy; neither candidate may replace the product. Each needs title, idea, appeal, and risk.'
       : 'Include `pitches` with exactly two compact private product candidates. Each needs title, idea, appeal, and risk.'
-    : 'Set `pitches` to an empty array unless presenting a genuinely new candidate.'
+    : ''
   const pitchCatalog = input.pitchCatalog?.slice(0, 8).map((pitch) =>
     `${pitch.pitchId} | ${pitch.agent} | ${pitch.title.replace(/[\r\n|]+/gu, ' ').replace(/\s+/gu, ' ').trim()}`
   ).join('\n')
@@ -137,16 +137,12 @@ ${pitchCatalog || 'No immutable pitches are available; do not invent source IDs.
 Set consensus.sourcePitchIds to the exact one or two pitch IDs from this catalog that materially source the decision. Never credit every pitch by default and never invent an ID.`
     : ''
   const consensusContract = input.turn.phase === 'round.consensus'
-    ? `Include \`consensus\` with appName, idea, summary, an implementation-ready spec, and redaction terms.${serious ? ' The spec must be at least 120 characters, explicitly preserve every binding product requirement and requested quality direction (including visual, readability, interaction, and evidence expectations when present), reuse the brief’s important product terms, and end with an "Acceptance checks" section containing at least two specific bullet checks that cover the stated requirements.' : ''} Include exactly two similarly weighted source-changing tasks: one claimed by claude and one by codex. Every task needs impact (core or substantial), a concrete expectedOutcome, 1-4 concise acceptanceChecks, risk, and 1-12 expected source file boundaries in \`files\`. Every task file boundary must begin with \`app/\` (for example \`app/src/**\` or \`app/tests/**\`); the workspace root is not a product source tree. No copy-only, docs-only, or verification-only consolation task.`
-    : 'Set `consensus` to null. Keep `tasks` empty until the direction is sealed.'
+    ? `Include \`consensus\` with appName, idea, summary, an implementation-ready spec, and redaction terms. consensus.appName is the real private product name; never put [APP_NAME], APP_NAME, or another public placeholder there. consensus.redactions contains exactly one private title term with label "app name" or "product name"; put every other hidden mechanic or pitch term in the top-level redactions array.${serious ? ' The spec must be at least 120 characters, explicitly preserve every binding product requirement and requested quality direction (including visual, readability, interaction, and evidence expectations when present), reuse the brief’s important product terms, and end with an "Acceptance checks" section containing at least two specific bullet checks that cover the stated requirements.' : ''} Include exactly two similarly weighted source-changing tasks: one claimed by claude and one by codex. Every task needs impact (core or substantial), a concrete expectedOutcome, 1-4 concise acceptanceChecks, risk, and 1-12 expected source file boundaries in \`files\`. Every task file boundary must begin with \`app/\` (for example \`app/src/**\` or \`app/tests/**\`); the workspace root is not a product source tree. No copy-only, docs-only, or verification-only consolation task.`
+    : ''
   return `DIALOGUE CAPSULE CONTRACT
 Return exactly one schema-valid JSON object. The orchestrator will persist it; you have no workspace tools in this stage.
 - This capsule represents one real agent statement, not a synthetic conversation. Do not simulate or invent the teammate's reply.
-- The orchestrator persists exactly one speech field: opening for a first position, counter for a reply, or verdict for consensus.
-- opening: a concise first-person first position.
-- counter: a concise direct reply with the strongest concrete tradeoff, correction, or synthesis.
-- verdict: a concise consensus decision the next agent can act on.
-- Keep the two non-selected speech fields short and contract-safe; they are fallbacks, not additional turns.
+  - statement: the single concise first-person position for this turn. Open directly on a first turn, answer the recorded teammate on a reply, and state the actionable decision during consensus.
 - opinion: one honest product/build judgment with a valid tone.
 - Public text is 12–28 words, spoiler-safe, and uses [APP_NAME], [FEATURE], [DOMAIN], or [REDACTED].
 - Private text names the real idea and implementation detail directly.

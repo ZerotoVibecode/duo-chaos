@@ -1,5 +1,5 @@
-import { join, resolve } from 'node:path'
-import { mkdir } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import { IPC, type BootstrapData } from '@shared/electron-api'
@@ -11,7 +11,10 @@ import { createArtifactPreview } from '@main/preview/artifact-preview'
 import { ArtifactPreviewCache } from '@main/preview/artifact-preview-cache'
 import { prepareArtifactPreviewTarget } from '@main/preview/artifact-preview-target'
 import { ARTIFACT_PREVIEW_SCHEME } from '@main/preview/artifact-resource'
-import { captureArtifactPixels } from '@main/preview/electron-artifact-capture'
+import {
+  captureArtifactPixels,
+  captureArtifactQualityEvidence
+} from '@main/preview/electron-artifact-capture'
 import { closeArtifactWindows, openArtifactWindow } from '@main/preview/electron-artifact-window'
 import { RunOrchestrator } from '@main/orchestrator/run-orchestrator'
 import { launchInteractiveCli } from '@main/process/terminal-launcher'
@@ -25,12 +28,23 @@ let cachedHealth: BootstrapData['health'] = []
 let studioRuntimeRoot = ''
 let shutdownInProgress = false
 let shutdownPrepared = false
+let isolatedE2eQualityCaptureInProgress = false
 const artifactPreviewCache = new ArtifactPreviewCache()
 const rendererFilePath = join(__dirname, '../renderer/index.html')
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL?.trim() || undefined
 
 const isolatedE2eUserData = process.env.DUO_CHAOS_E2E === '1'
   ? process.env.DUO_CHAOS_E2E_USER_DATA?.trim()
+  : undefined
+const isolatedE2eDefaultWorkspace = process.env.DUO_CHAOS_E2E === '1'
+  ? process.env.DUO_CHAOS_E2E_DEFAULT_WORKSPACE?.trim()
+  : undefined
+const isolatedE2eQualityCapture = process.env.DUO_CHAOS_E2E === '1'
+  ? {
+      entryPath: process.env.DUO_CHAOS_E2E_QUALITY_ENTRY?.trim(),
+      resourceRoot: process.env.DUO_CHAOS_E2E_QUALITY_ROOT?.trim(),
+      outputPath: process.env.DUO_CHAOS_E2E_QUALITY_OUTPUT?.trim()
+    }
   : undefined
 if (isolatedE2eUserData) app.setPath('userData', resolve(isolatedE2eUserData))
 
@@ -44,6 +58,36 @@ protocol.registerSchemesAsPrivileged([{
     allowServiceWorkers: false
   }
 }])
+
+async function runIsolatedE2eQualityCapture(): Promise<boolean> {
+  if (!isolatedE2eQualityCapture) return false
+  const { entryPath, resourceRoot, outputPath } = isolatedE2eQualityCapture
+  if (!entryPath && !resourceRoot && !outputPath) return false
+  if (!entryPath || !resourceRoot || !outputPath) {
+    console.error('The isolated artifact quality capture requires entry, root, and output paths.')
+    app.exit(1)
+    return true
+  }
+
+  isolatedE2eQualityCaptureInProgress = true
+  try {
+    await mkdir(dirname(resolve(outputPath)), { recursive: true })
+    const evidence = await captureArtifactQualityEvidence({
+      entryPath: resolve(entryPath),
+      resourceRoot: resolve(resourceRoot)
+    })
+    await writeFile(resolve(outputPath), JSON.stringify(evidence), 'utf8')
+    isolatedE2eQualityCaptureInProgress = false
+    app.quit()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await writeFile(resolve(outputPath), JSON.stringify({ error: message }), 'utf8').catch(() => undefined)
+    console.error(message)
+    isolatedE2eQualityCaptureInProgress = false
+    app.exit(1)
+  }
+  return true
+}
 
 function broadcastSnapshot(snapshot: BootstrapData['runs'][number]): void {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -228,9 +272,12 @@ function registerIpc(): void {
 }
 
 void app.whenReady().then(async () => {
+  if (await runIsolatedE2eQualityCapture()) return
   const userData = app.getPath('userData')
   studioRuntimeRoot = join(userData, 'runs')
-  const defaultWorkspaceRoot = join(app.getPath('documents'), 'ZeroToVibecode', 'DuoChaos', 'workspaces')
+  const defaultWorkspaceRoot = isolatedE2eDefaultWorkspace
+    ? resolve(isolatedE2eDefaultWorkspace)
+    : join(app.getPath('documents'), 'ZeroToVibecode', 'DuoChaos', 'workspaces')
   await Promise.all([
     mkdir(defaultWorkspaceRoot, { recursive: true }),
     mkdir(studioRuntimeRoot, { recursive: true })
@@ -250,7 +297,7 @@ void app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin' && !isolatedE2eQualityCaptureInProgress) app.quit()
 })
 
 app.on('before-quit', (event) => {

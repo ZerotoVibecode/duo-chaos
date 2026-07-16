@@ -177,6 +177,52 @@ describe('artifact preview protocol handler', () => {
     expect(evidence.interactionObservedChanges).toContain('aria')
   })
 
+  test('records pointer and keyboard responses as separate interaction evidence', async () => {
+    const dom = new JSDOM('<!doctype html><html><body><main><label for="options">Options</label><textarea id="options"></textarea><button id="start" type="button">Start</button><output id="result">Waiting</output></main><script>document.querySelector("#start").addEventListener("click", () => { document.querySelector("#result").textContent = "Started" }); window.addEventListener("keydown", (event) => { if (event.key === "ArrowRight") document.querySelector("#result").textContent = "Keyboard choice" })</script></body></html>', {
+      runScripts: 'dangerously',
+      url: 'https://artifact.test/'
+    })
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 120, bottom: 40, width: 120, height: 40, toJSON: () => ({}) })
+    })
+
+    const evidence = await dom.window.eval(DOM_QUALITY_INSPECTION) as {
+      pointerInteractionAttempted: boolean
+      pointerInteractionSucceeded: boolean
+      keyboardInteractionAttempted: boolean
+      keyboardInteractionSucceeded: boolean
+      keyboardObservedChanges: string[]
+    }
+
+    expect(evidence.pointerInteractionAttempted).toBe(true)
+    expect(evidence.pointerInteractionSucceeded).toBe(true)
+    expect(evidence.keyboardInteractionAttempted).toBe(true)
+    expect(evidence.keyboardInteractionSucceeded).toBe(true)
+    expect(evidence.keyboardObservedChanges).toContain('dom')
+  })
+
+  test('does not claim keyboard proof when dispatched keys produce no app response', async () => {
+    const dom = new JSDOM('<!doctype html><html><body><main><button type="button">Dead control</button></main></body></html>', {
+      runScripts: 'dangerously',
+      url: 'https://artifact.test/'
+    })
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 120, bottom: 40, width: 120, height: 40, toJSON: () => ({}) })
+    })
+
+    const evidence = await dom.window.eval(DOM_QUALITY_INSPECTION) as {
+      keyboardInteractionAttempted: boolean
+      keyboardInteractionSucceeded: boolean
+      keyboardObservedChanges: string[]
+    }
+
+    expect(evidence.keyboardInteractionAttempted).toBe(true)
+    expect(evidence.keyboardInteractionSucceeded).toBe(false)
+    expect(evidence.keyboardObservedChanges).toEqual([])
+  })
+
   test('does not misattribute ambient DOM activity to a dead control', async () => {
     const dom = new JSDOM('<!doctype html><html><body><main data-pulse="0"><button type="button">Still dead</button></main><script>let pulse = 0; setInterval(() => document.querySelector("main").dataset.pulse = String(++pulse), 15)</script></body></html>', {
       runScripts: 'dangerously',

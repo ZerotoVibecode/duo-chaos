@@ -124,12 +124,43 @@ describe('broadcast turn UI contract', () => {
     expect(pulse).not.toHaveTextContent(/convergence/i)
 
     const claudeCard = screen.getByRole('article', { name: /claude/i })
-    expect(claudeCard).toHaveTextContent(/actual high/i)
+    expect(claudeCard).toHaveTextContent(/requested: fable.*max/i)
+    expect(claudeCard).toHaveTextContent(/scheduled high/i)
     expect(claudeCard).toHaveTextContent(/max ceiling/i)
+    expect(claudeCard).toHaveTextContent(/provider runtime not recorded by duo/i)
     expect(claudeCard).toHaveTextContent(/smart · duo \+ connected tools/i)
     const codexCard = screen.getByRole('article', { name: /codex/i })
-    expect(codexCard).toHaveTextContent(/selected low/i)
+    expect(codexCard).toHaveTextContent(/requested: terra.*low/i)
     expect(codexCard).not.toHaveTextContent(/actual low/i)
+    expect(codexCard).toHaveTextContent(/provider runtime not recorded by duo/i)
+  })
+
+  it('states when Duo did not record the observed runtime for a completed call', () => {
+    render(<AgentCard agent="claude" run={run({
+      agentUsage: {
+        claude: { processedInputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningTokens: 0, calls: 1, largestRawLineBytes: 32 },
+        codex: { processedInputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, calls: 0, largestRawLineBytes: 0 }
+      }
+    })} />)
+
+    expect(screen.getByRole('article', { name: /claude agent/i })).toHaveTextContent(/provider runtime not recorded by duo/i)
+  })
+
+  it('shows a validated provider-observed runtime separately from the request', () => {
+    render(<AgentCard agent="claude" run={run({
+      providerRuntimes: {
+        claude: {
+          model: 'claude-opus-4-8',
+          effort: 'high',
+          source: 'claude-system-init',
+          recordedAt: '2026-07-10T18:00:01.000Z'
+        }
+      }
+    })} />)
+
+    const card = screen.getByRole('article', { name: /claude agent/i })
+    expect(card).toHaveTextContent(/requested: fable.*max/i)
+    expect(card).toHaveTextContent(/provider observed: opus.*high/i)
   })
 
   it('surfaces typed verification failures as decisive live evidence', () => {
@@ -202,7 +233,7 @@ describe('broadcast turn UI contract', () => {
     expect(state).toHaveTextContent(/standing by|timeboxed/i)
   })
 
-  it('announces a genuinely ready release as BUILD SURVIVED', () => {
+  it('reserves BUILD SURVIVED for a genuinely Duo-verified release', () => {
     const ready = run({
       status: 'reveal-ready',
       phase: 'reveal.ready',
@@ -210,6 +241,14 @@ describe('broadcast turn UI contract', () => {
       tasks: [{ id: 'ship', publicTitle: 'Ship the sealed build', status: 'done', claimedBy: 'claude', risk: 'low', files: [] }],
       events: [
         event({ id: 'passed', type: 'build.passed', agent: 'codex', publicText: 'Verification passed.' }),
+        event({
+          id: 'duo-quality-state',
+          type: 'decision',
+          agent: 'director',
+          topic: 'quality-evidence-state',
+          publicText: 'Both contributions and both reciprocal reviews survive.',
+          metadata: { acceptedContributionAgents: ['claude', 'codex'], acceptedReviewAgents: ['claude', 'codex'] }
+        }),
         event({ id: 'ready', type: 'reveal.ready', agent: 'director', publicText: 'The sealed result is ready.' })
       ]
     }, { stage: 'verdict', status: 'completed' })
@@ -220,6 +259,43 @@ describe('broadcast turn UI contract', () => {
     expect(within(takeover).getByText(/^BUILD SURVIVED$/i)).toBeVisible()
     expect(within(takeover).getByRole('heading', { name: /^the build survived$/i })).toBeVisible()
     expect(takeover).toHaveTextContent(/sealed result is ready/i)
+  })
+
+  it('labels a verified artifact without reciprocal Duo proof as collaboration incomplete', () => {
+    const ready = run({
+      status: 'reveal-ready',
+      phase: 'reveal.ready',
+      releaseStatus: 'ready',
+      tasks: [{ id: 'ship', publicTitle: 'Ship the sealed build', status: 'done', claimedBy: 'claude', risk: 'low', files: [] }],
+      events: [
+        event({ id: 'passed', type: 'build.passed', agent: 'codex', publicText: 'Verification passed.' }),
+        event({ id: 'ready', type: 'reveal.ready', agent: 'director', publicText: 'The artifact is ready.' })
+      ]
+    }, { stage: 'verdict', status: 'completed' })
+
+    render(<CompletionTakeover run={ready} busy={false} onReveal={vi.fn()} />)
+
+    const takeover = screen.getByRole('dialog', { name: /artifact verified.*duo proof incomplete/i })
+    expect(within(takeover).getByText(/^ARTIFACT VERIFIED$/i)).toBeVisible()
+    expect(takeover).toHaveTextContent(/0\/2 accepted contributions/i)
+    expect(takeover).toHaveTextContent(/0\/2 current reviews/i)
+    expect(takeover).not.toHaveTextContent(/^BUILD SURVIVED$/i)
+  })
+
+  it('keeps a partial release visually and verbally distinct from verified tiers', () => {
+    const partial = run({
+      status: 'reveal-ready',
+      phase: 'reveal.ready',
+      releaseStatus: 'partial',
+      events: [event({ id: 'partial', type: 'reveal.ready', agent: 'director', status: 'partial', publicText: 'A runnable artifact was preserved with caveats.' })]
+    }, { stage: 'verdict', status: 'completed' })
+
+    render(<CompletionTakeover run={partial} busy={false} onReveal={vi.fn()} />)
+
+    const takeover = screen.getByRole('dialog', { name: /build reached reveal with caveats/i })
+    expect(takeover).toHaveClass('completion-tier-partial')
+    expect(within(takeover).getByText(/^CAVEATS DOCUMENTED$/i)).toBeVisible()
+    expect(takeover).not.toHaveTextContent(/artifact verified|build survived/i)
   })
 
   it('exposes the selected criticism filter through aria-pressed', () => {

@@ -1,7 +1,7 @@
 import { Check, CircleAlert, RefreshCw, ShieldCheck, SquareTerminal } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { AgentEffort, AppSettings, CodexEffort, CustomizationProfile, ToolHealth } from '@shared/types'
-import { formatRuntimeProfile } from '@renderer/lib/runtime-label'
+import { formatRuntimeRequest } from '@renderer/lib/runtime-label'
 import {
   catalogSourceLabel,
   CLAUDE_EFFORT_OPTIONS,
@@ -94,6 +94,18 @@ export function AgentLoadoutPanel({ health, settings, busy, onRefresh, onSave, o
   const claudeEfforts = effortOptionsForModel(effectiveClaudeModel, claudeModels, CLAUDE_EFFORT_OPTIONS)
   const effectiveCodexEffort = compatibleEffort(draft.codexEffort, effectiveCodexModel, codexModels)
   const effectiveClaudeEffort = compatibleEffort(draft.claudeEffort, effectiveClaudeModel, claudeModels) as AgentEffort
+  const appliedCodexEffort = settings?.codexEffort && settings.codexEffort !== 'default' ? settings.codexEffort : codex?.runtime?.effort
+  const appliedClaudeEffort = settings?.claudeEffort && settings.claudeEffort !== 'default' ? settings.claudeEffort : claude?.runtime?.effort
+  const codexRequest = formatRuntimeRequest({
+    model: settings?.codexModel || codex?.runtime?.model,
+    ...(appliedCodexEffort ? { effort: appliedCodexEffort } : {}),
+    source: settings && (settings.codexModel || settings.codexEffort !== 'default') ? 'studio' : codex?.runtime?.source ?? 'cli-default'
+  })
+  const claudeRequest = formatRuntimeRequest({
+    model: settings?.claudeModel || claude?.runtime?.model,
+    ...(appliedClaudeEffort ? { effort: appliedClaudeEffort } : {}),
+    source: settings && (settings.claudeModel || settings.claudeEffort !== 'default') ? 'studio' : claude?.runtime?.source ?? 'cli-default'
+  })
   const systemTools = health.filter((item) => item.id === 'git' || item.id === 'node' || item.id === 'npm')
   const realReady = Boolean(codex?.available && claude?.available && git?.available)
   const systemReady = systemTools.filter((item) => item.available).length
@@ -166,7 +178,7 @@ export function AgentLoadoutPanel({ health, settings, busy, onRefresh, onSave, o
             <ModelSelect label="Codex model" value={draft.codexModel} suggestions={codexModels} fieldClassName="loadout-field" onChange={updateCodexModel} disabled={busy} />
             <label className="loadout-field"><span>Effort</span><select aria-label="Codex effort" value={effectiveCodexEffort} onChange={(event) => update('codexEffort', event.target.value as CodexEffort)} disabled={busy}>{codexEfforts.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
-          <div className="loadout-effective" title={codex?.catalog?.note}><span>{catalogSourceLabel(codex?.catalog)}</span><strong>{formatRuntimeProfile(codex?.runtime)}</strong></div>
+          <div className="loadout-effective" title={codex?.catalog?.note}><span>{catalogSourceLabel(codex?.catalog)} catalog</span><strong>{codexRequest}</strong></div>
           <label className="loadout-field toolbelt-select"><span>Toolbelt</span><select aria-label="Codex toolbelt" value={draft.codexCustomizationProfile} onChange={(event) => update('codexCustomizationProfile', event.target.value as CustomizationProfile)} disabled={busy}><option value="smart">Smart · Duo + connected tools</option><option value="core">Core · no user capabilities</option><option value="full-local">Broad · all user skills</option></select></label>
         </article>
 
@@ -184,7 +196,7 @@ export function AgentLoadoutPanel({ health, settings, busy, onRefresh, onSave, o
             <ModelSelect label="Claude model" value={draft.claudeModel} suggestions={claudeModels} fieldClassName="loadout-field" onChange={updateClaudeModel} disabled={busy} />
             <label className="loadout-field"><span>Effort</span><select aria-label="Claude effort" value={effectiveClaudeEffort} onChange={(event) => update('claudeEffort', event.target.value as AgentEffort)} disabled={busy}>{claudeEfforts.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
-          <div className="loadout-effective" title={claude?.catalog?.note}><span>{catalogSourceLabel(claude?.catalog)}</span><strong>{formatRuntimeProfile(claude?.runtime)}</strong></div>
+          <div className="loadout-effective" title={claude?.catalog?.note}><span>{catalogSourceLabel(claude?.catalog)} catalog</span><strong>{claudeRequest}</strong></div>
           <label className="loadout-field toolbelt-select"><span>Toolbelt</span><select aria-label="Claude toolbelt" value={draft.claudeCustomizationProfile} onChange={(event) => update('claudeCustomizationProfile', event.target.value as CustomizationProfile)} disabled={busy}><option value="smart">Smart · Duo + connected tools</option><option value="core">Core · no user capabilities</option><option value="full-local">Broad · all user skills</option></select></label>
         </article>
       </div>

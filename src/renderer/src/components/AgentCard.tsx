@@ -1,7 +1,7 @@
 import { Bot, BrainCircuit, Code2, Gauge, Sparkles } from 'lucide-react'
 import type { AgentId, CustomizationProfile, RunSnapshot } from '@shared/types'
 import { deriveAgentContribution, deriveUsageCompleteness } from '@renderer/lib/contributions'
-import { formatModelLabel, formatRuntimeProfile } from '@renderer/lib/runtime-label'
+import { formatRuntimeObservation, formatRuntimeRequest } from '@renderer/lib/runtime-label'
 
 interface AgentCardProps {
   agent: Extract<AgentId, 'claude' | 'codex'>
@@ -65,11 +65,14 @@ export function AgentCard({ agent, run }: AgentCardProps): React.JSX.Element {
   const qualityCeiling = activeRuntime
     ? effortLabel(turnStage.qualityCeiling ?? runtime?.qualityCeiling)
     : undefined
-  const runtimeText = currentEffort
-    ? `${formatModelLabel(runtime?.model ?? '')} · Actual ${currentEffort}${qualityCeiling ? ` · ${qualityCeiling} ceiling` : ''}`
-    : runtime?.effort
-      ? `${formatModelLabel(runtime.model ?? '')} · Selected ${effortLabel(runtime.effort) ?? runtime.effort}`
-      : formatRuntimeProfile(runtime)
+  const runtimeText = formatRuntimeRequest(runtime)
+  const scheduleText = currentEffort
+    ? `Scheduled ${currentEffort}${qualityCeiling ? ` · ${qualityCeiling} ceiling` : ''}`
+    : undefined
+  const observationText = formatRuntimeObservation({
+    observation: run.providerRuntimes?.[agent],
+    simulation: run.executionMode === 'simulation'
+  })
   const customizationProfile = activeRuntime
     ? turnStage.customizationProfile ?? runtime?.customizationProfile
     : runtime?.customizationProfile
@@ -84,6 +87,8 @@ export function AgentCard({ agent, run }: AgentCardProps): React.JSX.Element {
         </div>
         <div className="agent-status-stack">
           <span className="agent-runtime" title={runtimeText}>{runtimeText}</span>
+          {scheduleText && <span className="agent-runtime-schedule">{scheduleText}</span>}
+          <span className="agent-runtime-observation">{observationText}</span>
           <span className="agent-toolbelt">{toolbeltLabel(customizationProfile)}</span>
           <span className={`agent-state ${isActive ? 'working' : timeboxed ? 'timeboxed' : 'on-deck'}`}><i />{stateLabel}</span>
         </div>

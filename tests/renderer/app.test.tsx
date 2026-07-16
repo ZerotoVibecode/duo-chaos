@@ -144,8 +144,8 @@ describe('Duo Chaos launch cockpit', () => {
     expect(screen.getByRole('button', { name: /^simulation$/i })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByText(/simulation stays ready/i)).toBeVisible()
     expect(screen.getByRole('button', { name: /start simulation/i })).toBeEnabled()
-    expect(screen.getAllByText('Sol · Max')).toHaveLength(2)
-    expect(screen.getAllByText('Fable · High')).toHaveLength(2)
+    expect(screen.getByText('Requested: Sol · Max')).toBeVisible()
+    expect(screen.getByText('Requested: Fable · High')).toBeVisible()
   })
 
   it('keeps Real Mode unavailable until Git joins both local agents', async () => {
@@ -191,6 +191,7 @@ describe('Duo Chaos launch cockpit', () => {
     expect(within(briefing).getByText('VS')).toBeVisible()
     expect(within(briefing).getByText('Codex')).toBeVisible()
     expect(within(briefing).getByText('Sol · Max')).toBeVisible()
+    expect(within(briefing).getAllByText('Requested')).toHaveLength(2)
     expect(briefing).toHaveTextContent(/4-call debate.*2 deep builds.*1 reciprocal review.*2 receipts/i)
     expect(briefing).toHaveTextContent(/2 deep builds 2h/i)
     expect(briefing).toHaveTextContent(/run ceiling 24h/i)
@@ -1036,6 +1037,7 @@ describe('Duo Chaos launch cockpit', () => {
       ...createBroadcastRun(),
       phase: 'reveal.ready',
       status: 'reveal-ready',
+      releaseStatus: 'ready',
       round: 12,
       tasks: [
         { id: 'ship', publicTitle: 'Ship the sealed build', status: 'done', claimedBy: 'claude', risk: 'medium', files: [] },

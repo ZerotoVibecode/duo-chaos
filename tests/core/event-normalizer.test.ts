@@ -33,6 +33,21 @@ describe('event normalizer', () => {
     })
   })
 
+  it('repairs mojibake in both public and private provider-authored event text', () => {
+    const event = normalizeEvent(
+      {
+        type: 'opinion',
+        agent: 'claude',
+        publicText: 'I\u00e2\u20ac\u2122m ready \u00e2\u20ac\u201d let\u00e2\u20ac\u2122s ship\u00e2\u20ac\u00a6',
+        privateText: 'We\u00e2\u0080\u0099re aligned \u00e2\u0080\u0094 continue\u00e2\u0080\u00a6'
+      },
+      { runId: 'run-mojibake', round: 3 }
+    )
+
+    expect(event.publicText).toBe('I’m ready — let’s ship…')
+    expect(event.privateText).toBe('We’re aligned — continue…')
+  })
+
   it('converts string risk levels and clamps numeric confidence', () => {
     const event = normalizeEvent(
       {
@@ -250,6 +265,8 @@ describe('event normalizer', () => {
     'npm run build',
     'pnpm run typecheck',
     'npx vitest run',
+    'node --test logic.test.mjs',
+    'node.exe --test tests\\logic.test.js',
     'python -m pytest',
     'cargo test',
     'npm test 2>&1',
@@ -574,7 +591,7 @@ describe('event normalizer', () => {
     ).toMatchObject({ spoilerRisk: expected, agent: 'director' })
   })
 
-  it('preserves provider utilization so the scheduler can pause before a doomed premium call', () => {
+  it('preserves provider utilization so the scheduler can checkpoint and continue until rejection', () => {
     const line = JSON.stringify({
       type: 'rate_limit_event',
       rate_limit_info: {

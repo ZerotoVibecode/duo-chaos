@@ -32,6 +32,21 @@ describe('safe generated-workspace protocol files', () => {
     expect(actualIds).toEqual(expectedIds)
   })
 
+  it('serializes concurrent supervisor replacements without partial files or rename races', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'duo-safe-protocol-replace-'))
+    const duoPath = join(workspace, '.duo')
+    const privatePath = join(duoPath, 'private')
+    const statePath = join(privatePath, 'state.json')
+    await mkdir(privatePath, { recursive: true })
+
+    const versions = Array.from({ length: 96 }, (_, index) => `${JSON.stringify({ version: index })}\n`)
+    await Promise.all(versions.map((content) => safeWriteProtocolText(duoPath, statePath, content)))
+
+    const content = await safeReadProtocolText(duoPath, statePath)
+    expect(versions).toContain(content)
+    expect(() => { void JSON.parse(content ?? '') }).not.toThrow()
+  })
+
   it('does not read or overwrite a host directory through a planted protocol junction', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'duo-safe-protocol-workspace-'))
     const outside = await mkdtemp(join(tmpdir(), 'duo-safe-protocol-outside-'))

@@ -204,6 +204,18 @@ export function buildSimulationScript(
         targetAgent: 'claude', topic: 'final-review', tone: 'impressed', confidence: 0.92, heat: 0.28, severity: 'low'
       })
     },
+    ...(missionProfile === 'surprise' ? [{
+      delayMs: 320,
+      event: event(runId, 8, 'decision', 'director', 'Both agents delivered accepted source work and reviewed the current shared result.', {
+        topic: 'quality-evidence-state',
+        proof: {
+          kind: 'quality-state',
+          acceptedContributionAgents: ['claude', 'codex'],
+          acceptedReviewAgents: ['claude', 'codex']
+        },
+        metadata: { synthetic: true, source: 'simulation-script' }
+      })
+    }] : []),
     { delayMs: 700, event: event(runId, 8, 'git.checkpoint', 'director', 'Checkpoint recorded: reveal-ready build.') },
     {
       delayMs: 780,

@@ -48,6 +48,23 @@ describe('tool-free staged recovery capsule', () => {
     expect(() => parseRecoveryCapsule({ ...capsule(), files: ['app/index.html'] })).toThrow(/invalid|unrecognized/iu)
   })
 
+  it('repairs provider mojibake before recovery text enters durable handoffs', () => {
+    const parsed = parseRecoveryCapsule({
+      dispatch: {
+        publicText: 'Claude\u00e2\u20ac\u2122s reply \u00e2\u20ac\u201d ready\u00e2\u20ac\u00a6',
+        privateText: 'We\u00e2\u0080\u0099re aligned \u00e2\u0080\u0094 continue.'
+      },
+      opinion: null,
+      redactions: [{ value: 'Builder\u00e2\u20ac\u2122s Bench', label: 'APP_NAME' }]
+    })
+
+    expect(parsed.dispatch).toEqual({
+      publicText: 'Claude’s reply — ready…',
+      privateText: 'We’re aligned — continue.'
+    })
+    expect(parsed.redactions[0]?.value).toBe('Builder’s Bench')
+  })
+
   it('extracts only final provider responses, never command output', () => {
     const value = capsule()
     const claude = JSON.stringify({ type: 'result', subtype: 'success', structured_output: value })
@@ -57,6 +74,28 @@ describe('tool-free staged recovery capsule', () => {
     expect(extractRecoveryCapsuleFromCliLine('claude', claude)).toEqual(value)
     expect(extractRecoveryCapsuleFromCliLine('codex', codex)).toEqual(value)
     expect(extractRecoveryCapsuleFromCliLine('codex', command)).toBeUndefined()
+  })
+
+  it('salvages one strict Claude wrapper from the first StructuredOutput attempt', () => {
+    const value = capsule()
+    const wrapped = JSON.stringify([
+      {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'StructuredOutput', input: { value: JSON.stringify(value) } }]
+        }
+      },
+      { type: 'result', subtype: 'error_max_turns' }
+    ])
+    const extraKeys = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', name: 'StructuredOutput', input: { value, extra: true } }]
+      }
+    })
+
+    expect(extractRecoveryCapsuleFromCliLine('claude', wrapped)).toEqual(value)
+    expect(extractRecoveryCapsuleFromCliLine('claude', extraKeys)).toBeUndefined()
   })
 
   it('lets the supervisor write one idempotent spoiler-safe dispatch without touching app source', async () => {

@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { Dirent } from 'node:fs'
 import { lstat, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { devNull } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import type {
   AppSettings,
@@ -33,7 +34,12 @@ import { checkAllTools } from '@main/health/health-check'
 import { resolveAgentRuntimeProfiles } from '@main/health/runtime-profile'
 import { buildAgentCommand } from '@main/process/command-builder'
 import { extractAgentSessionId } from '@main/process/session-continuity'
+import {
+  extractProviderRuntimeObservation,
+  sameProviderRuntimeObservation
+} from '@main/process/runtime-provenance'
 import { decodeProviderEnvelope, type ProviderRecord } from '@main/process/provider-envelope'
+import { repairMojibake } from '@main/text/repair-mojibake'
 import {
   ProcessRunner,
   type ProcessRunOptions,
@@ -142,6 +148,7 @@ import {
   dialogueCapsuleJsonSchemaForTurn,
   DialogueCapsuleError,
   extractDialogueCapsuleFromCliLine,
+  readAccumulatedDialogueRedactions,
   selectDialogueStatementForTurn,
   validateDialogueCapsuleForTurn,
   writeDialogueCapsuleProtocol,
@@ -257,6 +264,7 @@ interface RunSession {
 interface ExecutedTurnStage {
   assessment: TurnAcceptance
   durableSourceChanged: boolean
+  structuredContractAccepted?: boolean
   supervisorVerifiedNoChange?: boolean
   sessionId?: string
   quotaRejected?: boolean
@@ -601,6 +609,37 @@ function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
 }
 
+function isExpectedClaudeStructuredMaxTurnClosure(
+  agent: Extract<DuoEvent['agent'], 'claude' | 'codex'>,
+  records: ProviderRecord[],
+  result: ProcessRunResult
+): boolean {
+  if (
+    agent !== 'claude' || result.exitCode === 0 || result.signal !== null || result.timedOut || result.cancelled ||
+    result.outputLimitExceeded || result.rawLogWriteFailed
+  ) return false
+  const markerIndices = records.flatMap((providerRecord, index) => {
+    const candidate = record(providerRecord)
+    return candidate.type === 'result' && candidate.subtype === 'error_max_turns' ? [index] : []
+  })
+  if (markerIndices.length !== 1 || markerIndices[0] !== records.length - 1) return false
+
+  // Only the canonical final max-turn marker may explain this non-zero exit.
+  // Never let a valid StructuredOutput payload hide a second fatal provider
+  // record merely because both arrived in the same buffered envelope.
+  return records.every((providerRecord, index) => {
+    if (index === markerIndices[0]) return true
+    const candidate = record(providerRecord)
+    const type = typeof candidate.type === 'string' ? candidate.type.toLocaleLowerCase() : ''
+    const subtype = typeof candidate.subtype === 'string' ? candidate.subtype.toLocaleLowerCase() : ''
+    const hasErrorPayload = typeof candidate.error === 'string'
+      ? candidate.error.trim().length > 0
+      : candidate.error !== undefined && candidate.error !== null
+    return type !== 'error' && !type.endsWith('.error') && candidate.is_error !== true &&
+      !subtype.startsWith('error_') && !hasErrorPayload
+  })
+}
+
 async function appendWorkspaceProtocolEvent(
   protocolRoot: string,
   publicPath: string,
@@ -924,6 +963,7 @@ export class RunOrchestrator {
         workspacePath: workspace.workspacePath,
         appPath: workspace.appPath,
         agentRuntimes,
+        providerRuntimes: {},
         tasks: [],
         events: []
       },
@@ -1025,8 +1065,29 @@ export class RunOrchestrator {
               message: error instanceof Error ? error.message : 'The supervisor could not safely classify the interruption.',
               resumable: true,
               action: 'Inspect diagnostics, then resume the same preserved battle.'
-            }
+        }
         await this.pauseSession(session, pause)
+      })
+      .catch((error: unknown) => {
+        // A secondary local persistence failure while recording the original
+        // boundary must never become an unhandled rejection. Keep the public
+        // snapshot honest even when the protocol journal itself cannot accept
+        // another atomic write.
+        this.freezeActiveClock(session)
+        session.snapshot.status = 'failed'
+        session.snapshot.phase = 'failed'
+        session.snapshot.finishedAt = new Date().toISOString()
+        session.snapshot.activeAgent = undefined
+        session.snapshot.pause = undefined
+        session.snapshot.events.push(createDirectorEvent(
+          session,
+          'run.failed',
+          error instanceof Error
+            ? `The local supervisor could not persist the battle boundary: ${error.message}`
+            : 'The local supervisor could not persist the battle boundary.',
+          { severity: 'critical', topic: 'host-interrupted' }
+        ))
+        this.publishSnapshot(session)
       })
       .finally(async () => {
         clearInterval(broadcastTimer)
@@ -1531,6 +1592,10 @@ export class RunOrchestrator {
             qualityCeiling: manifest.loadout.codex.requestedEffort ?? manifest.loadout.codex.resolvedEffort ?? 'default'
           }
         }
+        const providerRuntimes: RunSnapshot['providerRuntimes'] = {
+          ...(manifest.providerRuntimes?.claude ? { claude: manifest.providerRuntimes.claude } : {}),
+          ...(manifest.providerRuntimes?.codex ? { codex: manifest.providerRuntimes.codex } : {})
+        }
         const request: StartRunRequest = {
           ...manifest.request,
           codexModel: manifest.loadout.codex.requestedModel ?? manifest.loadout.codex.resolvedModel ?? '',
@@ -1575,6 +1640,7 @@ export class RunOrchestrator {
             workspacePath,
             appPath: join(workspacePath, 'app'),
             agentRuntimes,
+            providerRuntimes,
             ...(manifest.usageGuard ? { usageGuard: manifest.usageGuard } : {}),
             ...(legacy.releaseStatus === 'ready' || legacy.releaseStatus === 'partial' || legacy.releaseStatus === 'failed'
               ? { releaseStatus: legacy.releaseStatus }
@@ -2038,6 +2104,7 @@ export class RunOrchestrator {
       activeTurnIndex: session.activeTurnIndex,
       releaseStatus: session.snapshot.releaseStatus ?? null,
       agentUsage,
+      providerRuntimes: session.snapshot.providerRuntimes ?? null,
       providerSessions: session.providerSessions,
       resumeRecoveryOriginStage: session.resumeRecoveryOriginStage ?? null,
       resumeRecoveryReasons: session.resumeRecoveryReasons ?? null,
@@ -2067,6 +2134,7 @@ export class RunOrchestrator {
         round: session.snapshot.round,
         totalTurns: session.snapshot.totalTurns,
         agentUsage,
+        providerRuntimes: session.snapshot.providerRuntimes ?? {},
         activeTurnIndex: session.activeTurnIndex,
         activeTimeMs: session.accumulatedActiveMs + (session.activeSinceMs > 0
           ? Math.max(0, this.nowMs() - session.activeSinceMs)
@@ -2229,6 +2297,9 @@ export class RunOrchestrator {
         ...(session.snapshot.turnStage ? { stageReceipt: session.snapshot.turnStage } : {})
       },
       providerSessions: { ...session.providerSessions },
+      ...(session.snapshot.providerRuntimes && Object.keys(session.snapshot.providerRuntimes).length > 0
+        ? { providerRuntimes: { ...session.snapshot.providerRuntimes } }
+        : {}),
       evidence: {
         acceptedCodeAgents: [...session.acceptedCodeAgents],
         acceptedReviewAgents: [...session.acceptedReviewAgents],
@@ -2388,21 +2459,6 @@ export class RunOrchestrator {
       }
       const turn = turns[index]
       if (!turn) continue
-      const pressure = session.providerPressure[turn.agent]
-      if (pressure?.status === 'allowed_warning' && (pressure.utilization ?? 0) >= 0.82) {
-        session.quotaConstrainedAgents.add(turn.agent)
-        throw new RunPauseError({
-          reason: 'provider-quota',
-          provider: turn.agent,
-          message: `${turn.agent === 'claude' ? 'Claude' : 'Codex'} reported ${Math.round((pressure.utilization ?? 0) * 100)}% provider utilization. The productive call and opponent handoff are preserved; Duo paused before another premium call.`,
-          resumable: true,
-          ...(pressure.resetAt ? { resetAt: pressure.resetAt } : {}),
-          stage: turn.kind === 'pitch' || turn.kind === 'critique' || turn.kind === 'consensus' || turn.kind === 'tasking'
-            ? 'dialogue'
-            : 'work',
-          action: 'Resume after the provider window resets. The next call starts from the compact Git and evidence baton, not replayed session history.'
-        })
-      }
       session.activeTurnIndex = index
       session.broadcastTick = 0
       session.snapshot.round = index + 1
@@ -2824,15 +2880,23 @@ export class RunOrchestrator {
         : pendingUsageGuard.utilization !== undefined
           ? `The provider reported ${String(Math.round(pendingUsageGuard.utilization * 100))}% utilization.`
           : 'The provider reported usage pressure.'
-      throw new RunPauseError({
-        reason: 'usage-pressure',
-        provider: pendingUsageGuard.agent,
-        message: `${exactDetail} Productive work finished and was checkpointed before another premium call.`,
-        ...(pendingUsageGuard.resetAt ? { resetAt: pendingUsageGuard.resetAt } : {}),
-        resumable: true,
-        stage,
-        action: 'Resume to authorize one fresh compact call from the durable baton. This guard never cancels an active tool or replays completed work.'
-      })
+      await this.emitEvent(session, createDirectorEvent(
+        session,
+        'decision',
+        `${exactDetail} Productive work was checkpointed and the battle is continuing automatically.`,
+        {
+          severity: 'medium',
+          topic: 'provider-usage-advisory',
+          metadata: {
+            agent: pendingUsageGuard.agent,
+            callId: pendingUsageGuard.callId,
+            reasons: pendingUsageGuard.reasons,
+            action: 'continue-after-checkpoint'
+          }
+        }
+      ))
+      session.snapshot.usageGuard = undefined
+      await this.persistRunState(session)
     }
     if (pendingUsageGuard?.status === 'acknowledged') {
       // An explicit Resume spends this one-shot acknowledgement. A new guard
@@ -3296,6 +3360,18 @@ export class RunOrchestrator {
         session.providerSessions[turn.agent] = discovered
         void this.persistRunState(session).catch(() => undefined)
       }
+      const runtimeObservation = extractProviderRuntimeObservation(turn.agent, line)
+      if (runtimeObservation && !sameProviderRuntimeObservation(
+        session.snapshot.providerRuntimes?.[turn.agent],
+        runtimeObservation
+      )) {
+        session.snapshot.providerRuntimes = {
+          ...session.snapshot.providerRuntimes,
+          [turn.agent]: runtimeObservation
+        }
+        this.publishSnapshot(session)
+        void this.persistRunState(session).catch(() => undefined)
+      }
       const quota = parseCliQuotaSignal(line)
       if (quota?.status === 'allowed_warning' && (quota.utilization ?? 0) >= 0.82) {
         session.providerPressure[turn.agent] = quota
@@ -3316,7 +3392,7 @@ export class RunOrchestrator {
         quotaResetAt = quota.resetAt
       }
       const extractedCapsule = structuredDialogue
-        ? extractDialogueCapsuleFromCliLine(turn.agent, line)
+        ? extractDialogueCapsuleFromCliLine(turn.agent, line, { kind: turn.kind, phase: turn.phase })
         : undefined
       if (extractedCapsule) dialogueCapsule = extractedCapsule
       const extractedRecoveryCapsule = structuredRecovery
@@ -3339,6 +3415,46 @@ export class RunOrchestrator {
       }
       if (activity && activityBudget.accept(activity)) this.enqueueEvent(session, activity)
     }
+    const applyCompletedCallUsage = async (callId: string): Promise<void> => {
+      const receipt = session.usageTracker.evidenceSnapshot().calls.find((candidate) => candidate.id === callId)
+      const usageDecision = receipt ? evaluateCompletedCallUsage(receipt) : undefined
+      if (!usageDecision) return
+      session.snapshot.usageGuard = {
+        status: 'pending',
+        agent: usageDecision.agent,
+        callId: usageDecision.callId,
+        trigger: 'completed-call-usage',
+        reasons: usageDecision.reasons,
+        triggeredAt: new Date().toISOString(),
+        effectiveInputTokens: usageDecision.effectiveInputTokens,
+        totals: {
+          processedInputTokens: usageDecision.totals.processedInputTokens,
+          cachedInputTokens: usageDecision.totals.cachedInputTokens,
+          outputTokens: usageDecision.totals.outputTokens,
+          reasoningTokens: usageDecision.totals.reasoningTokens,
+          calls: usageDecision.totals.calls
+        },
+        limits: { ...usageDecision.limits }
+      }
+      await this.emitEvent(session, createDirectorEvent(
+        session,
+        'decision',
+        `${agentName}'s completed call crossed a soft usage advisory. The exact work remains accepted; Duo will checkpoint before another premium call and continue automatically.`,
+        {
+          agent: turn.agent,
+          severity: 'medium',
+          topic: 'provider-usage-guard',
+          metadata: {
+            agent: usageDecision.agent,
+            callId: usageDecision.callId,
+            reasons: usageDecision.reasons,
+            totals: usageDecision.totals,
+            limits: usageDecision.limits,
+            action: 'continue-after-checkpoint'
+          }
+        }
+      ))
+    }
     const runProcess = async (suffix: string, timeoutSeconds: number): Promise<ProcessRunResult> => {
       activeProcessId = `${session.snapshot.runId}-${turn.id}-${stage}${suffix}`
       const callId = activeProcessId
@@ -3350,10 +3466,10 @@ export class RunOrchestrator {
           timeoutMs: timeoutSeconds * 1_000,
           stdoutPath: session.settings.saveRawLogs
             ? join(session.workspace.runtimePath, 'private', 'raw', `${turn.agent}.jsonl`)
-            : process.platform === 'win32' ? 'NUL' : '/dev/null',
+            : devNull,
           stderrPath: session.settings.saveRawLogs
             ? join(session.workspace.runtimePath, 'private', 'raw', `${turn.agent}.stderr.log`)
-            : process.platform === 'win32' ? 'NUL' : '/dev/null',
+            : devNull,
           onLine
         })
         session.usageTracker.finishCall(
@@ -3367,45 +3483,7 @@ export class RunOrchestrator {
                 ? 'complete'
                 : 'failed'
         )
-        const receipt = session.usageTracker.evidenceSnapshot().calls.find((candidate) => candidate.id === callId)
-        const usageDecision = receipt ? evaluateCompletedCallUsage(receipt) : undefined
-        if (usageDecision) {
-          session.snapshot.usageGuard = {
-            status: 'pending',
-            agent: usageDecision.agent,
-            callId: usageDecision.callId,
-            trigger: 'completed-call-usage',
-            reasons: usageDecision.reasons,
-            triggeredAt: new Date().toISOString(),
-            effectiveInputTokens: usageDecision.effectiveInputTokens,
-            totals: {
-              processedInputTokens: usageDecision.totals.processedInputTokens,
-              cachedInputTokens: usageDecision.totals.cachedInputTokens,
-              outputTokens: usageDecision.totals.outputTokens,
-              reasoningTokens: usageDecision.totals.reasoningTokens,
-              calls: usageDecision.totals.calls
-            },
-            limits: { ...usageDecision.limits }
-          }
-          await this.emitEvent(session, createDirectorEvent(
-            session,
-            'decision',
-            `${agentName}'s completed call crossed the soft provider-usage guard. The exact work remains accepted; Duo will checkpoint before another premium call.`,
-            {
-              agent: turn.agent,
-              severity: 'medium',
-              topic: 'provider-usage-guard',
-              metadata: {
-                agent: usageDecision.agent,
-                callId: usageDecision.callId,
-                reasons: usageDecision.reasons,
-                totals: usageDecision.totals,
-                limits: usageDecision.limits,
-                action: 'pause-before-next-call'
-              }
-            }
-          ))
-        }
+        await applyCompletedCallUsage(callId)
         return processResult
       } catch (error) {
         session.usageTracker.finishCall(turn.agent, callId, 'failed')
@@ -3425,6 +3503,18 @@ export class RunOrchestrator {
         session.providerSessions[turn.agent] = replaySession
         void this.persistRunState(session).catch(() => undefined)
       }
+      const replayRuntimeObservation = extractProviderRuntimeObservation(turn.agent, replayEnvelope)
+      if (replayRuntimeObservation && !sameProviderRuntimeObservation(
+        session.snapshot.providerRuntimes?.[turn.agent],
+        replayRuntimeObservation
+      )) {
+        session.snapshot.providerRuntimes = {
+          ...session.snapshot.providerRuntimes,
+          [turn.agent]: replayRuntimeObservation
+        }
+        this.publishSnapshot(session)
+        void this.persistRunState(session).catch(() => undefined)
+      }
       const replayQuota = parseCliQuotaSignal(replayEnvelope)
       if (replayQuota?.status === 'rejected') {
         quotaRejected = true
@@ -3432,7 +3522,11 @@ export class RunOrchestrator {
         quotaResetAt = replayQuota.resetAt
       }
       if (structuredDialogue && !dialogueCapsule) {
-        dialogueCapsule = extractDialogueCapsuleFromCliLine(turn.agent, replayEnvelope)
+        dialogueCapsule = extractDialogueCapsuleFromCliLine(
+          turn.agent,
+          replayEnvelope,
+          { kind: turn.kind, phase: turn.phase }
+        )
       }
       if (structuredRecovery && !recoveryCapsule) {
         recoveryCapsule = extractRecoveryCapsuleFromCliLine(turn.agent, replayEnvelope)
@@ -3522,16 +3616,21 @@ export class RunOrchestrator {
     let rejectedDialogueContract = false
     let rejectedDialogueReason: string | undefined
     let rejectedRecoveryContract = false
+    let acceptedDialogueContract = false
+    let acceptedRecoveryContract = false
     if (structuredDialogue && dialogueCapsule) {
       try {
         if (structuredToolActivity) {
           throw new DialogueCapsuleError('Structured dialogue attempted workspace tool activity.')
         }
         const proposedTaskOwners = dialogueCapsule.tasks.map((task) => task.claimedBy)
+        const accumulatedRedactions = turn.phase === 'round.consensus'
+          ? await readAccumulatedDialogueRedactions(session.workspace.workspacePath)
+          : []
         const validatedCapsule = validateDialogueCapsuleForTurn(dialogueCapsule, {
           kind: turn.kind,
           phase: turn.phase
-        })
+        }, { accumulatedRedactions })
         let supervisorProvenance: ConsensusProvenanceRecord | undefined
         if (validatedCapsule.consensus) {
           const immutablePitches = await session.proofStore.readPitches(session.snapshot.runId)
@@ -3568,6 +3667,7 @@ export class RunOrchestrator {
           ...(opponent ? { replyTo: opponent.id } : {}),
           capsule: validatedCapsule
         })
+        acceptedDialogueContract = true
         for (const [index, pitch] of validatedCapsule.pitches.entries()) {
           const record: PitchProvenanceRecord = {
             pitchId: createPitchProvenanceId({
@@ -3651,6 +3751,7 @@ export class RunOrchestrator {
           requireOpinion: requiresRecoveryOpinion,
           capsule: recoveryCapsule
         })
+        acceptedRecoveryContract = true
       } catch (error) {
         if (!(error instanceof RecoveryCapsuleError)) throw error
         rejectedRecoveryContract = true
@@ -3779,7 +3880,23 @@ export class RunOrchestrator {
     }
     const opponentAgent = turn.agent === 'claude' ? 'codex' : 'claude'
     const opponentHasAcceptedContribution = session.acceptedCodeAgents.has(opponentAgent)
-    const acceptanceResult = providerFailure?.kind === 'contract-invalid'
+    const recordedStructuredContract = acceptedDialogueContract || acceptedRecoveryContract
+    const expectedStructuredMaxTurnClosure = recordedStructuredContract && !quotaRejected &&
+      providerFailure?.kind === 'cli-incompatible' && providerFailure.source === 'process' &&
+      isExpectedClaudeStructuredMaxTurnClosure(turn.agent, stageProviderRecords, result)
+    if (expectedStructuredMaxTurnClosure && activeProcessId) {
+      // Claude may close a deliberately bounded structured call with
+      // error_max_turns even though one strict StructuredOutput payload was
+      // accepted. Reconcile only that exact canonical closure;
+      // output-limit, raw-log, timeout, host, and generic CLI failures remain
+      // real safety boundaries.
+      session.usageTracker.finishCall(turn.agent, activeProcessId, 'complete')
+      await applyCompletedCallUsage(activeProcessId)
+    }
+    const acceptedStructuredContract = recordedStructuredContract && !quotaRejected &&
+      (!providerFailure || expectedStructuredMaxTurnClosure)
+    const effectiveProviderFailure = expectedStructuredMaxTurnClosure ? undefined : providerFailure
+    const acceptanceResult = acceptedStructuredContract || effectiveProviderFailure?.kind === 'contract-invalid'
       ? { ...result, exitCode: 0, signal: null, timedOut: false, cancelled: false }
       : result
     const assessedTurn = assessTurnAcceptance({
@@ -4030,13 +4147,35 @@ export class RunOrchestrator {
     return {
       assessment,
       durableSourceChanged,
+      ...(recordedStructuredContract ? { structuredContractAccepted: true } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(quotaRejected ? { quotaRejected: true } : {}),
       ...(quotaResetAt ? { quotaResetAt } : {}),
-      ...(providerFailure ? { failure: providerFailure } : {}),
+      ...(effectiveProviderFailure ? { failure: effectiveProviderFailure } : {}),
       ...(leaseTimeboxRequested ? { leaseTimeboxed: true } : {}),
       ...(contributionReceipt ? { contributionReceipt } : {})
     }
+  }
+
+  private async advanceAcceptedDialogueTurnBeforePause(
+    session: RunSession,
+    turn: RealTurn,
+    stage: TurnStageName,
+    executed: ExecutedTurnStage
+  ): Promise<boolean> {
+    if (stage !== 'dialogue' || executed.structuredContractAccepted !== true) return false
+    const current = session.turnPlan[session.activeTurnIndex]
+    if (!current || current.id !== turn.id) return false
+    if (turn.phase === 'round.consensus') await this.loadRedactionDictionary(session)
+    session.snapshot.activeAgent = undefined
+    session.snapshot.turnStage = undefined
+    session.resumeStage = undefined
+    delete session.providerSessions[turn.agent]
+    session.activeTurnIndex = Math.min(session.activeTurnIndex + 1, session.turnPlan.length)
+    session.resumePhase = session.turnPlan[session.activeTurnIndex]?.phase ?? 'reveal.ready'
+    session.snapshot.phase = session.resumePhase
+    await this.persistRunState(session)
+    return true
   }
 
   private async resolveStageOutcome(
@@ -4138,6 +4277,7 @@ export class RunOrchestrator {
       : undefined
     if (executed.quotaRejected) {
       const agentName = turn.agent === 'claude' ? 'Claude' : 'Codex'
+      const completedDialogue = await this.advanceAcceptedDialogueTurnBeforePause(session, turn, stage, executed)
       const resumeStage: TurnStageName = stage === 'opening' && executed.durableSourceChanged ? 'work' : stage
       if (stage === 'opening' && executed.durableSourceChanged) {
         if (session.snapshot.turnStage) {
@@ -4173,10 +4313,12 @@ export class RunOrchestrator {
         message: `${agentName} reached a provider usage boundary. The balanced battle is suspended with every durable file and event preserved.`,
         ...(executed.quotaResetAt ? { resetAt: executed.quotaResetAt } : {}),
         resumable: true,
-        stage: resumeStage,
-        action: executed.quotaResetAt
-          ? 'Resume after the provider reset; the same turn will continue before the opponent moves.'
-          : 'Resume when provider usage is available again; the same turn will continue before the opponent moves.'
+        ...(!completedDialogue ? { stage: resumeStage } : {}),
+        action: completedDialogue
+          ? 'Resume after provider usage returns; the accepted dialogue turn will not be replayed and the next scheduled turn will begin.'
+          : executed.quotaResetAt
+            ? 'Resume after the provider reset; the same turn will continue before the opponent moves.'
+            : 'Resume when provider usage is available again; the same turn will continue before the opponent moves.'
       })
     }
     const recoverableFailureReason: Partial<Record<ProviderFailureClassification['kind'], RunPauseSnapshot['reason']>> = {
@@ -4191,13 +4333,16 @@ export class RunOrchestrator {
     const typedPauseReason = executed.failure ? recoverableFailureReason[executed.failure.kind] : undefined
     if (typedPauseReason) {
       const agentName = turn.agent === 'claude' ? 'Claude' : 'Codex'
+      const completedDialogue = await this.advanceAcceptedDialogueTurnBeforePause(session, turn, stage, executed)
       throw new RunPauseError({
         reason: typedPauseReason,
         provider: turn.agent,
         message: `${agentName}'s ${stage} stage reached a recoverable ${executed.failure?.kind ?? 'provider'} boundary. The exact workspace and collaboration cursor are preserved.`,
         resumable: true,
-        stage,
-        action: typedPauseReason === 'provider-auth'
+        ...(!completedDialogue ? { stage } : {}),
+        action: completedDialogue
+          ? 'Resolve the provider boundary, then resume. The accepted dialogue turn will not be replayed.'
+          : typedPauseReason === 'provider-auth'
           ? `Sign in to ${agentName}, then resume the same turn.`
           : typedPauseReason === 'model-unavailable'
             ? 'Choose an available model in Agent loadout, apply it, then resume.'
@@ -4494,6 +4639,7 @@ export class RunOrchestrator {
     })
     const result = await this.supervisorVerifier.verify({
       appPath: session.workspace.appPath,
+      nodePath: session.settings.nodePath,
       npmPath: session.settings.npmPath,
       // Agent execution obeys the overall run ceiling. Independent final proof
       // receives its own bounded grace window so an exhausted agent budget can
@@ -4678,12 +4824,12 @@ export class RunOrchestrator {
         : undefined
     }).filter((value): value is string => Boolean(value))
     const privateOpinion = revealText(opinion?.privateText)
-    const context = [
+    const context = repairMojibake([
       `${opponent === 'claude' ? 'Claude' : 'Codex'} private ${revealText(dispatch.dispatchKind) ?? 'position'}:`,
       speech,
       ...(privateOpinion ? [`Opinion: ${privateOpinion}`] : []),
       ...pitchText
-    ].join('\n')
+    ].join('\n'))
     const maximum = 1_200
     return {
       id,

@@ -140,6 +140,185 @@ describe('quality brief compiler', () => {
     expect(violating.valid).toBe(false)
   })
 
+  it('treats working without a network connection as a required offline capability', () => {
+    const brief = compileQualityBrief({
+      humanBrief: 'Build a polished dependency-free single-page Decision Deck. A user enters three to seven options, compares two options at a time, and finishes with a ranked list. Preserve progress in localStorage, support mouse and keyboard input, include an obvious reset path, work without a network connection, and include deterministic tests for the ranking logic. The interface must remain readable at 900 by 640 and 1600 by 900.',
+      missionProfile: 'serious'
+    })
+    const required = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'require')
+    const forbidden = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'forbid')
+    const prompt = formatQualityBriefForAgent(brief)
+
+    expect(required.map((constraint) => constraint.sourceText).join(' ')).toMatch(/work offline/i)
+    expect(required.map((constraint) => constraint.sourceText)).not.toContain('work')
+    expect(forbidden.map((constraint) => constraint.sourceText).join(' ')).not.toMatch(/network connection/i)
+    expect(prompt).toMatch(/\[REQUIRE\].*work offline/i)
+    expect(prompt).not.toMatch(/\[FORBID\].*network connection/i)
+    expect(prompt).not.toMatch(/\[FORBID\]\s+(?:without|no|never|avoid|do not)\b/i)
+  })
+
+  it('rejects a substitute that drops offline operation and deterministic verification from the benchmark brief', () => {
+    const brief = compileQualityBrief({
+      humanBrief: 'Build a polished dependency-free single-page Decision Deck. A user enters three to seven options, compares two options at a time, and finishes with a ranked list. Preserve progress in localStorage, support mouse and keyboard input, include an obvious reset path, work without a network connection, and include deterministic tests for the ranking logic. The interface must remain readable at 900 by 640 and 1600 by 900.',
+      missionProfile: 'serious'
+    })
+    const weak = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Decision Deck',
+      idea: 'A hosted pairwise choice service.',
+      summary: 'Compare options with mouse and keyboard controls, save progress, and reset a ranked list.',
+      spec: 'Use a remote service to synchronize the comparison flow and provide responsive controls at the target desktop sizes.'
+    })
+
+    expect(brief.privateContract.hardConstraints.map((constraint) => constraint.sourceText)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/work offline/i), expect.stringMatching(/deterministic tests/i)])
+    )
+    expect(weak.valid).toBe(false)
+    expect(weak.violations.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('does not count an explicitly negated deterministic-test requirement as satisfied', () => {
+    const brief = compileQualityBrief({
+      humanBrief: 'Build a polished dependency-free single-page Decision Deck. A user enters three to seven options, compares two options at a time, and finishes with a ranked list. Preserve progress in localStorage, support mouse and keyboard input, include an obvious reset path, work without a network connection, and include deterministic tests for the ranking logic. The interface must remain readable at 900 by 640 and 1600 by 900.',
+      missionProfile: 'serious'
+    })
+    const base = {
+      appName: 'Decision Deck',
+      idea: 'A polished dependency-free single-page Decision Deck.',
+      summary: 'A user enters three to seven options, compares two options at a time, and finishes with a ranked list.',
+      spec: 'Preserve progress in localStorage. Support mouse and keyboard input. Include an obvious reset path. Work offline. The interface remains readable at 900 by 640 and 1600 by 900.'
+    }
+    const testConstraint = brief.privateContract.hardConstraints.find((constraint) =>
+      /deterministic tests/i.test(constraint.sourceText)
+    )
+    const rejected = assessConsensusAgainstQualityBrief(brief, {
+      ...base,
+      spec: `${base.spec} Do not include deterministic tests for the ranking logic.`
+    })
+    const accepted = assessConsensusAgainstQualityBrief(brief, {
+      ...base,
+      spec: `${base.spec} Include deterministic tests for the ranking logic.`
+    })
+
+    expect(testConstraint).toBeDefined()
+    expect(rejected.valid).toBe(false)
+    expect(rejected.violations).toContain(`Consensus does not preserve human-brief constraint ${testConstraint!.id}.`)
+    expect(accepted.valid).toBe(true)
+  })
+
+  it.each([
+    ['does not use analytics', 'analytics', ['analytic']],
+    ['cannot use remote fonts', 'remote fonts', ['remote', 'font']],
+    ['lacks telemetry', 'telemetry', ['telemetry']],
+    ['omits user accounts', 'user accounts', ['user', 'account']]
+  ])('normalizes an extended restriction without keeping its negation verb: %s', (restriction, prohibited, expectedTerms) => {
+    const brief = compileQualityBrief({
+      humanBrief: `Build a local tool that ${restriction}.`,
+      missionProfile: 'serious'
+    })
+    const forbidden = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'forbid')
+    const violating = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Local Tool',
+      idea: `A local tool that uses ${prohibited}.`,
+      summary: `${prohibited} is enabled.`,
+      spec: `Implement ${prohibited} in the product.`
+    })
+    const prompt = formatQualityBriefForAgent(brief)
+
+    expect(forbidden.map((constraint) => constraint.coverageTerms).flat()).toEqual(
+      expect.arrayContaining(expectedTerms)
+    )
+    expect(prompt).not.toMatch(/\[FORBID\]\s+(?:cannot|does not|lacks|omits)\b/i)
+    expect(violating.valid).toBe(false)
+  })
+
+  it('keeps the affirmative half of a mixed compliant sentence', () => {
+    const brief = compileQualityBrief({
+      humanBrief: 'Build a local tool that must work offline and does not use analytics.',
+      missionProfile: 'serious'
+    })
+    const compliant = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Local Tool',
+      idea: 'A useful local tool.',
+      summary: 'It works offline and does not use analytics.',
+      spec: 'All product behavior remains local.'
+    })
+    const violating = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Local Tool',
+      idea: 'A useful local tool.',
+      summary: 'It works offline and uses analytics.',
+      spec: 'Analytics is enabled in the otherwise local product.'
+    })
+
+    expect(compliant).toMatchObject({ valid: true, violations: [] })
+    expect(violating.valid).toBe(false)
+  })
+
+  it.each([
+    ['work without a network connection and without analytics', /analytics/i],
+    ['work without a network connection or remote fonts', /remote fonts/i],
+    ['work without a network connection, remote fonts, or analytics', /remote fonts.*analytics/i],
+    ['work without a network connection, analytics, and telemetry', /analytics.*telemetry/i],
+    ['work without a network connection nor analytics', /analytics/i],
+    ['work without a network connection as well as analytics', /analytics/i]
+  ])('keeps an offline requirement separate from a compound prohibition: %s', (clause, forbiddenPhrase) => {
+    const brief = compileQualityBrief({
+      humanBrief: `Build a local decision tool that must ${clause}.`,
+      missionProfile: 'serious'
+    })
+    const required = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'require')
+    const forbidden = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'forbid')
+    const prompt = formatQualityBriefForAgent(brief)
+
+    expect(required.map((constraint) => constraint.sourceText).join(' ')).toMatch(/work offline/i)
+    expect(forbidden.map((constraint) => constraint.sourceText).join(' ')).toMatch(forbiddenPhrase)
+    expect(prompt).not.toMatch(/\[FORBID\].*work offline/i)
+    expect(prompt).not.toMatch(/\[FORBID\]\s+(?:without|no|never|avoid|do not)\b/i)
+  })
+
+  it.each([
+    'work without a network connection and with keyboard navigation',
+    'work without a network connection and be keyboard accessible',
+    'work without a network connection and allow keyboard input',
+    'work without a network connection and offer keyboard input',
+    'work without a network connection and enable keyboard input',
+    'work without a network connection and remain keyboard accessible',
+    'work without a network connection and display a status',
+    'work without a network connection and persist progress locally'
+  ])('never inverts a positive capability after an offline requirement: %s', (clause) => {
+    const brief = compileQualityBrief({
+      humanBrief: `Build a local decision tool that must ${clause}.`,
+      missionProfile: 'serious'
+    })
+    const forbidden = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'forbid')
+    const aligned = assessConsensusAgainstQualityBrief(brief, {
+      appName: 'Local Choice',
+      idea: 'A local offline decision tool with accessible keyboard input.',
+      summary: 'Keyboard navigation works throughout the offline experience.',
+      spec: `The product must ${clause.replace(/work without a network connection/iu, 'work offline')}.`
+    })
+
+    expect(forbidden.map((constraint) => constraint.sourceText).join(' ')).not.toMatch(/keyboard/i)
+    expect(formatQualityBriefForAgent(brief)).not.toMatch(/\[FORBID\].*keyboard/i)
+    expect(aligned.valid).toBe(true)
+  })
+
+  it.each([
+    'generate a report',
+    'export JSON',
+    'save progress',
+    'analytics'
+  ])('preserves an unknown sibling after an offline requirement instead of dropping or forbidding it: %s', (capability) => {
+    const brief = compileQualityBrief({
+      humanBrief: `Build a local decision tool that must work without a network connection and ${capability}.`,
+      missionProfile: 'serious'
+    })
+    const required = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'require')
+    const forbidden = brief.privateContract.hardConstraints.filter((constraint) => constraint.polarity === 'forbid')
+
+    expect(required.map((constraint) => constraint.sourceText).join(' ')).toMatch(new RegExp(capability, 'i'))
+    expect(forbidden.map((constraint) => constraint.sourceText).join(' ')).not.toMatch(new RegExp(capability, 'i'))
+  })
+
   it('matches prohibited morphology inside one affirmative clause without combining unrelated clauses', () => {
     const brief = compileQualityBrief({
       humanBrief: 'Build a local design tool. Avoid remote fonts.',
@@ -162,6 +341,30 @@ describe('quality brief compiler', () => {
     expect(violating.valid).toBe(false)
   })
 
+  it.each([
+    'Debate a compact direction without spending Max effort on routine dialogue.',
+    'Let the final reviewer preserve a correct build without inventing an edit.',
+    'Pause honestly if the exact preserved source cannot be verified.'
+  ])('does not turn a process-only orchestration instruction into a product contract: %s', (humanBrief) => {
+    const brief = compileQualityBrief({ humanBrief, missionProfile: 'surprise' })
+
+    expect(brief.privateContract.hardConstraints).toEqual([])
+    expect(brief.privateContract.qualityBar.length).toBeGreaterThan(0)
+    expect(brief.privateContract.acceptanceChecks.length).toBeGreaterThan(0)
+  })
+
+  it('continues binding an ordinary product request after process-only filtering', () => {
+    const brief = compileQualityBrief({
+      humanBrief: 'Build a useful local decision dashboard for documentary editors.',
+      missionProfile: 'serious'
+    })
+
+    expect(brief.privateContract.hardConstraints.length).toBeGreaterThan(0)
+    expect(brief.privateContract.hardConstraints.map((constraint) => constraint.sourceText).join(' ')).toMatch(
+      /local decision dashboard/i
+    )
+  })
+
   it('formats an immutable post-consensus baton without repaying the full quality prompt', () => {
     const brief = compileQualityBrief({
       humanBrief: 'Create an accessible offline CSV review tool for documentary editors without analytics.',
@@ -174,7 +377,11 @@ describe('quality brief compiler', () => {
     expect(baton).toContain(brief.fingerprint)
     for (const constraint of brief.privateContract.hardConstraints) {
       expect(baton).toContain(constraint.id)
-      expect(baton).toContain(constraint.sourceText)
+      if (constraint.polarity === 'forbid') {
+        expect(baton).toContain(constraint.coverageTerms[0]!)
+      } else {
+        expect(baton).toContain(constraint.sourceText)
+      }
     }
     expect(baton).toMatch(/\.duo\/sealed\/spec\.md/i)
     expect(baton).not.toMatch(/quality bar/i)

@@ -1,6 +1,6 @@
 import { BriefcaseBusiness, Eye, EyeOff, FolderOpen, Gauge, Play, Radio, RotateCcw, Scale, Shield, Sparkles, TimerReset, TriangleAlert, Zap } from 'lucide-react'
 import type { ExecutionMode, MissionProfile, VisibilityMode } from '@shared/types'
-import { formatRuntimeProfile } from '@renderer/lib/runtime-label'
+import { formatRuntimeProfile, formatRuntimeRequestSource } from '@renderer/lib/runtime-label'
 import { DEFAULT_SURPRISE_PROMPT, useStudioStore } from '@renderer/store/studio-store'
 import { AgentLoadoutPanel } from './AgentLoadoutPanel'
 import { RecentBuilds } from './RecentBuilds'
@@ -78,16 +78,20 @@ export function LaunchCockpit(): React.JSX.Element {
   const canStart = form.prompt.trim().length >= 3 && form.workspaceRoot.length > 0 && !busy && !realUnavailable && !toolbeltNeedsTrust && !toolbeltUnsupportedInSafe && Boolean(settings)
   const codexEffort = settings?.codexEffort && settings.codexEffort !== 'default' ? settings.codexEffort : codexHealth?.runtime?.effort
   const claudeEffort = settings?.claudeEffort && settings.claudeEffort !== 'default' ? settings.claudeEffort : claudeHealth?.runtime?.effort
-  const codexProfile = formatRuntimeProfile({
+  const codexRuntime = {
     model: settings?.codexModel || codexHealth?.runtime?.model,
     ...(codexEffort ? { effort: codexEffort } : {}),
-    source: settings?.codexModel || settings?.codexEffort !== 'default' ? 'studio' : codexHealth?.runtime?.source ?? 'cli-default'
-  })
-  const claudeProfile = formatRuntimeProfile({
+    source: settings && (settings.codexModel || settings.codexEffort !== 'default') ? 'studio' : codexHealth?.runtime?.source ?? 'cli-default'
+  } as const
+  const claudeRuntime = {
     model: settings?.claudeModel || claudeHealth?.runtime?.model,
     ...(claudeEffort ? { effort: claudeEffort } : {}),
-    source: settings?.claudeModel || settings?.claudeEffort !== 'default' ? 'studio' : claudeHealth?.runtime?.source ?? 'cli-default'
-  })
+    source: settings && (settings.claudeModel || settings.claudeEffort !== 'default') ? 'studio' : claudeHealth?.runtime?.source ?? 'cli-default'
+  } as const
+  const codexProfile = formatRuntimeProfile(codexRuntime)
+  const claudeProfile = formatRuntimeProfile(claudeRuntime)
+  const codexRequestSource = formatRuntimeRequestSource(codexRuntime)
+  const claudeRequestSource = formatRuntimeRequestSource(claudeRuntime)
   const workLease = formatBudget(settings?.turnTimeoutSeconds ?? 7_200)
   const runCeiling = formatBudget(settings?.runTimeoutSeconds ?? 86_400)
   const selectedEffort = deepWorkEffort(codexEffort, claudeEffort)
@@ -112,12 +116,12 @@ export function LaunchCockpit(): React.JSX.Element {
           <section className="battle-briefing" aria-label="Battle briefing">
             <div className="briefing-matchup">
               <article className="briefing-agent briefing-claude">
-                <span><b>Claude</b><em> enters with</em></span>
+                <span><b>Claude</b><em>{claudeRequestSource}</em></span>
                 <strong>{claudeProfile}</strong>
               </article>
               <div className="briefing-vs" aria-label="versus"><span>VS</span></div>
               <article className="briefing-agent briefing-codex">
-                <span><b>Codex</b><em> enters with</em></span>
+                <span><b>Codex</b><em>{codexRequestSource}</em></span>
                 <strong>{codexProfile}</strong>
               </article>
             </div>

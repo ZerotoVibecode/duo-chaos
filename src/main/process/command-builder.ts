@@ -121,13 +121,31 @@ function assertInput(input: BuildAgentCommandInput): void {
   assertSession(input)
 }
 
-function structuredOutputPrompt(prompt: string, kind: StructuredDialoguePolicy['kind']): string {
+function structuredOutputPrompt(
+  prompt: string,
+  kind: StructuredDialoguePolicy['kind'],
+  agent: BuildAgentCommandInput['agent']
+): string {
   const label = kind === 'structured-recovery' ? 'recovery capsule' : 'dialogue capsule'
-  return `Return exactly one ${label} that satisfies the supplied JSON schema.
+  const transport = agent === 'claude'
+    ? `Return exactly one valid ${label} by submitting StructuredOutput with every schema field at the tool-input root. Never wrap the schema fields under \`value\`, \`output\`, or \`payload\`, and never serialize the object into a string. If schema validation rejects the first submission, immediately correct and resubmit once. Do not call anything else.`
+    : `Return exactly one ${label} that satisfies the supplied JSON schema.`
+  return `${transport}
 Do not inspect, edit, or run workspace tools. Do not read files, execute commands, browse, or start a tool loop.
-Answer only from the human brief and teammate context included below. Return JSON only, with no prose wrapper or markdown fence.
+Answer only from the human brief and teammate context included below. Do not add a prose wrapper or markdown fence.
 
 ${prompt}`
+}
+
+/**
+ * Global npm command shims on Windows forward argv through cmd.exe a second
+ * time. Keep the JSON semantically identical while preventing schema regexes
+ * from being interpreted as redirection, pipes, expansion, or control syntax.
+ */
+export function serializeClaudeJsonSchemaArgument(schema: Record<string, unknown>): string {
+  return JSON.stringify(schema).replace(/[&|<>^%!]/g, (character) =>
+    `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`
+  )
 }
 
 export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
@@ -140,7 +158,7 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
   if (input.executionMode === 'safe' && sourcePolicy && customizationProfile !== 'core') {
     throw new Error('Safe execution supports Core toolbelts only; unattended local capabilities require Chaos or YOLO Sandbox.')
   }
-  const prompt = dialoguePolicy ? structuredOutputPrompt(input.prompt, dialoguePolicy.kind) : input.prompt
+  const prompt = dialoguePolicy ? structuredOutputPrompt(input.prompt, dialoguePolicy.kind, input.agent) : input.prompt
   // Supervised runs are a closed command contract. Legacy extra-argument fields
   // remain loadable for settings compatibility, but never enter a child command:
   // they could override the visible model, effort, sandbox, tools, or consent.
@@ -260,7 +278,13 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
       ...permissionMode,
       ...preapprovedSourceTools,
       ...sessionArgs,
-      ...(dialoguePolicy ? ['--tools', '', '--json-schema', JSON.stringify(dialoguePolicy.outputSchema)] : []),
+      ...(dialoguePolicy
+        ? ['--tools', '', '--json-schema', serializeClaudeJsonSchemaArgument(dialoguePolicy.outputSchema)]
+        : []),
+      // One response plus one provider-internal schema correction. Real tools
+      // remain disabled, the session stays ephemeral, and the orchestrator
+      // still accepts only one strictly validated capsule.
+      ...(dialoguePolicy ? ['--max-turns', '2'] : []),
       ...(sourcePolicy?.toolPolicy === 'workspace-essential' && lockedClaudeContext
         ? ['--tools', input.executionMode === 'safe' ? 'Read,Glob,Grep,Edit,Write' : 'Read,Glob,Grep,Edit,Write,Bash']
         : []),

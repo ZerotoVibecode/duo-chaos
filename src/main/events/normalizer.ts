@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentDispatchKind, AgentId, DuoEvent, DuoEventType, OpinionTone, Severity } from '@shared/types'
 import { decodeProviderEnvelope, type ProviderRecord } from '@main/process/provider-envelope'
+import { repairMojibake } from '@main/text/repair-mojibake'
 
 interface EventContext {
   runId: string
@@ -92,24 +93,6 @@ function recordOf(value: unknown): Record<string, unknown> {
 
 function stringOf(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)
-}
-
-const MOJIBAKE_REPAIRS: ReadonlyArray<readonly [string, string]> = [
-  ['\u00e2\u20ac\u2122', '\u2019'],
-  ['\u00e2\u20ac\u02dc', '\u2018'],
-  ['\u00e2\u20ac\u0153', '\u201c'],
-  ['\u00e2\u20ac\u009d', '\u201d'],
-  ['\u00e2\u20ac\u201c', '\u2013'],
-  ['\u00e2\u20ac\u201d', '\u2014'],
-  ['\u00e2\u20ac\u00a6', '\u2026'],
-  ['\u00e2\u2020\u2019', '\u2192'],
-  ['\u00c2\u00b7', '\u00b7']
-]
-
-function repairMojibake(value: string): string {
-  let repaired = value
-  for (const [broken, replacement] of MOJIBAKE_REPAIRS) repaired = repaired.replaceAll(broken, replacement)
-  return repaired
 }
 
 function numberOf(value: unknown, fallback: number): number {
@@ -206,7 +189,7 @@ export function normalizeEvent(value: unknown, context: EventContext): DuoEvent 
     timestamp,
     agent,
     publicText,
-    ...(privateText ? { privateText } : {}),
+    ...(privateText ? { privateText: repairMojibake(privateText) } : {}),
     spoilerRisk: riskOf(input.spoilerRisk),
     severity: severityOf(input.severity),
     ...(targetAgentValue || inferredTarget ? { targetAgent: agentOf(targetAgentValue ?? inferredTarget) } : {}),
@@ -361,7 +344,7 @@ function isRecognizableVerificationSegment(candidate: string): boolean {
     /^go\s+test(?:\s|$)/i.test(segment) ||
     /^dotnet\s+(?:test|build)(?:\s|$)/i.test(segment) ||
     /^(?:\.\/?|\.\\)?(?:mvnw?|gradlew?)(?:\.cmd|\.bat|\.exe)?\s+(?:test|verify|build|check)(?:\s|$)/i.test(segment) ||
-    /^(?:node(?:\.exe)?\s+--check|(?:bash|sh)\s+-n|deno\s+(?:test|check|lint))(?:\s|$)/i.test(segment)
+    /^(?:node(?:\.exe)?\s+--(?:check|test)|(?:bash|sh)\s+-n|deno\s+(?:test|check|lint))(?:\s|$)/i.test(segment)
 }
 
 function isRecognizableVerificationCommand(command: string): boolean {
@@ -604,8 +587,8 @@ export function normalizeCliActivity(
       source: context.source,
       stream: context.stream,
       publicText: rejected
-        ? `${name} reached a provider usage limit. Durable work will be preserved and handed to the other agent.`
-        : `${name} is approaching a provider usage limit; the current turn is being watched closely.`,
+        ? `${name} reached a provider usage limit. Durable work will be preserved and the balanced battle will suspend.`
+        : `${name} reported a provider usage advisory:${quota.utilization === undefined ? '' : ` ${String(Math.round(quota.utilization * 100))}% provider utilization.`} Duo will checkpoint completed work and continue while the provider still allows calls.`,
       spoilerRisk: 0.05,
       topic: 'quota-pressure',
       category: rejected ? 'error' : 'status',

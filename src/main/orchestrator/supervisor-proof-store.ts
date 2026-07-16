@@ -428,8 +428,10 @@ export class SupervisorProofStore {
     }
   }
 
-  appendPitch(pitch: PitchProvenanceRecord): Promise<void> {
-    return this.append('pitches.jsonl', pitch)
+  async appendPitch(pitch: PitchProvenanceRecord): Promise<void> {
+    const existing = await this.readPitches(pitch.runId)
+    if (existing.some((candidate) => candidate.pitchId === pitch.pitchId)) return
+    await this.append('pitches.jsonl', pitch)
   }
 
   async readPitches(runId: string): Promise<PitchProvenanceRecord[]> {

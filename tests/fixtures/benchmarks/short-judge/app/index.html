@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Decision Deck</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #080b14; color: #f4f7ff; }
+      * { box-sizing: border-box; }
+      body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: radial-gradient(circle at 20% 10%, #22335b 0, transparent 38%), #080b14; display: grid; place-items: center; }
+      main { width: min(760px, calc(100vw - 40px)); height: min(580px, calc(100vh - 40px)); margin: 0; padding: clamp(22px, 4vw, 46px); border: 1px solid #ffffff22; border-radius: 28px; background: #111625e8; display: grid; align-content: center; gap: 18px; box-shadow: 0 24px 80px #0008; }
+      h1 { margin: 0; font-size: clamp(36px, 6vw, 64px); letter-spacing: -0.05em; }
+      p { color: #aeb8d1; margin: 0; line-height: 1.5; }
+      textarea { width: 100%; min-height: 150px; resize: none; border: 1px solid #ffffff26; border-radius: 16px; padding: 16px; background: #070a12; color: inherit; font: inherit; }
+      button { min-height: 48px; border: 1px solid #ffffff26; border-radius: 14px; padding: 12px 20px; background: #202a45; color: inherit; font: 700 16px inherit; cursor: pointer; }
+      button:hover, button:focus-visible { background: #30436e; outline: 3px solid #80d9ff; outline-offset: 2px; }
+      .actions, .pair { display: flex; gap: 12px; flex-wrap: wrap; }
+      .pair button { flex: 1 1 240px; min-height: 92px; font-size: 20px; }
+      ol { margin: 0; padding-left: 30px; display: grid; gap: 8px; }
+      li { padding: 10px 14px; border-radius: 10px; background: #ffffff0d; }
+      [hidden] { display: none !important; }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p>Private pairwise ranking</p>
+        <h1>Decision Deck</h1>
+      </header>
+      <section id="setup">
+        <label for="options">Enter three to seven options, one per line.</label>
+        <textarea id="options" data-testid="options-input"></textarea>
+        <div class="actions"><button type="button" data-testid="start">Start comparing</button></div>
+      </section>
+      <section id="compare" hidden>
+        <p>Choose the option you prefer.</p>
+        <div class="pair">
+          <button type="button" data-testid="choose-left"></button>
+          <button type="button" data-testid="choose-right"></button>
+        </div>
+      </section>
+      <section id="result" hidden>
+        <p>Your ranked decision</p>
+        <ol id="ranking"></ol>
+      </section>
+      <p data-testid="status" role="status" aria-live="polite">Ready for three to seven options.</p>
+      <button type="button" data-testid="reset">Reset deck</button>
+    </main>
+    <script type="module">
+      import { pairsFor, rankOptions } from './logic.js'
+
+      const key = 'decision-deck-benchmark-v1'
+      const input = document.querySelector('[data-testid="options-input"]')
+      const setup = document.querySelector('#setup')
+      const compare = document.querySelector('#compare')
+      const result = document.querySelector('#result')
+      const status = document.querySelector('[data-testid="status"]')
+      const leftButton = document.querySelector('[data-testid="choose-left"]')
+      const rightButton = document.querySelector('[data-testid="choose-right"]')
+      const ranking = document.querySelector('#ranking')
+      let state = { options: [], choices: [] }
+
+      function save() { localStorage.setItem(key, JSON.stringify(state)) }
+      function currentPair() { return pairsFor(state.options)[state.choices.length] }
+
+      function render() {
+        const pairs = pairsFor(state.options)
+        setup.hidden = state.options.length > 0
+        compare.hidden = state.options.length === 0 || state.choices.length >= pairs.length
+        result.hidden = state.options.length === 0 || state.choices.length < pairs.length
+        if (!compare.hidden) {
+          const [left, right] = currentPair()
+          leftButton.textContent = state.options[left]
+          rightButton.textContent = state.options[right]
+          status.textContent = `Comparison ${state.choices.length + 1} of ${pairs.length}`
+        } else if (!result.hidden) {
+          ranking.replaceChildren()
+          rankOptions(state.options, state.choices).forEach((label) => {
+            const item = document.createElement('li')
+            item.dataset.testid = 'ranking-item'
+            const name = document.createElement('span')
+            name.textContent = label
+            const score = document.createElement('span')
+            score.textContent = ' scored result'
+            item.append(name, score)
+            ranking.append(item)
+          })
+          status.textContent = 'Ranking complete.'
+        }
+      }
+
+      function choose(side) {
+        state.choices.push(side)
+        save()
+        render()
+      }
+
+      document.querySelector('[data-testid="start"]').addEventListener('click', () => {
+        const options = input.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+        if (options.length < 3 || options.length > 7) {
+          status.textContent = 'Enter between three and seven options.'
+          return
+        }
+        state = { options, choices: [] }
+        save()
+        render()
+      })
+      leftButton.addEventListener('click', () => choose('left'))
+      rightButton.addEventListener('click', () => choose('right'))
+      document.querySelector('[data-testid="reset"]').addEventListener('click', () => {
+        state = { options: [], choices: [] }
+        localStorage.removeItem(key)
+        input.value = ''
+        status.textContent = 'Deck reset.'
+        render()
+      })
+
+      try {
+        const saved = JSON.parse(localStorage.getItem(key) ?? 'null')
+        if (saved?.options?.length >= 3 && Array.isArray(saved.choices)) state = saved
+      } catch {}
+      render()
+    </script>
+  </body>
+</html>

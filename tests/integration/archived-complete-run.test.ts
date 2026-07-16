@@ -38,6 +38,19 @@ describe('archived complete run snapshots', () => {
       round: 7,
       totalTurns: 8,
       activeTimeMs: 1_234,
+      providerRuntimes: {
+        claude: {
+          model: 'claude-opus-4-8',
+          effort: 'high',
+          source: 'claude-system-init',
+          recordedAt: '2026-07-13T09:01:00.000Z'
+        },
+        codex: {
+          source: 'codex-thread-started',
+          recordedAt: '2026-07-13T09:01:05.000Z',
+          message: { model: 'nested-must-not-load' }
+        }
+      },
       releaseStatus: 'ready'
     })
     await writeJson(join(duoPath, 'board.json'), {
@@ -91,6 +104,13 @@ describe('archived complete run snapshots', () => {
       round: 7,
       totalTurns: 8,
       activeTimeMs: 1_234,
+      providerRuntimes: {
+        claude: {
+          model: 'claude-opus-4-8',
+          effort: 'high',
+          source: 'claude-system-init'
+        }
+      },
       workspacePath,
       appPath: join(workspacePath, 'app'),
       releaseStatus: 'ready',
