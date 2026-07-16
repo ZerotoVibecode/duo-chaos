@@ -28,6 +28,11 @@ function passingBrowserEvidence(): SupervisorBrowserEvidencePort {
           interactionSucceeded: true,
           interactionAttemptCount: 1,
           interactionSuccessCount: 1,
+          pointerInteractionAttempted: true,
+          pointerInteractionSucceeded: true,
+          keyboardInteractionAttempted: true,
+          keyboardInteractionSucceeded: true,
+          externalNetworkRequestCount: 0,
           consoleErrors: [],
           pageErrors: []
         },
@@ -46,6 +51,11 @@ function passingBrowserEvidence(): SupervisorBrowserEvidencePort {
           interactionSucceeded: true,
           interactionAttemptCount: 1,
           interactionSuccessCount: 1,
+          pointerInteractionAttempted: true,
+          pointerInteractionSucceeded: true,
+          keyboardInteractionAttempted: true,
+          keyboardInteractionSucceeded: true,
+          externalNetworkRequestCount: 0,
           consoleErrors: [],
           pageErrors: []
         }
@@ -342,7 +352,7 @@ describe('supervisor verifier', () => {
     ]))
   })
 
-  it('requires an executed non-interactive test runner for a serious quality contract', async () => {
+  it('rejects an unrelated discovered built-in test as proof of a serious behavior contract', async () => {
     const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-serious-tests-required-'))
     await mkdir(join(appPath, 'tests'))
     await writeFile(join(appPath, 'package.json'), JSON.stringify({
@@ -383,9 +393,13 @@ describe('supervisor verifier', () => {
     expect(result.outcome).toBe('failed')
     expect(result.checks).toContainEqual(expect.objectContaining({
       id: 'script:automated-tests',
+      outcome: 'passed'
+    }))
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: 'brief-test:csv-export',
       outcome: 'failed'
     }))
-    expect(processPort.run).toHaveBeenCalledTimes(1)
+    expect(processPort.run).toHaveBeenCalledTimes(2)
     expect(processPort.run).toHaveBeenCalledWith(expect.objectContaining({
       command: { bin: 'npm', args: ['run', 'check'], cwd: appPath },
       stdoutPath: devNull,
@@ -440,6 +454,459 @@ describe('supervisor verifier', () => {
       id: 'brief-test:csv-export',
       outcome: 'passed'
     }))
+  })
+
+  it('executes assertion-bearing built-in node tests for a package-free serious artifact', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-package-free-node-test-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Decision deck</title></head><body><main><h1>Sort options</h1><button type="button">Sort options</button></main><script type="module" src="logic.js"></script></body></html>', 'utf8')
+    await writeFile(join(appPath, 'logic.js'), 'export function rankOptions(options) { return [...options].sort() }\n', 'utf8')
+    await writeFile(join(appPath, 'logic.test.mjs'), 'import test from "node:test"\nimport assert from "node:assert/strict"\nimport { rankOptions } from "./logic.js"\ntest("sort options", () => assert.deepEqual(rankOptions(["B", "A"]), ["A", "B"]))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-16T00:00:00.000Z',
+        finishedAt: '2026-07-16T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      nodePath: 'C:\\Tools\\node.exe',
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'sort-options',
+          label: 'Sorts the entered options',
+          polarity: 'require',
+          evidenceTerms: ['sort', 'options']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('passed')
+    expect(result.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'script:node-test', outcome: 'passed' }),
+      expect.objectContaining({ id: 'script:automated-tests', outcome: 'passed' }),
+      expect.objectContaining({ id: 'brief-test:sort-options', outcome: 'passed' })
+    ]))
+    expect(processPort.run).toHaveBeenCalledTimes(1)
+    expect(processPort.run).toHaveBeenCalledWith(expect.objectContaining({
+      command: {
+        bin: 'C:\\Tools\\node.exe',
+        args: ['--test', 'logic.test.mjs'],
+        cwd: appPath
+      },
+      stdoutPath: devNull,
+      stderrPath: devNull
+    }))
+  })
+
+  it('fails closed when a discovered package-free built-in node test fails', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-package-free-node-test-failure-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Decision deck</title></head><body><main><h1>Sort options</h1></main></body></html>', 'utf8')
+    await writeFile(join(appPath, 'logic.js'), 'export function rankOptions(options) { return [...options].sort() }\n', 'utf8')
+    await writeFile(join(appPath, 'logic.test.mjs'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("sort options", () => assert.equal(1, 2))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-16T00:00:00.000Z',
+        finishedAt: '2026-07-16T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{ id: 'sort-options', kind: 'required-outcome', label: 'Sorts options', polarity: 'require', evidenceTerms: ['sort', 'options'] }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'script:node-test', outcome: 'failed', exitCode: 1 }))
+    expect(result.summary).toMatch(/discovered built-in Node tests/i)
+  })
+
+  it('discovers package-free node tests deterministically without executing fixture tests', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-package-free-node-test-scope-'))
+    await mkdir(join(appPath, 'tests', 'fixtures'), { recursive: true })
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Decision deck</title></head><body><main><h1>Sort options</h1></main></body></html>', 'utf8')
+    await writeFile(join(appPath, 'logic.js'), 'export function rankOptions(options) { return [...options].sort() }\n', 'utf8')
+    const testSource = 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("sort options", () => assert.deepEqual(["A"], ["A"]))\n'
+    await writeFile(join(appPath, 'z.test.mjs'), testSource, 'utf8')
+    await writeFile(join(appPath, 'a.test.mjs'), testSource, 'utf8')
+    await writeFile(join(appPath, 'tests', 'fixtures', 'failing.test.mjs'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("fixture must not execute", () => assert.fail("fixture"))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-16T00:00:00.000Z',
+        finishedAt: '2026-07-16T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{ id: 'sort-options', kind: 'required-outcome', label: 'Sorts options', polarity: 'require', evidenceTerms: ['sort', 'options'] }]
+      }
+    })
+
+    expect(result.outcome).toBe('passed')
+    expect(processPort.run).toHaveBeenCalledWith(expect.objectContaining({
+      command: {
+        bin: 'node',
+        args: ['--test', 'a.test.mjs', 'z.test.mjs'],
+        cwd: appPath
+      }
+    }))
+  })
+
+  it('routes offline, static-server, mouse, and keyboard criteria to concrete supervisor evidence', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-concrete-platform-proof-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Decision deck</title></head><body><main><label for="options">Options</label><textarea id="options"></textarea><button type="button">Start ranking</button><output>Ready</output></main><script type="module" src="logic.js"></script></body></html>', 'utf8')
+    await writeFile(join(appPath, 'logic.js'), 'export function rankOptions(options) { return [...options].sort() }\nwindow.addEventListener("keydown", () => document.querySelector("output").textContent = "Chosen")\n', 'utf8')
+    await writeFile(join(appPath, 'logic.test.mjs'), 'import test from "node:test"\nimport assert from "node:assert/strict"\nimport { rankOptions } from "./logic.js"\ntest("sort options", () => assert.deepEqual(rankOptions(["B", "A"]), ["A", "B"]))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-16T00:00:00.000Z',
+        finishedAt: '2026-07-16T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [
+          { id: 'sort-options', kind: 'required-outcome', label: 'Sorts the entered options', polarity: 'require', evidenceTerms: ['sort', 'options'] },
+          { id: 'offline', kind: 'platform', label: 'The artifact must work completely offline', polarity: 'require', evidenceTerms: ['artifact', 'work', 'offline'] },
+          { id: 'static-server', kind: 'platform', label: 'Runnable from a simple local static server', polarity: 'require', evidenceTerms: ['local', 'static', 'server'] },
+          { id: 'input', kind: 'capability', label: 'Support mouse and keyboard input', polarity: 'require', evidenceTerms: ['mouse', 'keyboard', 'input'] },
+          { id: 'no-network', kind: 'restriction', label: 'No packages, CDNs, network calls, or build step', polarity: 'forbid', evidenceTerms: ['package', 'cdns', 'network', 'call', 'build', 'step'] }
+        ]
+      }
+    })
+
+    expect(result.outcome).toBe('passed')
+    expect(result.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'brief:offline', outcome: 'skipped' }),
+      expect.objectContaining({ id: 'brief:static-server', outcome: 'skipped' }),
+      expect.objectContaining({ id: 'brief:input', outcome: 'skipped' }),
+      expect.objectContaining({ id: 'brief:no-network', outcome: 'skipped' }),
+      expect.objectContaining({ id: 'supervisor:offline', outcome: 'passed' }),
+      expect.objectContaining({ id: 'supervisor:static-server', outcome: 'passed' }),
+      expect.objectContaining({ id: 'supervisor:input', outcome: 'passed' }),
+      expect.objectContaining({ id: 'supervisor:no-network', outcome: 'passed' })
+    ]))
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ id: 'brief-test:offline' }))
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ id: 'brief-test:static-server' }))
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ id: 'brief-test:input' }))
+  })
+
+  it('rejects an offline contract when source or browser evidence reaches for the network', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-offline-network-rejected-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Remote deck</title></head><body><main><h1>Remote deck</h1><button type="button">Load</button></main><script src="app.js"></script></body></html>', 'utf8')
+    await writeFile(join(appPath, 'app.js'), 'document.querySelector("button").addEventListener("click", () => fetch("https://example.com/data.json"))\n', 'utf8')
+    const browserPort = passingBrowserEvidence()
+    const evidence = await browserPort.capture({ entryPath: join(appPath, 'index.html'), resourceRoot: appPath })
+    evidence.viewports = evidence.viewports.map((viewport) => ({ ...viewport, externalNetworkRequestCount: 1 }))
+    vi.mocked(browserPort.capture).mockResolvedValue(evidence)
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, browserPort).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'offline',
+          kind: 'platform',
+          label: 'The artifact must work completely offline',
+          polarity: 'require',
+          evidenceTerms: ['artifact', 'work', 'offline']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'supervisor:offline', outcome: 'failed' }))
+  })
+
+  it('rejects a dormant external XMLHttpRequest that runtime interaction did not exercise', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-offline-dormant-xhr-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Offline deck</title></head><body><main><h1>Offline deck</h1></main><script src="app.js"></script></body></html>', 'utf8')
+    await writeFile(join(appPath, 'app.js'), 'function dormantSync() { const xhr = new XMLHttpRequest(); xhr.open("GET", "https://example.com/data.json"); return xhr }\n', 'utf8')
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'offline',
+          kind: 'platform',
+          label: 'The artifact must work completely offline',
+          polarity: 'require',
+          evidenceTerms: ['artifact', 'work', 'offline']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'supervisor:offline', outcome: 'failed' }))
+  })
+
+  it('rejects a keyboard capability when the browser never observes keyboard-driven behavior', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-keyboard-proof-required-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Mouse only</title></head><body><main><button type="button">Choose</button></main></body></html>', 'utf8')
+    const browserPort = passingBrowserEvidence()
+    const evidence = await browserPort.capture({ entryPath: join(appPath, 'index.html'), resourceRoot: appPath })
+    evidence.viewports = evidence.viewports.map((viewport) => ({
+      ...viewport,
+      nativeKeyboardControlCount: 1,
+      keyboardInteractionAttempted: true,
+      keyboardInteractionSucceeded: false
+    }))
+    vi.mocked(browserPort.capture).mockResolvedValue(evidence)
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, browserPort).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'keyboard',
+          kind: 'capability',
+          label: 'Support keyboard input',
+          polarity: 'require',
+          evidenceTerms: ['keyboard', 'input']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'supervisor:keyboard', outcome: 'failed' }))
+  })
+
+  it('keeps non-input behavioral capabilities bound to relevant automated tests', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-behavioral-capability-tests-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Report</title></head><body><main><button type="button">Export CSV report</button></main></body></html>', 'utf8')
+    await writeFile(join(appPath, 'logic.test.mjs'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("unrelated arithmetic", () => assert.equal(2 + 2, 4))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-16T00:00:00.000Z',
+        finishedAt: '2026-07-16T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'csv-export',
+          kind: 'capability',
+          label: 'Support creator-ready CSV export',
+          polarity: 'require',
+          evidenceTerms: ['creator', 'csv', 'export']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'brief-test:csv-export', outcome: 'failed' }))
+  })
+
+  it('proves every clause of a compound no-network, no-package, and no-build restriction', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-compound-restriction-'))
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({
+      scripts: { build: 'node build.js' },
+      dependencies: { leftpad: 'latest' }
+    }), 'utf8')
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Deck</title></head><body><main><h1>Deck</h1></main></body></html>', 'utf8')
+
+    const result = await new SupervisorVerifier({
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-16T00:00:00.000Z',
+        finishedAt: '2026-07-16T00:00:01.000Z'
+      })
+    }, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'contained',
+          kind: 'restriction',
+          label: 'No packages, CDNs, network calls, or build step',
+          polarity: 'forbid',
+          evidenceTerms: ['package', 'cdn', 'network', 'call', 'build', 'step']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    const containedCheck = result.checks.find((check) => check.id === 'supervisor:contained')
+    expect(containedCheck).toMatchObject({
+      id: 'supervisor:contained',
+      outcome: 'failed'
+    })
+    expect(containedCheck?.detail).toMatch(/no-dependencies.*no-build-step/)
+  })
+
+  it('does not silently skip an unknown platform criterion without a concrete proof route', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-unknown-platform-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Deck</title></head><body><main><h1>Deck</h1></main></body></html>', 'utf8')
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'linux',
+          kind: 'platform',
+          label: 'Runs as a native Linux desktop application',
+          polarity: 'require',
+          evidenceTerms: ['native', 'linux', 'desktop']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'brief:linux', outcome: 'failed' }))
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ id: 'supervisor:linux' }))
+  })
+
+  it('keeps a kinded remote-backend restriction under affirmative source enforcement', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-kinded-remote-backend-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Cloud workspace</title></head><body><main><h1>Cloud workspace</h1><p>This product requires a remote backend.</p></main></body></html>', 'utf8')
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'local-only',
+          kind: 'restriction',
+          label: 'Never use a remote backend',
+          polarity: 'forbid',
+          evidenceTerms: ['never', 'use', 'remote', 'backend']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'brief:local-only', outcome: 'failed' }))
+  })
+
+  it('does not drop supervisor-routed obligations on a non-browser artifact path', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-non-browser-routed-contract-'))
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({
+      scripts: {
+        start: 'node service.js',
+        test: 'node --test service.test.mjs'
+      }
+    }), 'utf8')
+    await writeFile(join(appPath, 'service.js'), 'export const status = () => "ready"\n', 'utf8')
+    await writeFile(join(appPath, 'service.test.mjs'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("service status", () => assert.equal("ready", "ready"))\n', 'utf8')
+    const processPort: SupervisorProcessPort = {
+      run: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        cancelled: false,
+        startedAt: '2026-07-16T00:00:00.000Z',
+        finishedAt: '2026-07-16T00:00:01.000Z'
+      })
+    }
+
+    const result = await new SupervisorVerifier(processPort, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        missionProfile: 'serious',
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'offline',
+          kind: 'platform',
+          label: 'Works completely offline',
+          polarity: 'require',
+          evidenceTerms: ['work', 'offline']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'supervisor:offline', outcome: 'failed' }))
+  })
+
+  it('does not confuse inert URL copy with a runtime network dependency', async () => {
+    const appPath = await mkdtemp(join(tmpdir(), 'duo-supervisor-offline-url-copy-'))
+    await writeFile(join(appPath, 'index.html'), '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Reference</title></head><body><main><h1>Reference</h1><p>Example syntax: https://example.com/path</p></main></body></html>', 'utf8')
+
+    const result = await new SupervisorVerifier({ run: vi.fn() }, passingBrowserEvidence()).verify({
+      appPath,
+      npmPath: 'npm',
+      timeoutMs: 30_000,
+      qualityContract: {
+        consensusProvenance: { verified: true, evidenceHandle: 'consensus-provenance:sealed-fingerprint' },
+        criteria: [{
+          id: 'offline',
+          kind: 'platform',
+          label: 'Works completely offline',
+          polarity: 'require',
+          evidenceTerms: ['work', 'offline']
+        }]
+      }
+    })
+
+    expect(result.outcome).toBe('passed')
+    expect(result.checks).toContainEqual(expect.objectContaining({ id: 'supervisor:offline', outcome: 'passed' }))
   })
 
   it('rejects an unrelated passing test as proof of a serious behavior criterion', async () => {

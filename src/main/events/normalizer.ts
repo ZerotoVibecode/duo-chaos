@@ -344,7 +344,7 @@ function isRecognizableVerificationSegment(candidate: string): boolean {
     /^go\s+test(?:\s|$)/i.test(segment) ||
     /^dotnet\s+(?:test|build)(?:\s|$)/i.test(segment) ||
     /^(?:\.\/?|\.\\)?(?:mvnw?|gradlew?)(?:\.cmd|\.bat|\.exe)?\s+(?:test|verify|build|check)(?:\s|$)/i.test(segment) ||
-    /^(?:node(?:\.exe)?\s+--check|(?:bash|sh)\s+-n|deno\s+(?:test|check|lint))(?:\s|$)/i.test(segment)
+    /^(?:node(?:\.exe)?\s+--(?:check|test)|(?:bash|sh)\s+-n|deno\s+(?:test|check|lint))(?:\s|$)/i.test(segment)
 }
 
 function isRecognizableVerificationCommand(command: string): boolean {

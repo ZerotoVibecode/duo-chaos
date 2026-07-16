@@ -4639,6 +4639,7 @@ export class RunOrchestrator {
     })
     const result = await this.supervisorVerifier.verify({
       appPath: session.workspace.appPath,
+      nodePath: session.settings.nodePath,
       npmPath: session.settings.npmPath,
       // Agent execution obeys the overall run ceiling. Independent final proof
       // receives its own bounded grace window so an exhausted agent budget can

@@ -48,6 +48,12 @@ const deterministicBrowserEvidence: SupervisorBrowserEvidencePort = {
         interactionAttemptCount: Math.min(3, interactiveElementCount),
         interactionSuccessCount: observableInteraction ? 1 : 0,
         interactionObservedChanges: observableInteraction ? ['aria', 'dom'] : [],
+        pointerInteractionAttempted: interactiveElementCount > 0,
+        pointerInteractionSucceeded: interactiveElementCount > 0 && observableInteraction,
+        keyboardInteractionAttempted: interactiveElementCount > 0,
+        keyboardInteractionSucceeded: interactiveElementCount > 0 && observableInteraction,
+        keyboardObservedChanges: observableInteraction ? ['aria', 'dom'] : [],
+        externalNetworkRequestCount: 0,
         consoleErrors: [],
         pageErrors: []
       }))

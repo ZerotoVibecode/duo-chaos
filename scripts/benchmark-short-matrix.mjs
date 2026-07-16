@@ -239,6 +239,59 @@ const SOL_FABLE_2X2_OPEN_V3_ARMS = [
     claude: { model: 'fable', effort: 'max' }
   }
 ]
+const SOL_FABLE_2X2_OPEN_V4_ARMS = [
+  {
+    id: 'duo-sol-medium-fable-medium-open-v4',
+    label: 'Duo Sol Medium plus Fable Medium open v4',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'medium' },
+    claude: { model: 'fable', effort: 'medium' }
+  },
+  {
+    id: 'duo-sol-medium-fable-max-open-v4',
+    label: 'Duo Sol Medium plus Fable Max open v4',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'medium' },
+    claude: { model: 'fable', effort: 'max' }
+  },
+  {
+    id: 'duo-sol-max-fable-medium-open-v4',
+    label: 'Duo Sol Max plus Fable Medium open v4',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'max' },
+    claude: { model: 'fable', effort: 'medium' }
+  },
+  {
+    id: 'duo-sol-max-fable-max-open-v4',
+    label: 'Duo Sol Max plus Fable Max open v4',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'max' },
+    claude: { model: 'fable', effort: 'max' }
+  }
+]
+const SOL_FABLE_LOW_MATCH_OPEN_V1_ARMS = [
+  {
+    id: 'codex-sol-low-solo-match-v1',
+    label: 'Codex Sol Low solo matched v1',
+    kind: 'solo',
+    agent: 'codex',
+    codex: { model: 'gpt-5.6-sol', effort: 'low' }
+  },
+  {
+    id: 'claude-fable-low-solo-match-v1',
+    label: 'Claude Fable Low solo matched v1',
+    kind: 'solo',
+    agent: 'claude',
+    claude: { model: 'fable', effort: 'low' }
+  },
+  {
+    id: 'duo-sol-low-fable-low-match-v1',
+    label: 'Duo Sol Low plus Fable Low matched v1',
+    kind: 'duo',
+    codex: { model: 'gpt-5.6-sol', effort: 'low' },
+    claude: { model: 'fable', effort: 'low' }
+  }
+]
 const CAPPED_DUO_RUNTIME = {
   executionMode: 'chaos',
   visibilityMode: 'spoiler-shield',
@@ -296,6 +349,18 @@ const FIXED_SUITES = {
   'sol-fable-2x2-open-v3': {
     manifestPath: resolve(LIVE_FIXTURE_ROOT, 'short-matrix-sol-fable-2x2-open-v3.json'),
     expectedArms: SOL_FABLE_2X2_OPEN_V3_ARMS,
+    maxActiveSeconds: null,
+    expectedRuntime: OPEN_DUO_RUNTIME
+  },
+  'sol-fable-2x2-open-v4': {
+    manifestPath: resolve(LIVE_FIXTURE_ROOT, 'short-matrix-sol-fable-2x2-open-v4.json'),
+    expectedArms: SOL_FABLE_2X2_OPEN_V4_ARMS,
+    maxActiveSeconds: null,
+    expectedRuntime: OPEN_DUO_RUNTIME
+  },
+  'sol-fable-low-match-open-v1': {
+    manifestPath: resolve(LIVE_FIXTURE_ROOT, 'short-matrix-sol-fable-low-match-open-v1.json'),
+    expectedArms: SOL_FABLE_LOW_MATCH_OPEN_V1_ARMS,
     maxActiveSeconds: null,
     expectedRuntime: OPEN_DUO_RUNTIME
   }
@@ -1190,7 +1255,7 @@ async function main() {
   try {
     const options = parseArgs(process.argv.slice(2))
     if (options.help) {
-      process.stdout.write(`Usage: npm run benchmark:matrix -- [--suite <low-diagnostic|premium-medium|premium-medium-open|codex-effort-open-v1|sol-fable-2x2-open-v1|sol-fable-2x2-open-v2|sol-fable-2x2-open-v3>] [--json] [--arm <id> --trial <1|2>] [${LIVE_FLAG} ${QUOTA_FLAG}]\nDry-run is the default. Live mode executes exactly one fixed arm and trial from the selected immutable suite.\n`)
+      process.stdout.write(`Usage: npm run benchmark:matrix -- [--suite <low-diagnostic|premium-medium|premium-medium-open|codex-effort-open-v1|sol-fable-2x2-open-v1|sol-fable-2x2-open-v2|sol-fable-2x2-open-v3|sol-fable-2x2-open-v4|sol-fable-low-match-open-v1>] [--json] [--arm <id> --trial <1|2>] [${LIVE_FLAG} ${QUOTA_FLAG}]\nDry-run is the default. Live mode executes exactly one fixed arm and trial from the selected immutable suite.\n`)
       return
     }
     if (options.live !== options.quotaAcknowledged) {

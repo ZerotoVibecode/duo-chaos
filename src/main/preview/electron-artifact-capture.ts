@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { basename, dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import type { WebContents } from 'electron'
 import type {
   SupervisorBrowserEvidence,
   SupervisorBrowserEvidencePort,
@@ -18,7 +19,7 @@ import {
 const PREVIEW_WIDTH = 1280
 const PREVIEW_HEIGHT = 720
 const LOAD_TIMEOUT_MS = 10_000
-const CAPTURE_TIMEOUT_MS = 5_000
+const CAPTURE_TIMEOUT_MS = 15_000
 const SETTLE_TIME_MS = 700
 
 export const ARTIFACT_QUALITY_VIEWPORTS: ReadonlyArray<{
@@ -44,7 +45,10 @@ const PREVIEW_CSP = [
   "base-uri 'self'",
   "form-action 'none'"
 ].join('; ')
-const QUALITY_PREVIEW_CSP = PREVIEW_CSP.replace("connect-src 'none'", "connect-src 'self'")
+// Quality capture permits connection attempts to reach the isolated session's
+// request firewall. The firewall still blocks every non-artifact URL, but can
+// now count the attempt as evidence instead of CSP hiding it first.
+const QUALITY_PREVIEW_CSP = PREVIEW_CSP.replace("connect-src 'none'", "connect-src * 'self' data: blob:")
 
 export const DOM_QUALITY_INSPECTION = `
 (async () => {
@@ -82,6 +86,11 @@ export const DOM_QUALITY_INSPECTION = `
   let interactionAttemptCount = 0
   let interactionSuccessCount = 0
   const interactionObservedChanges = new Set()
+  let pointerInteractionAttempted = false
+  let pointerInteractionSucceeded = false
+  let keyboardInteractionAttempted = false
+  let keyboardInteractionSucceeded = false
+  const keyboardObservedChanges = new Set()
   const fingerprint = (value) => {
     const text = String(value || '')
     const stride = Math.max(1, Math.ceil(text.length / 100000))
@@ -156,6 +165,7 @@ export const DOM_QUALITY_INSPECTION = `
     if ('focus' in interactionCandidate) interactionCandidate.focus({ preventScroll: true })
     const form = interactionCandidate.closest?.('form')
     const preventNavigation = (event) => event.preventDefault()
+    let pointerCandidate = false
     if (form && interactionCandidate.matches('button:not([type]), button[type="submit"], input[type="submit"]')) {
       form.addEventListener('submit', preventNavigation, { capture: true, once: true })
     }
@@ -172,8 +182,12 @@ export const DOM_QUALITY_INSPECTION = `
       interactionCandidate.dispatchEvent(new Event('input', { bubbles: true }))
       interactionCandidate.dispatchEvent(new Event('change', { bubbles: true }))
     } else if (typeof interactionCandidate.click === 'function') {
+      pointerCandidate = true
+      pointerInteractionAttempted = true
       interactionCandidate.click()
     } else {
+      pointerCandidate = true
+      pointerInteractionAttempted = true
       interactionCandidate.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
     }
 
@@ -186,9 +200,47 @@ export const DOM_QUALITY_INSPECTION = `
     observer.disconnect()
     for (const ambientChange of ambientChanges) observedChanges.delete(ambientChange)
     if (observedChanges.size > 0) interactionSuccessCount += 1
+    if (pointerCandidate && observedChanges.size > 0) pointerInteractionSucceeded = true
     for (const observedChange of observedChanges) interactionObservedChanges.add(observedChange)
   }
   interactionSucceeded = interactionSuccessCount > 0
+  const keyboardCandidates = Array.from(document.querySelectorAll('button:not([disabled]), a[href], input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [role="button"]:not([aria-disabled="true"]), [tabindex]:not([tabindex="-1"])'))
+    .filter(visible)
+  const nativeKeyboardControlCount = keyboardCandidates.filter((element) => element.matches('button, a[href], input, select, textarea')).length
+  const keyboardTarget = keyboardCandidates[0]
+  if (keyboardTarget) {
+    keyboardInteractionAttempted = true
+    if ('focus' in keyboardTarget) keyboardTarget.focus({ preventScroll: true })
+    for (const key of ['ArrowRight', 'ArrowLeft', 'Enter', ' ']) {
+      const observedChanges = new Set()
+      const baselineStart = state(keyboardTarget)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const before = state(keyboardTarget)
+      const ambientChanges = new Set()
+      recordStateChanges(baselineStart, before, ambientChanges)
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          observedChanges.add(record.type === 'attributes' && record.attributeName?.startsWith('aria-') ? 'aria' : 'dom')
+        }
+      })
+      if (document.body) observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
+      keyboardTarget.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+      keyboardTarget.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }))
+      for (let attempt = 0; attempt < 7; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        const after = state(keyboardTarget)
+        recordStateChanges(before, after, observedChanges)
+        if (observedChanges.size > 0) break
+      }
+      observer.disconnect()
+      for (const ambientChange of ambientChanges) observedChanges.delete(ambientChange)
+      for (const observedChange of observedChanges) keyboardObservedChanges.add(observedChange)
+      if (observedChanges.size > 0) {
+        keyboardInteractionSucceeded = true
+        break
+      }
+    }
+  }
   const bodyText = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim()
   const severeTextWrapCount = Array.from(document.querySelectorAll('body *')).filter((element) => {
     if (!visible(element) || element.closest('svg, canvas') || element.matches('input, select, textarea, button')) return false
@@ -215,7 +267,13 @@ export const DOM_QUALITY_INSPECTION = `
     interactionSucceeded,
     interactionAttemptCount,
     interactionSuccessCount,
-    interactionObservedChanges: Array.from(interactionObservedChanges).sort()
+    interactionObservedChanges: Array.from(interactionObservedChanges).sort(),
+    pointerInteractionAttempted,
+    pointerInteractionSucceeded,
+    keyboardInteractionAttempted,
+    keyboardInteractionSucceeded,
+    keyboardObservedChanges: Array.from(keyboardObservedChanges).sort(),
+    nativeKeyboardControlCount
   }
 })()
 `
@@ -316,6 +374,12 @@ interface DomQualityEvidence {
   interactionAttemptCount: number
   interactionSuccessCount: number
   interactionObservedChanges: string[]
+  pointerInteractionAttempted: boolean
+  pointerInteractionSucceeded: boolean
+  keyboardInteractionAttempted: boolean
+  keyboardInteractionSucceeded: boolean
+  keyboardObservedChanges: string[]
+  nativeKeyboardControlCount: number
 }
 
 interface CapturedViewport {
@@ -325,7 +389,209 @@ interface CapturedViewport {
   capturedAt: string
   consoleErrors: string[]
   pageErrors: string[]
+  externalNetworkRequestCount: number
   dom?: DomQualityEvidence
+  trustedInput?: TrustedInputEvidence
+}
+
+interface TrustedInputEvidence {
+  pointerInteractionAttempted: boolean
+  pointerInteractionSucceeded: boolean
+  keyboardInteractionAttempted: boolean
+  keyboardInteractionSucceeded: boolean
+  keyboardObservedChanges: string[]
+}
+
+interface TrustedInputState {
+  url: string
+  dom: string
+  text: string
+  controls: string
+  aria: string
+  canvas: string
+}
+
+const TRUSTED_INPUT_STATE = `
+(() => {
+  const fingerprint = (value) => {
+    const text = String(value || '')
+    const stride = Math.max(1, Math.ceil(text.length / 100000))
+    let hash = 2166136261
+    for (let index = 0; index < text.length; index += stride) {
+      hash ^= text.charCodeAt(index)
+      hash = Math.imul(hash, 16777619)
+    }
+    return String(text.length) + ':' + String(hash >>> 0)
+  }
+  const controls = Array.from(document.querySelectorAll('input, select, textarea, button, [role="button"]'))
+    .slice(0, 128)
+    .map((element) => ({
+      value: 'value' in element ? String(element.value) : '',
+      checked: 'checked' in element ? Boolean(element.checked) : false,
+      selectedIndex: 'selectedIndex' in element ? Number(element.selectedIndex) : -1,
+      disabled: 'disabled' in element ? Boolean(element.disabled) : false
+    }))
+  const aria = Array.from(document.querySelectorAll('*'))
+    .slice(0, 512)
+    .map((element) => Array.from(element.attributes)
+      .filter((item) => item.name.startsWith('aria-') || item.name === 'hidden' || item.name === 'open' || item.name === 'data-state')
+      .map((item) => item.name + '=' + item.value)
+      .join('|'))
+    .join('||')
+  const canvases = Array.from(document.querySelectorAll('canvas'))
+    .slice(0, 4)
+    .map((canvas) => {
+      try { return fingerprint(canvas.toDataURL('image/png')) } catch { return 'unavailable' }
+    })
+  return {
+    url: window.location.href,
+    dom: fingerprint(document.body?.innerHTML || ''),
+    text: fingerprint(document.body?.innerText || document.body?.textContent || ''),
+    controls: fingerprint(JSON.stringify(controls)),
+    aria: fingerprint(aria),
+    canvas: fingerprint(canvases.join('|'))
+  }
+})()
+`
+
+const TRUSTED_POINTER_PREPARATION = `
+(() => {
+  const visible = (element) => {
+    const style = window.getComputedStyle(element)
+    const rect = element.getBoundingClientRect()
+    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0
+  }
+  const input = Array.from(document.querySelectorAll('textarea, input:not([type]), input[type="text"], input[type="search"]'))
+    .find((element) => visible(element) && !element.disabled && !element.readOnly)
+  if (input) {
+    input.value = input.matches('textarea') ? 'Aurora\\nBeacon\\nComet' : 'Aurora'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+  const candidates = Array.from(document.querySelectorAll('button:not([disabled]), input[type="button"]:not([disabled]), input[type="submit"]:not([disabled]), [role="button"]:not([aria-disabled="true"])'))
+    .filter(visible)
+  const preferred = candidates.find((element) => element.matches('[data-testid="start"]')) ||
+    candidates.find((element) => /\\b(?:start|begin|continue|create|generate|launch|open|play|rank|run)\\b/i.test(element.textContent || element.value || '')) ||
+    candidates.find((element) => !/\\b(?:cancel|delete|remove|reset|stop)\\b/i.test(element.textContent || element.value || '')) ||
+    candidates[0]
+  if (!preferred) return null
+  preferred.scrollIntoView({ block: 'center', inline: 'center' })
+  const rect = preferred.getBoundingClientRect()
+  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+})()
+`
+
+const TRUSTED_KEYBOARD_PREPARATION = `
+(() => {
+  const visible = (element) => {
+    const style = window.getComputedStyle(element)
+    const rect = element.getBoundingClientRect()
+    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0
+  }
+  const candidates = Array.from(document.querySelectorAll('button:not([disabled]), a[href], input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [role="button"]:not([aria-disabled="true"]), [tabindex]:not([tabindex="-1"])'))
+    .filter(visible)
+  const preferred = candidates.find((element) => element.matches('[data-testid="choose-left"], [data-testid="choose-right"]')) || candidates[0]
+  if (!preferred) return false
+  preferred.focus({ preventScroll: true })
+  return document.activeElement === preferred
+})()
+`
+
+function changedInputState(before: TrustedInputState, after: TrustedInputState): string[] {
+  return (['url', 'dom', 'text', 'controls', 'aria', 'canvas'] as const)
+    .filter((key) => before[key] !== after[key])
+}
+
+function changedApplicationState(before: TrustedInputState, after: TrustedInputState): string[] {
+  // A native input/select value changing only proves that Chromium handled the
+  // key. It does not prove the generated app implements a keyboard journey.
+  // Require an observable application-level consequence outside the focused
+  // control before crediting keyboard support.
+  return changedInputState(before, after).filter((key) => key !== 'controls')
+}
+
+async function trustedState(webContents: WebContents): Promise<TrustedInputState> {
+  return webContents.executeJavaScript(TRUSTED_INPUT_STATE, true) as Promise<TrustedInputState>
+}
+
+async function observedTrustedChanges(
+  webContents: WebContents,
+  act: () => void | Promise<void>,
+  abortSignal?: AbortSignal,
+  compare: (before: TrustedInputState, after: TrustedInputState) => string[] = changedInputState
+): Promise<string[]> {
+  const baseline = await trustedState(webContents)
+  await withAbort(new Promise((resolve) => setTimeout(resolve, 100)), abortSignal)
+  const before = await trustedState(webContents)
+  const ambient = new Set(compare(baseline, before))
+  await act()
+  const observed = new Set<string>()
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    await withAbort(new Promise((resolve) => setTimeout(resolve, 50)), abortSignal)
+    const after = await trustedState(webContents)
+    for (const change of compare(before, after)) {
+      if (!ambient.has(change)) observed.add(change)
+    }
+    if (observed.size > 0) break
+  }
+  return [...observed]
+}
+
+async function captureTrustedInputEvidence(
+  webContents: WebContents,
+  abortSignal?: AbortSignal
+): Promise<TrustedInputEvidence> {
+  const debuggerApi = webContents.debugger
+  const attachedHere = !debuggerApi.isAttached()
+  if (attachedHere) debuggerApi.attach('1.3')
+  try {
+    const pointerTarget = await webContents.executeJavaScript(TRUSTED_POINTER_PREPARATION, true) as { x: number; y: number } | null
+    let pointerInteractionSucceeded = false
+    if (pointerTarget) {
+      const changes = await observedTrustedChanges(webContents, async () => {
+        await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pointerTarget.x, y: pointerTarget.y })
+        await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: pointerTarget.x, y: pointerTarget.y, button: 'left', clickCount: 1 })
+        await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pointerTarget.x, y: pointerTarget.y, button: 'left', clickCount: 1 })
+      }, abortSignal)
+      pointerInteractionSucceeded = changes.length > 0
+    }
+
+    // Pointer actions commonly transition the generated app and remove the
+    // controls needed for its keyboard journey. Exercise keyboard support from
+    // a clean document so one proof cannot invalidate the other.
+    const currentUrl = webContents.getURL()
+    await webContents.loadURL(currentUrl)
+    await withAbort(new Promise((resolve) => setTimeout(resolve, SETTLE_TIME_MS)), abortSignal)
+
+    const keyboardTargetFocused = await webContents.executeJavaScript(TRUSTED_KEYBOARD_PREPARATION, true) as boolean
+    const keyboardObservedChanges = new Set<string>()
+    const keys = [
+      { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
+      { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
+      { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 },
+      { key: ' ', code: 'Space', windowsVirtualKeyCode: 32 }
+    ]
+    if (keyboardTargetFocused) {
+      for (const key of keys) {
+        const changes = await observedTrustedChanges(webContents, async () => {
+          await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', ...key })
+          await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', ...key })
+        }, abortSignal, changedApplicationState)
+        for (const change of changes) keyboardObservedChanges.add(change)
+        if (keyboardObservedChanges.size > 0) break
+      }
+    }
+
+    return {
+      pointerInteractionAttempted: Boolean(pointerTarget),
+      pointerInteractionSucceeded,
+      keyboardInteractionAttempted: keyboardTargetFocused,
+      keyboardInteractionSucceeded: keyboardObservedChanges.size > 0,
+      keyboardObservedChanges: [...keyboardObservedChanges].sort()
+    }
+  } finally {
+    if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach()
+  }
 }
 
 async function capturePreviewViewport(
@@ -348,8 +614,10 @@ async function capturePreviewViewport(
   previewSession.protocol.handle(ARTIFACT_PREVIEW_SCHEME, handler)
   previewSession.setPermissionCheckHandler(() => false)
   previewSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  let externalNetworkRequestCount = 0
   previewSession.webRequest.onBeforeRequest((details, callback) => {
     const allowed = allowedPreviewUrl(details.url) || details.url.startsWith('data:') || details.url.startsWith('blob:')
+    if (!allowed && /^(?:https?|wss?):/iu.test(details.url)) externalNetworkRequestCount += 1
     callback({ cancel: !allowed })
   })
   previewSession.on('will-download', (event) => event.preventDefault())
@@ -400,17 +668,26 @@ async function capturePreviewViewport(
   try {
     await withTimeout(withAbort(Promise.race([previewWindow.loadURL(entryUrl), rendererFailure]), abortSignal), LOAD_TIMEOUT_MS)
     await withAbort(new Promise((resolve) => setTimeout(resolve, SETTLE_TIME_MS)), abortSignal)
+    const image = await withTimeout(withAbort(Promise.race([
+      previewWindow.webContents.capturePage(),
+      rendererFailure
+    ]), abortSignal), CAPTURE_TIMEOUT_MS)
+    if (image.isEmpty()) throw new Error('Artifact preview was empty.')
     const dom = inspectDom
       ? await withTimeout(withAbort(Promise.race([
           previewWindow.webContents.executeJavaScript(DOM_QUALITY_INSPECTION, true) as Promise<DomQualityEvidence>,
           rendererFailure
         ]), abortSignal), CAPTURE_TIMEOUT_MS)
       : undefined
-    const image = await withTimeout(withAbort(Promise.race([
-      previewWindow.webContents.capturePage(),
-      rendererFailure
-    ]), abortSignal), CAPTURE_TIMEOUT_MS)
-    if (image.isEmpty()) throw new Error('Artifact preview was empty.')
+    let trustedInput: TrustedInputEvidence | undefined
+    if (inspectDom) {
+      await withTimeout(withAbort(Promise.race([previewWindow.loadURL(entryUrl), rendererFailure]), abortSignal), LOAD_TIMEOUT_MS)
+      await withAbort(new Promise((resolve) => setTimeout(resolve, SETTLE_TIME_MS)), abortSignal)
+      trustedInput = await withTimeout(withAbort(Promise.race([
+        captureTrustedInputEvidence(previewWindow.webContents, abortSignal),
+        rendererFailure
+      ]), abortSignal), CAPTURE_TIMEOUT_MS)
+    }
     const size = image.getSize()
     return {
       imageDataUrl: image.toDataURL(),
@@ -419,7 +696,9 @@ async function capturePreviewViewport(
       capturedAt: new Date().toISOString(),
       consoleErrors,
       pageErrors,
-      ...(dom ? { dom } : {})
+      externalNetworkRequestCount,
+      ...(dom ? { dom } : {}),
+      ...(trustedInput ? { trustedInput } : {})
     }
   } finally {
     if (!previewWindow.isDestroyed()) previewWindow.destroy()
@@ -458,7 +737,8 @@ export const captureArtifactQualityEvidence: SupervisorBrowserEvidencePort['capt
       true
     )
     const dom = captured.dom
-    if (!dom) throw new Error('Artifact browser quality evidence was incomplete.')
+    const trustedInput = captured.trustedInput
+    if (!dom || !trustedInput) throw new Error('Artifact browser quality evidence was incomplete.')
     viewports.push({
       id: viewport.id,
       width: captured.width,
@@ -476,6 +756,13 @@ export const captureArtifactQualityEvidence: SupervisorBrowserEvidencePort['capt
       interactionAttemptCount: dom.interactionAttemptCount,
       interactionSuccessCount: dom.interactionSuccessCount,
       interactionObservedChanges: dom.interactionObservedChanges,
+      pointerInteractionAttempted: trustedInput.pointerInteractionAttempted,
+      pointerInteractionSucceeded: trustedInput.pointerInteractionSucceeded,
+      keyboardInteractionAttempted: trustedInput.keyboardInteractionAttempted,
+      keyboardInteractionSucceeded: trustedInput.keyboardInteractionSucceeded,
+      keyboardObservedChanges: trustedInput.keyboardObservedChanges,
+      nativeKeyboardControlCount: dom.nativeKeyboardControlCount,
+      externalNetworkRequestCount: captured.externalNetworkRequestCount,
       consoleErrors: captured.consoleErrors,
       pageErrors: captured.pageErrors
     })

@@ -52,7 +52,9 @@ The separately preregistered `premium-medium` suite fixes exactly five arms befo
 
 The immutable `premium-medium-open` continuation contains only Duo Sol Medium plus Opus Medium, uses the same exact task and judge, and has no independent harness active-work wall. It waits until the Electron supervisor records a terminal result instead of stopping productive work at 15 minutes. Its fixed supervisor safety leases are the application's published maxima: eight hours for one turn and 24 hours for the run. Provider failure, process failure, an unresponsive Electron surface, or a supervisor terminal status can therefore still preserve an incomplete result. Its contract lives in `tests/fixtures/benchmarks/live/short-matrix-premium-medium-open.json`. Its suite namespace creates fresh one-attempt slots without altering, replacing, or reopening any historical slot. Prompt, model, effort, arm, suite, and runtime overrides outside checked-in contracts are rejected.
 
-Versioned follow-up suites reuse that canonical task, improved executable judge, and open supervisor runtime without changing any historical fixture. `codex-effort-open-v1` isolates Codex effort/model effects in the preregistered order Sol Medium, Sol Low, Terra Medium, then Sol Max. `sol-fable-2x2-open-v1` preserves the first paired interaction attempt, including a Windows global-npm-shim transport failure discovered before its first provider consensus response. `sol-fable-2x2-open-v2` preserves the post-transport attempt that exposed a Codex provider-schema incompatibility before source work. Both remain reliability evidence and are not mixed with repaired trials. `sol-fable-2x2-open-v3` repeats the same preregistered order after both repairs: Sol Medium + Fable Medium, Sol Medium + Fable Max, Sol Max + Fable Medium, then Sol Max + Fable Max. These suites use trials 1 and 2, have no independent harness active-work wall, and pass `max` literally to the corresponding local CLI.
+Versioned follow-up suites reuse that canonical task, improved executable judge, and open supervisor runtime without changing any historical fixture. `codex-effort-open-v1` isolates Codex effort/model effects in the preregistered order Sol Medium, Sol Low, Terra Medium, then Sol Max. `sol-fable-2x2-open-v1` preserves the first paired interaction attempt, including a Windows global-npm-shim transport failure discovered before its first provider consensus response. `sol-fable-2x2-open-v2` preserves the post-transport attempt that exposed a Codex provider-schema incompatibility before source work. `sol-fable-2x2-open-v3` preserves the first provider-compatible artifact: its package-free built-in Node tests passed independently, but the older supervisor did not recognize them as automated proof and therefore paused the battle. These remain reliability evidence and are not mixed with repaired trials. `sol-fable-2x2-open-v4` is the first fresh suite after the supervisor learned to execute package-free `node:test` contracts and route offline, dependency, static-server, pointer, and keyboard requirements to supervisor-owned evidence. It repeats the same preregistered order: Sol Medium + Fable Medium, Sol Medium + Fable Max, Sol Max + Fable Medium, then Sol Max + Fable Max. `sol-fable-low-match-open-v1` isolates the cost-focused question in exactly three arms: Sol Low solo, Fable Low solo, then Sol Low + Fable Low Duo. All versioned open suites use trials 1 and 2 and have no independent harness active-work wall.
+
+The matched Low suite is a non-inferiority/superiority experiment, not a demo chosen after seeing outputs. Run both solo baselines before the Duo arm in each trial. Duo meets the goal only when it has no critical deterministic regression, blinded product review rates it at least as highly as the stronger solo result, Duo's Fable processed-input and output usage does not exceed solo Fable's corresponding usage, and Duo's Sol processed-input, output, and reasoning usage does not exceed solo Sol's corresponding usage. Cached input remains a separate reported field and cannot be subtracted to disguise the comparison. A judge pass alone is not evidence that two agents made a better product. Report completion reliability, elapsed time, and provider calls beside these hard gates.
 
 ```bash
 # Inspect all four arms; zero provider calls
@@ -91,16 +93,25 @@ npm run benchmark:matrix -- --suite sol-fable-2x2-open-v1 --json
 # Inspect the transport-repaired but provider-schema-incompatible record; zero provider calls
 npm run benchmark:matrix -- --suite sol-fable-2x2-open-v2 --json
 
-# Inspect the post-compatibility-repair Sol/Fable 2x2; zero provider calls
+# Inspect the provider-compatible but pre-supervisor-proof Sol/Fable record; zero provider calls
 npm run benchmark:matrix -- --suite sol-fable-2x2-open-v3 --json
 
-# Execute the first valid post-repair Sol/Fable slot
-npm run benchmark:matrix -- --suite sol-fable-2x2-open-v3 --live --i-understand-this-uses-local-cli-quota --arm duo-sol-medium-fable-medium-open-v3 --trial 1 --json
+# Inspect the post-supervisor-proof Sol/Fable 2x2; zero provider calls
+npm run benchmark:matrix -- --suite sol-fable-2x2-open-v4 --json
+
+# Execute the first fresh post-proof Sol/Fable slot
+npm run benchmark:matrix -- --suite sol-fable-2x2-open-v4 --live --i-understand-this-uses-local-cli-quota --arm duo-sol-medium-fable-medium-open-v4 --trial 1 --json
+
+# Inspect the matched Low solo-vs-Duo comparison; zero provider calls
+npm run benchmark:matrix -- --suite sol-fable-low-match-open-v1 --json
+
+# Execute its first Sol Low solo baseline (then Fable Low solo, then Duo Low)
+npm run benchmark:matrix -- --suite sol-fable-low-match-open-v1 --live --i-understand-this-uses-local-cli-quota --arm codex-sol-low-solo-match-v1 --trial 1 --json
 ```
 
 Solo arms launch only the authenticated local CLI with fixed argument arrays, `shell: false`, a Core toolset, an ephemeral/no-persistence session, an allowlisted child environment, and a fresh temporary workspace. Duo arms use the Electron supervisor with the same fixed task, fresh user data, Core toolbelts, no repair loops, and no trusted local capabilities. A Duo build preflight completes before its immutable slot is reserved. Once reservation succeeds, it points to the run receipt and an unexpected executor failure still writes a terminal harness-error receipt instead of silently burning the slot. The harness never auto-resumes or retries an arm. Each suite/arm/trial slot can be attempted once, every terminal result is written below an opaque ignored `benchmark-results/short-matrix/` run ID, and generated source is preserved before temporary storage is removed.
 
-Run the three historical `premium-medium` solo arms before either Duo comparison. The `premium-medium-open` continuation exists specifically for the post-diagnostic Sol plus Opus comparison and must not be presented as a replacement for an unfavorable historical result. Trial 2 remains reserved for later replication.
+Run the three historical `premium-medium` solo arms before either Duo comparison. For `sol-fable-low-match-open-v1`, preserve the registered per-trial order: Sol Low solo, Fable Low solo, then Duo Low. The `premium-medium-open` continuation exists specifically for the post-diagnostic Sol plus Opus comparison and must not be presented as a replacement for an unfavorable historical result. Trial 2 remains reserved for later replication.
 
 The arm-neutral receipt records provider-reported usage, active time, terminal status, and a static artifact contract for `index.html`, `app.js`, `logic.js`, `logic.test.mjs`, and the fixed `data-testid` hooks. That static contract never executes generated code and is not a product-quality score. Compare the sealed artifacts blindly and report failed, paused, and timed-out trials instead of rerunning only weak arms.
 

@@ -11,6 +11,8 @@ const codexEffortOpenFixture = resolve('tests', 'fixtures', 'benchmarks', 'live'
 const solFableOpenFixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-sol-fable-2x2-open-v1.json')
 const solFableOpenV2Fixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-sol-fable-2x2-open-v2.json')
 const solFableOpenV3Fixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-sol-fable-2x2-open-v3.json')
+const solFableOpenV4Fixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-sol-fable-2x2-open-v4.json')
+const solFableLowMatchOpenFixture = resolve('tests', 'fixtures', 'benchmarks', 'live', 'short-matrix-sol-fable-low-match-open-v1.json')
 
 interface MatrixArm {
   id: string
@@ -248,6 +250,46 @@ describe('short live matrix benchmark contract', () => {
     })
   })
 
+  it('declares a fresh v4 Sol and Fable matrix after the supervisor proof repair', async () => {
+    const result = await execute(['--suite', 'sol-fable-2x2-open-v4', '--json'])
+
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      suite: 'sol-fable-2x2-open-v4',
+      maxActiveSeconds: null,
+      trials: [1, 2],
+      arms: [
+        { id: 'duo-sol-medium-fable-medium-open-v4', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'medium' }, claude: { model: 'fable', effort: 'medium' } },
+        { id: 'duo-sol-medium-fable-max-open-v4', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'medium' }, claude: { model: 'fable', effort: 'max' } },
+        { id: 'duo-sol-max-fable-medium-open-v4', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'max' }, claude: { model: 'fable', effort: 'medium' } },
+        { id: 'duo-sol-max-fable-max-open-v4', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'max' }, claude: { model: 'fable', effort: 'max' } }
+      ]
+    })
+  })
+
+  it('declares the matched Sol Low, Fable Low, and Duo Low comparison in preregistered order', async () => {
+    const result = await execute(['--suite', 'sol-fable-low-match-open-v1', '--json'])
+
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      schemaVersion: 1,
+      benchmark: 'short-live-matrix',
+      mode: 'dry-run',
+      providerCallsMade: 0,
+      directApiCallsMade: 0,
+      suite: 'sol-fable-low-match-open-v1',
+      maxActiveSeconds: null,
+      trials: [1, 2],
+      arms: [
+        { id: 'codex-sol-low-solo-match-v1', kind: 'solo', agent: 'codex', codex: { model: 'gpt-5.6-sol', effort: 'low' } },
+        { id: 'claude-fable-low-solo-match-v1', kind: 'solo', agent: 'claude', claude: { model: 'fable', effort: 'low' } },
+        { id: 'duo-sol-low-fable-low-match-v1', kind: 'duo', codex: { model: 'gpt-5.6-sol', effort: 'low' }, claude: { model: 'fable', effort: 'low' } }
+      ]
+    })
+  })
+
   it.each([
     ['live without quota acknowledgement', ['--live', '--arm', 'codex-terra-low-solo', '--trial', '1']],
     ['quota acknowledgement without live', ['--i-understand-this-uses-local-cli-quota', '--arm', 'codex-terra-low-solo', '--trial', '1']],
@@ -390,7 +432,9 @@ describe('short live matrix benchmark contract', () => {
     ['codex-effort-open-v1', codexEffortOpenFixture],
     ['sol-fable-2x2-open-v1', solFableOpenFixture],
     ['sol-fable-2x2-open-v2', solFableOpenV2Fixture],
-    ['sol-fable-2x2-open-v3', solFableOpenV3Fixture]
+    ['sol-fable-2x2-open-v3', solFableOpenV3Fixture],
+    ['sol-fable-2x2-open-v4', solFableOpenV4Fixture],
+    ['sol-fable-low-match-open-v1', solFableLowMatchOpenFixture]
   ])('pins %s to the canonical task, improved judge, and open supervisor runtime', async (suiteId, fixturePath) => {
     const { activeWallMilliseconds, assertCanonicalPrompt, loadManifest } = await harness()
     const canonical = await loadManifest('premium-medium-open')
@@ -418,6 +462,25 @@ describe('short live matrix benchmark contract', () => {
       '--model', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="max"'
     ]))
     expect(command.args).not.toEqual(expect.arrayContaining(['model_reasoning_effort="extra-high"']))
+  })
+
+  it('passes the exact matched Low aliases and efforts to both solo CLIs', async () => {
+    const { buildSoloCommand, loadManifest } = await harness()
+    const manifest = await loadManifest('sol-fable-low-match-open-v1')
+    const workspace = resolve('benchmark-results', 'test-workspace-low-match')
+    const sol = manifest.arms.find((entry) => entry.id === 'codex-sol-low-solo-match-v1')
+    const fable = manifest.arms.find((entry) => entry.id === 'claude-fable-low-solo-match-v1')
+    if (!sol || !fable) throw new Error('Expected both matched Low solo arms.')
+
+    const solCommand = buildSoloCommand(sol, workspace, manifest.prompt)
+    expect(solCommand.args).toEqual(expect.arrayContaining([
+      '--model', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="low"'
+    ]))
+
+    const fableCommand = buildSoloCommand(fable, workspace, manifest.prompt)
+    expect(fableCommand.args).toEqual(expect.arrayContaining([
+      '--model', 'fable', '--effort', 'low'
+    ]))
   })
 
   it('builds shell-free, ephemeral Core-only solo commands with the prompt on stdin', async () => {

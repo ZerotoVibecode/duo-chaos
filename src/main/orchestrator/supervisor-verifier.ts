@@ -37,6 +37,14 @@ export interface SupervisorBrowserViewportEvidence {
   interactionAttemptCount?: number
   interactionSuccessCount?: number
   interactionObservedChanges?: string[]
+  pointerInteractionAttempted?: boolean
+  pointerInteractionSucceeded?: boolean
+  keyboardInteractionAttempted?: boolean
+  keyboardInteractionSucceeded?: boolean
+  keyboardObservedChanges?: string[]
+  nativeKeyboardControlCount?: number
+  /** Requests for http(s)/ws(s) resources observed and blocked by the isolated preview. */
+  externalNetworkRequestCount?: number
   consoleErrors: string[]
   pageErrors: string[]
 }
@@ -95,6 +103,8 @@ export interface SupervisorVerificationResult {
 
 export interface SupervisorVerificationRequest {
   appPath: string
+  /** Explicit local Node executable used for package-free built-in tests. */
+  nodePath?: string
   npmPath: string
   timeoutMs: number
   abortSignal?: AbortSignal
@@ -131,8 +141,25 @@ const RESTRICTION_CONTROL_TERMS = new Set([
 const BEHAVIOR_CRITERION_PATTERN = /\b(?:accept|add|calculate|copy|create|delete|download|drag|drop|edit|export|filter|generate|import|interact|interaction|load|login|open|persist|play|remove|save|search|share|sort|submit|support|toggle|upload|works?|workflow)\b/iu
 const TEST_ASSERTION_PATTERN = /\b(?:assert(?:\.[A-Za-z][\w]*)?|expect)\s*\(|\b(?:toBe|toEqual|toMatch|toContain|toHaveProperty|toStrictEqual)\s*\(/u
 const TEST_DECLARATION_PATTERN = /\b(?:describe|it|test)\s*\(/u
+const NODE_TEST_IMPORT_PATTERN = /\b(?:from\s*['"]node:test['"]|require\s*\(\s*['"]node:test['"]\s*\))/u
+const EXTERNAL_NETWORK_SOURCE_PATTERN = /(?:(?:\bfetch|\bimportScripts)\s*\(\s*['"]\s*(?:https?:)?\/\/|\bnavigator\.sendBeacon\s*\(|\bnew\s+(?:EventSource|WebSocket)\s*\(|\bXMLHttpRequest\b[\s\S]{0,400}?\.open\s*\(\s*['"][A-Z]+['"]\s*,\s*['"]\s*(?:https?:)?\/\/|(?:\bhref|\bsrc|\baction|\.href|\.src)\s*=\s*['"]\s*(?:https?:)?\/\/|@import\s*(?:url\()?\s*['"]?\s*(?:https?:)?\/\/|url\(\s*['"]?\s*(?:https?:)?\/\/|\bimport(?:\s*\(|[^;\r\n]{0,80}\bfrom\s*)['"]\s*https?:\/\/)/iu
+const NETWORK_CALL_SOURCE_PATTERN = /(?:\b(?:fetch|importScripts)\s*\(|\bnavigator\.sendBeacon\s*\(|\bnew\s+(?:EventSource|WebSocket|XMLHttpRequest)\s*\(|(?:\bhref|\bsrc|\baction|\.href|\.src)\s*=\s*['"]\s*(?:https?:)?\/\/|@import\s*(?:url\()?\s*['"]?\s*(?:https?:)?\/\/|url\(\s*['"]?\s*(?:https?:)?\/\/|\bimport(?:\s*\(|[^;\r\n]{0,80}\bfrom\s*)['"]\s*https?:\/\/)/iu
 const TEST_EVIDENCE_MAX_FILES = 128
 const TEST_EVIDENCE_MAX_BYTES = 1_000_000
+const TEST_DISCOVERY_MAX_ENTRIES = 4_096
+const TEST_DISCOVERY_EXCLUDED_DIRECTORIES = new Set([
+  ...ARTIFACT_EVIDENCE_EXCLUDED_DIRECTORIES,
+  '__fixtures__', '__snapshots__', 'examples', 'fixture', 'fixtures', 'samples', 'snapshots'
+])
+
+type SupervisorCriterionProofRoute =
+  | 'offline'
+  | 'static-server'
+  | 'pointer'
+  | 'keyboard'
+  | 'no-network'
+  | 'no-dependencies'
+  | 'no-build-step'
 
 interface DirectArtifact {
   path: string
@@ -435,6 +462,45 @@ function testSourceSelected(relativePath: string, commands: string[]): boolean {
   })
 }
 
+async function discoverBuiltInNodeTests(appPath: string): Promise<string[]> {
+  const paths: string[] = []
+  let totalBytes = 0
+  let visitedEntries = 0
+  const visit = async (directory: string): Promise<void> => {
+    if (paths.length >= TEST_EVIDENCE_MAX_FILES || totalBytes >= TEST_EVIDENCE_MAX_BYTES || visitedEntries >= TEST_DISCOVERY_MAX_ENTRIES) return
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name))
+    for (const entry of entries) {
+      if (paths.length >= TEST_EVIDENCE_MAX_FILES || totalBytes >= TEST_EVIDENCE_MAX_BYTES || visitedEntries >= TEST_DISCOVERY_MAX_ENTRIES) break
+      visitedEntries += 1
+      if (entry.isSymbolicLink()) continue
+      const absolutePath = join(directory, entry.name)
+      const relativePath = relative(appPath, absolutePath).replace(/\\/gu, '/')
+      if (entry.isDirectory()) {
+        if (!TEST_DISCOVERY_EXCLUDED_DIRECTORIES.has(entry.name) || /^(?:tests?|__tests__)$/iu.test(entry.name)) {
+          await visit(absolutePath)
+        }
+        continue
+      }
+      if (!entry.isFile() || !/\.(?:cjs|js|mjs)$/iu.test(entry.name) || !testEvidencePath(relativePath)) continue
+      const remaining = TEST_EVIDENCE_MAX_BYTES - totalBytes
+      const raw = await smallText(absolutePath, remaining)
+      if (!raw) continue
+      const source = stripNonBehavioralSource(raw)
+      if (!NODE_TEST_IMPORT_PATTERN.test(source) || !TEST_DECLARATION_PATTERN.test(source) || !TEST_ASSERTION_PATTERN.test(source)) continue
+      totalBytes += Buffer.byteLength(raw, 'utf8')
+      paths.push(relativePath)
+    }
+  }
+  await visit(appPath)
+  return paths
+}
+
 async function collectAutomatedTestEvidence(appPath: string, executedCommands: string[]): Promise<AutomatedTestEvidence> {
   const contents: string[] = []
   let totalBytes = 0
@@ -483,7 +549,10 @@ function seriousBehaviorProofChecks(
   if (contract?.missionProfile !== 'serious') return []
   const testTerms = artifactTerms(testEvidence.text)
   return contract.criteria
-    .filter((criterion) => criterion.polarity === 'require' && BEHAVIOR_CRITERION_PATTERN.test(
+    .filter((criterion) => criterion.polarity === 'require' &&
+      (criterion.kind === undefined || criterion.kind === 'required-outcome' ||
+        (criterion.kind === 'capability' && !supervisorCriterionFullyRouted(criterion))) &&
+      BEHAVIOR_CRITERION_PATTERN.test(
       `${criterion.label} ${criterion.evidenceTerms.join(' ')}`
     ))
     .slice(0, 64)
@@ -501,6 +570,45 @@ function seriousBehaviorProofChecks(
     })
 }
 
+function supervisorCriterionProofRoutes(criterion: SupervisorQualityCriterion): SupervisorCriterionProofRoute[] {
+  const terms = artifactTerms(`${criterion.label} ${criterion.evidenceTerms.join(' ')}`)
+  const routes = new Set<SupervisorCriterionProofRoute>()
+  if (criterion.polarity === 'require' && criterion.kind === 'platform') {
+    if (terms.has('offline')) routes.add('offline')
+    if (terms.has('static') && terms.has('server')) routes.add('static-server')
+  }
+  if (criterion.polarity === 'require' && criterion.kind === 'capability') {
+    if (terms.has('mouse') || terms.has('pointer')) routes.add('pointer')
+    if (terms.has('keyboard')) routes.add('keyboard')
+  }
+  if (criterion.polarity === 'forbid' && criterion.kind === 'restriction') {
+    if (terms.has('network') || terms.has('cdn') || terms.has('cdns')) routes.add('no-network')
+    if (terms.has('package') || terms.has('dependency') || terms.has('install')) routes.add('no-dependencies')
+    if (terms.has('build') && terms.has('step')) routes.add('no-build-step')
+  }
+  return [...routes]
+}
+
+const SUPERVISOR_ROUTE_COVERAGE_TERMS: Readonly<Record<SupervisorCriterionProofRoute, ReadonlySet<string>>> = {
+  offline: new Set(['artifact', 'completely', 'must', 'offline', 'work']),
+  'static-server': new Set(['finish', 'from', 'local', 'only', 'runnable', 'server', 'simple', 'static', 'when']),
+  pointer: new Set(['input', 'mouse', 'pointer', 'support']),
+  keyboard: new Set(['input', 'keyboard', 'support']),
+  'no-network': new Set(['call', 'cdn', 'cdns', 'network']),
+  'no-dependencies': new Set(['dependency', 'install', 'package']),
+  'no-build-step': new Set(['build', 'step'])
+}
+
+function supervisorCriterionFullyRouted(criterion: SupervisorQualityCriterion): boolean {
+  const routes = supervisorCriterionProofRoutes(criterion)
+  if (routes.length === 0 || criterion.evidenceTerms.length === 0) return false
+  const covered = new Set(routes.flatMap((route) => [...SUPERVISOR_ROUTE_COVERAGE_TERMS[route]]))
+  const obligations = [...new Set(criterion.evidenceTerms
+    .map(normalizedArtifactTerm)
+    .filter((term) => term.length >= 3 && !RESTRICTION_CONTROL_TERMS.has(term)))]
+  return obligations.length > 0 && obligations.every((term) => covered.has(term))
+}
+
 function briefChecks(
   contract: SupervisorQualityContract | undefined,
   artifactEvidence: ArtifactConstraintEvidence,
@@ -516,6 +624,14 @@ function briefChecks(
   }]
   const terms = artifactTerms(artifactEvidence.text)
   for (const criterion of contract.criteria.slice(0, 64)) {
+    if (supervisorCriterionFullyRouted(criterion)) {
+      checks.push({
+        id: `brief:${criterionId(criterion.id)}`,
+        label: `Supervisor-owned proof: ${criterion.label.trim().slice(0, 150) || 'brief acceptance criterion'}`,
+        outcome: 'skipped'
+      })
+      continue
+    }
     if (deferQualitativeToBrowser && qualitativeBrowserCriterion(criterion)) {
       checks.push({
         id: `brief:${criterionId(criterion.id)}`,
@@ -550,6 +666,75 @@ function briefChecks(
     })
   }
   return checks
+}
+
+function browserViewportsHealthy(evidence: SupervisorBrowserEvidence): boolean {
+  const byViewport = new Map(evidence.viewports.map((viewport) => [viewport.id, viewport]))
+  return (['compact', 'full'] as const).every((id) => {
+    const viewport = byViewport.get(id)
+    return Boolean(viewport?.screenshotCaptured && viewport.visibleTextCharacters > 0 && viewport.mainLandmark &&
+      !viewport.horizontalOverflow && viewport.consoleErrors.length === 0 && viewport.pageErrors.length === 0)
+  })
+}
+
+function supervisorContractChecks(
+  contract: SupervisorQualityContract | undefined,
+  artifactEvidence: ArtifactConstraintEvidence,
+  packageJson: Record<string, unknown>,
+  scripts: Record<string, unknown>,
+  browserEvidence: SupervisorBrowserEvidence
+): SupervisorVerificationCheck[] {
+  if (!contract) return []
+  const externalSourceDependency = EXTERNAL_NETWORK_SOURCE_PATTERN.test(artifactEvidence.text)
+  const networkCallSource = NETWORK_CALL_SOURCE_PATTERN.test(artifactEvidence.text)
+  const externalRequestsKnown = browserEvidence.viewports.length > 0 && browserEvidence.viewports.every((viewport) =>
+    typeof viewport.externalNetworkRequestCount === 'number'
+  )
+  const externalRequestsAbsent = externalRequestsKnown && browserEvidence.viewports.every((viewport) =>
+    viewport.externalNetworkRequestCount === 0
+  )
+  const dependencies = {
+    ...record(packageJson.dependencies),
+    ...record(packageJson.devDependencies),
+    ...record(packageJson.peerDependencies),
+    ...record(packageJson.optionalDependencies)
+  }
+  const noDependencies = Object.keys(dependencies).length === 0
+  const noBuildStep = typeof scripts.build !== 'string' || !scripts.build.trim()
+  const healthyBrowser = browserViewportsHealthy(browserEvidence)
+
+  return contract.criteria.slice(0, 64).flatMap((criterion) => {
+    const routes = supervisorCriterionProofRoutes(criterion)
+    if (routes.length === 0) return []
+    const failedRoutes = routes.filter((route) => {
+      switch (route) {
+        case 'offline':
+          return externalSourceDependency || !externalRequestsAbsent || !healthyBrowser
+        case 'static-server':
+          return !healthyBrowser
+        case 'pointer':
+          return !browserEvidence.viewports.every((viewport) =>
+            viewport.pointerInteractionAttempted === true && viewport.pointerInteractionSucceeded === true
+          )
+        case 'keyboard':
+          return !browserEvidence.viewports.every((viewport) =>
+            viewport.keyboardInteractionAttempted === true && viewport.keyboardInteractionSucceeded === true
+          )
+        case 'no-network':
+          return networkCallSource || !externalRequestsAbsent
+        case 'no-dependencies':
+          return !noDependencies
+        case 'no-build-step':
+          return !noBuildStep
+      }
+    })
+    return [{
+      id: `supervisor:${criterionId(criterion.id)}`,
+      label: `Concrete contract proof: ${criterion.label.trim().slice(0, 150) || 'brief acceptance criterion'}`,
+      outcome: failedRoutes.length === 0 ? 'passed' as const : 'failed' as const,
+      ...(failedRoutes.length > 0 ? { detail: `Missing proof: ${failedRoutes.join(', ')}` } : {})
+    }]
+  })
 }
 
 function runtimeBrowserPort(): SupervisorBrowserEvidencePort | null {
@@ -700,10 +885,49 @@ export class SupervisorVerifier implements SupervisorVerifierPort {
     let automatedTestEvidence: AutomatedTestEvidence = { text: '', fileCount: 0 }
     if (request.qualityContract?.missionProfile === 'serious') {
       const executedTestCommands = scriptsToRun.flatMap((script) => automatedTestCommands(script, scripts))
+      const packageAutomatedTestsExecuted = scriptsToRun.some((script) => commandRunsAutomatedTests(script, scripts))
+      let directNodeTestsPassed = false
+      if (!packageAutomatedTestsExecuted) {
+        const builtInNodeTests = await discoverBuiltInNodeTests(request.appPath)
+        if (request.abortSignal?.aborted) return cancelled()
+        if (builtInNodeTests.length > 0) {
+          const result = await this.processPort.run({
+            id: `supervisor-node-test-${Date.now().toString(36)}`,
+            command: {
+              bin: request.nodePath?.trim() || 'node',
+              args: ['--test', ...builtInNodeTests],
+              cwd: request.appPath
+            },
+            timeoutMs: Math.max(1_000, request.timeoutMs),
+            stdoutPath: devNull,
+            stderrPath: devNull,
+            abortSignal: request.abortSignal,
+            onLine: () => undefined
+          })
+          if (request.abortSignal?.aborted) return cancelled()
+          directNodeTestsPassed = result.exitCode === 0 && !result.timedOut && !result.cancelled &&
+            !result.outputLimitExceeded && !result.rawLogWriteFailed
+          checks.push({
+            id: 'script:node-test',
+            label: `node --test (${String(builtInNodeTests.length)} discovered file${builtInNodeTests.length === 1 ? '' : 's'})`,
+            outcome: directNodeTestsPassed ? 'passed' : 'failed',
+            exitCode: result.exitCode,
+            ...(result.timedOut ? { timedOut: true } : {})
+          })
+          if (!directNodeTestsPassed) {
+            return {
+              outcome: 'failed',
+              summary: 'Supervisor verification failed while executing discovered built-in Node tests.',
+              checks
+            }
+          }
+          executedTestCommands.push(`node --test ${builtInNodeTests.map((path) => JSON.stringify(path)).join(' ')}`)
+        }
+      }
       automatedTestEvidence = await collectAutomatedTestEvidence(request.appPath, executedTestCommands)
       if (request.abortSignal?.aborted) return cancelled()
       const automatedTestsPassed = automatedTestEvidence.fileCount > 0 &&
-        scriptsToRun.some((script) => commandRunsAutomatedTests(script, scripts))
+        (packageAutomatedTestsExecuted || directNodeTestsPassed)
       checks.push({
         id: 'script:automated-tests',
         label: 'Meaningful non-interactive automated tests',
@@ -801,6 +1025,14 @@ export class SupervisorVerifier implements SupervisorVerifierPort {
         }
         const interactionRequired = /<(?:script\b|button\b|input\b|select\b|textarea\b|a\b[^>]*\bhref\s*=|[^>]+\brole\s*=\s*(?:"button"|'button'|button))/i.test(artifact.content)
         const renderedChecks = browserChecks(browserEvidence, interactionRequired)
+        const concreteContractChecks = supervisorContractChecks(
+          request.qualityContract,
+          artifactConstraintEvidence,
+          packageJson,
+          scripts,
+          browserEvidence
+        )
+        renderedChecks.push(...concreteContractChecks)
         if (deferQualitativeToBrowser) {
           renderedChecks.push({
             id: 'browser:qualitative-contract',
@@ -812,7 +1044,7 @@ export class SupervisorVerifier implements SupervisorVerifierPort {
         if (renderedChecks.some((check) => check.outcome === 'failed')) {
           return {
             outcome: 'failed',
-            summary: 'Supervisor verification found a compact, full-screen, interaction, accessibility, or console defect.',
+            summary: 'Supervisor verification found a compact, full-screen, interaction, accessibility, console defect, or frozen-contract defect.',
             checks,
             browserEvidence
           }
@@ -824,6 +1056,23 @@ export class SupervisorVerifier implements SupervisorVerifierPort {
           checks,
           browserEvidence
         }
+      }
+    }
+
+    const unresolvedSupervisorCriteria = request.qualityContract?.criteria.filter((criterion) =>
+      supervisorCriterionProofRoutes(criterion).length > 0
+    ) ?? []
+    if (unresolvedSupervisorCriteria.length > 0) {
+      checks.push(...unresolvedSupervisorCriteria.map((criterion) => ({
+        id: `supervisor:${criterionId(criterion.id)}`,
+        label: `Concrete contract proof: ${criterion.label.trim().slice(0, 150) || 'brief acceptance criterion'}`,
+        outcome: 'failed' as const,
+        detail: 'This proof route currently requires an independently rendered browser artifact.'
+      })))
+      return {
+        outcome: 'failed',
+        summary: 'Supervisor verification could not resolve browser-owned frozen-contract evidence for this non-browser artifact.',
+        checks
       }
     }
 

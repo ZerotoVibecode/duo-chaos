@@ -265,6 +265,8 @@ describe('event normalizer', () => {
     'npm run build',
     'pnpm run typecheck',
     'npx vitest run',
+    'node --test logic.test.mjs',
+    'node.exe --test tests\\logic.test.js',
     'python -m pytest',
     'cargo test',
     'npm test 2>&1',
