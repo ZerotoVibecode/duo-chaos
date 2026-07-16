@@ -137,6 +137,17 @@ Answer only from the human brief and teammate context included below. Do not add
 ${prompt}`
 }
 
+/**
+ * Global npm command shims on Windows forward argv through cmd.exe a second
+ * time. Keep the JSON semantically identical while preventing schema regexes
+ * from being interpreted as redirection, pipes, expansion, or control syntax.
+ */
+export function serializeClaudeJsonSchemaArgument(schema: Record<string, unknown>): string {
+  return JSON.stringify(schema).replace(/[&|<>^%!]/g, (character) =>
+    `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`
+  )
+}
+
 export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
   assertInput(input)
   const model = input.model?.trim()
@@ -267,7 +278,9 @@ export function buildAgentCommand(input: BuildAgentCommandInput): AgentCommand {
       ...permissionMode,
       ...preapprovedSourceTools,
       ...sessionArgs,
-      ...(dialoguePolicy ? ['--tools', '', '--json-schema', JSON.stringify(dialoguePolicy.outputSchema)] : []),
+      ...(dialoguePolicy
+        ? ['--tools', '', '--json-schema', serializeClaudeJsonSchemaArgument(dialoguePolicy.outputSchema)]
+        : []),
       // One response plus one provider-internal schema correction. Real tools
       // remain disabled, the session stays ephemeral, and the orchestrator
       // still accepts only one strictly validated capsule.

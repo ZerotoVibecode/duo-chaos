@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildAgentCommand,
+  serializeClaudeJsonSchemaArgument,
   type BuildAgentCommandInput
 } from '../../src/main/process/command-builder'
 
@@ -61,6 +62,18 @@ function valueAfter(args: string[], flag: string): string | undefined {
 }
 
 describe('structured tool-free dialogue command policy', () => {
+  it('preserves schema meaning without raw Windows command metacharacters', () => {
+    const schema = {
+      type: 'string',
+      pattern: '^(?!APP|PRODUCT)[^\\[<{].*% complete & verified!$'
+    }
+
+    const serialized = serializeClaudeJsonSchemaArgument(schema)
+
+    expect(serialized).not.toMatch(/[&|<>^%!]/)
+    expect(JSON.parse(serialized)).toEqual(schema)
+  })
+
   it('gives Claude one bounded schema-correction turn with every tool disabled and no persistent session', () => {
     const command = buildAgentCommand(input('claude'))
 
